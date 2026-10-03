@@ -53,6 +53,7 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - **Playlist editing**: "Add to playlist" offers only the user's own playlists (`web::Item.artist_uri` holds a playlist's owner URI, compared with `spotify:user:<username>`). "Remove from this playlist" shows only on such a page (`Page.editable`) and removes every occurrence of the track.
 - **Go to playing** (click the now-playing title): opens the context the track was started from in this window and scrolls the list to it (`reveal`, row height 56 px, clamped to the list end). Tracks started elsewhere have no known context.
 - **Page header**: a kind label ("Playlist", "Album", ...; `Page.kind`) above the title. Track rows show a play arrow on hover and equalizer bars while playing, over the cover.
+- **Scroll**: opening a page or going back/forward resets the track list to the top (`scroll_to_top`); pages that change in place ("Show more", removing a row) keep their scroll. "Show more" drops tracks already on the page, since later search pages repeat earlier hits.
 - **Status line** holds transient messages and errors; play/pause resets it to the page's item count instead of "Playing".
 - **Cover tint**: the alpha-weighted average color of the now-playing cover, dimmed to 45%, colors a gradient at the top of the main panel (`now-tint`).
 - **Rounded covers are baked into pixels** (`covers::corner_coverage`): the software renderer ignores `border-radius` when clipping images. Artists are round, other covers get small rounded corners.
