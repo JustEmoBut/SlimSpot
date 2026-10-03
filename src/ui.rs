@@ -194,8 +194,9 @@ slint::slint! {
                     border-radius: data.uri.starts-with("spotify:artist:") ? root.cover-size / 2 : 4px;
                     clip: true;
                     // Spotify has no image for Liked Songs; mimic its gradient tile.
-                    background: data.uri == "liked" ? @linear-gradient(135deg, #450af5 0%, #c4efd9 100%) : Theme.raised;
+                    background: data.uri == "liked" ? @linear-gradient(135deg, #450af5 0%, #c4efd9 100%) : data.uri.starts-with("slimspot:") ? transparent : Theme.raised;
                     Image { source: data.cover; width: parent.width; height: parent.height; image-fit: cover; }
+                    if data.uri.starts-with("slimspot:") : Icon { width: parent.width * 0.6; height: self.width; shape: Icons.search; tint: Theme.subdued; }
                     if data.uri == "liked" : Icon { width: parent.width * 0.5; height: self.width; shape: Icons.heart; filled: true; tint: Theme.text; }
                     // Tracks: a play arrow on hover, equalizer bars while playing (like Spotify's row number).
                     if data.uri.starts-with("spotify:track:") && (root.has-hover || root.playing) : Rectangle {
@@ -567,6 +568,7 @@ slint::slint! {
                     VerticalLayout {
                         padding: 16px;
                         spacing: 12px;
+                        alignment: start;
                         Text { text: "Audio quality"; font-size: 13px; font-weight: 700; color: Theme.text; }
                         HorizontalLayout {
                             spacing: 8px;

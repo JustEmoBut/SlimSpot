@@ -354,6 +354,12 @@ fn more_row() -> Item {
 fn open_page(ui: &slint::Weak<App>, nav: &mut History<Page>, shown: &mut Option<Shown>, page: Page) {
     nav.push(page);
     show_current(ui, nav, shown);
+    scroll_to_top(ui);
+}
+
+/// A different page starts at its top; pages that grow or shrink in place keep their scroll.
+fn scroll_to_top(ui: &slint::Weak<App>) {
+    let _ = ui.upgrade_in_event_loop(|app| app.set_list_y(0.0));
 }
 
 /// Puts the history's current page on screen (after open, back or forward).
@@ -590,13 +596,15 @@ pub async fn run(
                     match w.search_tracks(&session, &query, offset).await {
                         Ok(found) => {
                             page.rows.pop(); // the "Show more" row
-                            if let Shown::Tracks(uris) = &mut page.shown {
-                                uris.extend(found.iter().map(|r| r.uri.clone()));
-                            }
                             if found.len() == SEARCH_LIMIT as usize {
                                 page.more = Some((query, offset + SEARCH_LIMIT));
                             }
-                            page.rows.extend(found);
+                            // Spotify's later search pages repeat earlier hits (seen 2026-10-03).
+                            let fresh: Vec<Item> = found.into_iter().filter(|f| !page.rows.iter().any(|r| r.uri == f.uri)).collect();
+                            if let Shown::Tracks(uris) = &mut page.shown {
+                                uris.extend(fresh.iter().map(|r| r.uri.clone()));
+                            }
+                            page.rows.extend(fresh);
                             if page.more.is_some() {
                                 page.rows.push(more_row());
                             }
@@ -821,11 +829,13 @@ pub async fn run(
                 Command::Back => {
                     if nav.back().is_some() {
                         show_current(&ui, &nav, &mut shown);
+                        scroll_to_top(&ui);
                     }
                 }
                 Command::Forward => {
                     if nav.forward().is_some() {
                         show_current(&ui, &nav, &mut shown);
+                        scroll_to_top(&ui);
                     }
                 }
                 Command::Transfer(device_id) => {
