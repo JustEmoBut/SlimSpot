@@ -1163,7 +1163,7 @@ pub async fn run(
                         }
                         // Without a cover the previous track's tint would linger.
                         if item.cover_url.is_empty() {
-                            let _ = ui.upgrade_in_event_loop(|app| app.set_now_tint(slint::Color::from_rgb_u8(0x12, 0x12, 0x12)));
+                            let _ = ui.upgrade_in_event_loop(|app| app.set_now_tint(slint::Color::from_rgb_u8(16, 16, 42)));
                         }
                         now_uri = Some(item.uri.clone());
                         now_item = Some(item.clone());

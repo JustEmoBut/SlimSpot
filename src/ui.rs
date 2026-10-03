@@ -6,22 +6,33 @@ use crate::web::Item;
 
 slint::slint! {
     import { CheckBox, ListView, Palette } from "std-widgets.slint";
+    // Poppins (SIL OFL, assets/fonts/OFL.txt), embedded in the exe: ~160 KB per weight.
+    import "../assets/fonts/Poppins-Regular.ttf";
+    import "../assets/fonts/Poppins-SemiBold.ttf";
     export struct Row { title: string, artist: string, uri: string, cover-url: string, cover: image, duration: string, liked: bool }
 
     // Spotify-like dark palette. Colors whose hex starts with a digit and `e` are written as rgb():
     // inside slint! the Rust tokenizer reads them as float exponents.
+    // "Midnight Indigo": deep navy surfaces, violet accent fading into cyan (ui-ux-pro-max music
+    // palette, accent swapped away from Spotify green). Every color is rgb(): inside slint! a hex
+    // like #5eead4 tokenizes as a Rust float exponent.
     global Theme {
-        out property <color> base: #000000;
-        out property <color> panel: #121212;
-        out property <color> raised: #1f1f1f;
-        out property <color> hover: #2a2a2a;
-        out property <color> selected: #333333;
-        out property <color> field: #242424;
-        out property <color> text: #ffffff;
-        out property <color> subdued: #b3b3b3;
-        out property <color> muted: #727272;
-        out property <color> track: #4d4d4d;
-        out property <color> accent: rgb(30, 215, 96);
+        out property <color> base: rgb(8, 8, 26);
+        out property <color> panel: rgb(16, 16, 42);
+        out property <color> raised: rgb(27, 27, 56);
+        out property <color> hover: rgb(35, 35, 74);
+        out property <color> selected: rgb(44, 44, 94);
+        out property <color> field: rgb(27, 27, 56);
+        out property <color> border: rgba(255, 255, 255, 0.08);
+        out property <color> text: rgb(248, 250, 252);
+        out property <color> subdued: rgb(163, 168, 195);
+        out property <color> muted: rgb(107, 111, 142);
+        out property <color> track: rgb(46, 46, 90);
+        out property <color> accent: rgb(139, 92, 246);
+        out property <color> accent2: rgb(34, 211, 238);
+        // Progress fill only: the software renderer ignores border-radius on gradient backgrounds,
+        // so rounded things (buttons, chips, badges) use the solid accent.
+        out property <brush> glow: @linear-gradient(135deg, rgb(139, 92, 246) 0%, rgb(34, 211, 238) 100%);
     }
 
     // 24x24 line/fill icons, drawn here (no icon font or image assets).
@@ -45,6 +56,11 @@ slint::slint! {
         out property <string> home: "M4 11 L12 4 L20 11 V20 H14.5 V14 H9.5 V20 H4 Z";
         out property <string> more: "M5 10.5 H8 V13.5 H5 Z M10.5 10.5 H13.5 V13.5 H10.5 Z M16 10.5 H19 V13.5 H16 Z";
         out property <string> check: "M6.5 12.5 L10.5 16.5 L17.5 8.5";
+        out property <string> person: "M12 12 C14.2 12 16 10.2 16 8 C16 5.8 14.2 4 12 4 C9.8 4 8 5.8 8 8 C8 10.2 9.8 12 12 12 Z M4.5 20 C4.5 16.5 7.8 14 12 14 C16.2 14 19.5 16.5 19.5 20";
+        out property <string> disc: "M12 3 A9 9 0 1 0 12 21 A9 9 0 1 0 12 3 Z M12 10 A2 2 0 1 0 12 14 A2 2 0 1 0 12 10 Z";
+        out property <string> link: "M10 14 L14 10 M9 7 L11 5 C12.7 3.3 15.3 3.3 17 5 L19 7 C20.7 8.7 20.7 11.3 19 13 L17 15 M15 17 L13 19 C11.3 20.7 8.7 20.7 7 19 L5 17 C3.3 15.3 3.3 12.7 5 11 L7 9";
+        out property <string> trash: "M5 7 H19 M10 7 V5 H14 V7 M7 7 L8 20 H16 L17 7";
+        out property <string> open: "M14 5 H19 V10 M19 5 L11 13 M17 14 V19 H5 V7 H10";
         out property <string> plus: "M12 5 V19 M5 12 H19";
         out property <string> pencil: "M5 19 L6 14.5 L15.5 5 L19 8.5 L9.5 18 Z M13.5 7 L17 10.5";
         out property <string> panel: "M3.5 5 H20.5 V19 H3.5 Z M14.5 5 V19";
@@ -103,16 +119,19 @@ slint::slint! {
         height: 36px;
         mouse-cursor: pointer;
         Rectangle {
-            width: root.has-hover ? 38px : 36px;
+            width: root.has-hover ? 40px : 36px;
             height: self.width;
             border-radius: self.width / 2;
-            background: Theme.text;
+            background: Theme.accent;
+            drop-shadow-blur: root.has-hover ? 14px : 8px;
+            drop-shadow-color: rgba(139, 92, 246, 0.55);
+            animate width, drop-shadow-blur { duration: 120ms; }
             Icon {
                 width: 18px;
                 height: 18px;
                 shape: root.playing ? Icons.pause : Icons.play;
                 filled: true;
-                tint: Theme.base;
+                tint: Theme.text;
             }
         }
     }
@@ -136,7 +155,7 @@ slint::slint! {
                 x: 0;
                 width: parent.width * root.fraction;
                 border-radius: 2px;
-                background: root.hot && root.enabled ? Theme.accent : Theme.text;
+                background: root.enabled ? Theme.glow : Theme.muted;
             }
         }
         if root.hot && root.enabled : Rectangle {
@@ -173,25 +192,38 @@ slint::slint! {
         // Playing rows show their title in green, like Spotify.
         in property <bool> playing;
         in property <length> cover-size: 40px;
-        // Right-click menu; off for rows that aren't Spotify items (devices).
+        // Row menu (right-click and "..."); off for rows that aren't Spotify items (devices).
         in property <bool> menu: true;
-        // The user's own playlists ("Add to playlist") and whether this row's page is one of them.
-        in property <[Row]> targets;
-        in property <bool> editable;
         // Position shown left of the cover in track lists; 0 hides it.
         in property <int> number;
         // Sidebar rows can be removed from the library.
         in property <bool> sidebar;
-        callback action(string);
+        // Right-click or "...": open the app's menu at this window position.
+        callback open-menu(length, length);
         // Fired whenever this (possibly recycled) row instance shows a row without a loaded cover.
         callback need-cover();
         init => { if (data.cover-url != "" && data.cover.width == 0) { need-cover() } }
         changed data => { if (data.cover-url != "" && data.cover.width == 0) { need-cover() } }
         height: root.cover-size + 16px;
         mouse-cursor: pointer;
+        pointer-event(event) => {
+            if (root.menu && event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
+                root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
         Rectangle {
-            border-radius: 6px;
+            border-radius: 8px;
             background: root.selected ? Theme.selected : root.has-hover ? Theme.hover : transparent;
+            animate background { duration: 120ms; }
+            // Selected sidebar entry: a short accent bar on the left edge.
+            if root.selected : Rectangle {
+                x: 0;
+                width: 3px;
+                height: parent.height * 0.5;
+                y: parent.height * 0.25;
+                border-radius: 2px;
+                background: Theme.accent;
+            }
             HorizontalLayout {
                 padding-left: 8px;
                 // Room for the hover "more" button.
@@ -243,7 +275,7 @@ slint::slint! {
                     y: (parent.height - self.height) / 2;
                     border-radius: 8px;
                     background: Theme.accent;
-                    Icon { width: 14px; height: 14px; shape: Icons.check; tint: Theme.base; }
+                    Icon { width: 14px; height: 14px; shape: Icons.check; tint: Theme.text; }
                 }
                 if data.duration != "" : Text {
                     width: 40px;
@@ -255,34 +287,49 @@ slint::slint! {
                 }
             }
         }
-        // Takes right-clicks only; left-clicks still reach the row.
-        if root.menu : cm := ContextMenuArea {
-            property <bool> is-track: data.uri.starts-with("spotify:track:");
-            // Spotify's "..." on hover: the same menu as a right-click, for mouse-only discovery.
-            if root.has-hover : IconButton {
-                x: parent.width - self.width - 8px;
-                y: (parent.height - self.height) / 2;
-                shape: Icons.more;
-                filled: true;
-                dot: false;
-                size: 18px;
-                clicked => { cm.show({ x: self.x, y: self.y + self.height }); }
-            }
-            Menu {
-                if is-track : MenuItem { title: "Start radio"; activated => { root.action("radio"); } }
-                if is-track : MenuItem { title: "Go to artist"; activated => { root.action("artist"); } }
-                if is-track : MenuItem { title: "Go to album"; activated => { root.action("album"); } }
-                if is-track : MenuItem { title: "Save to Liked Songs"; activated => { root.action("like"); } }
-                if is-track : MenuItem { title: "Add to queue"; activated => { root.action("queue"); } }
-                if is-track && root.targets.length > 0 : Menu {
-                    title: "Add to playlist";
-                    for t in root.targets : MenuItem { title: t.title; activated => { root.action("add:" + t.uri); } }
+        // The "..." on hover opens the same menu as a right-click.
+        if root.menu && root.has-hover : IconButton {
+            x: parent.width - self.width - 8px;
+            y: (parent.height - self.height) / 2;
+            shape: Icons.more;
+            filled: true;
+            dot: false;
+            size: 18px;
+            clicked => { root.open-menu(self.absolute-position.x, self.absolute-position.y + self.height); }
+        }
+    }
+
+    // One entry of the row menu.
+    component MenuEntry inherits TouchArea {
+        in property <string> label;
+        in property <string> shape;
+        in property <bool> danger;
+        in property <bool> submenu;
+        height: 34px;
+        mouse-cursor: pointer;
+        Rectangle {
+            border-radius: 6px;
+            background: root.has-hover ? Theme.hover : transparent;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 10px;
+                Icon {
+                    width: 16px;
+                    height: 16px;
+                    y: (parent.height - self.height) / 2;
+                    shape: root.shape;
+                    tint: root.danger ? rgb(248, 113, 113) : root.has-hover ? Theme.accent2 : Theme.subdued;
                 }
-                if is-track && root.editable : MenuItem { title: "Remove from this playlist"; activated => { root.action("remove"); } }
-                if !is-track : MenuItem { title: "Open"; activated => { root.action("open"); } }
-                if root.sidebar && data.uri.starts-with("spotify:playlist:") : MenuItem { title: "Remove from Your Library"; activated => { root.action("unfollow"); } }
-                MenuSeparator {}
-                MenuItem { title: "Copy link"; activated => { root.action("copy"); } }
+                Text {
+                    text: root.label;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                    font-size: 13px;
+                    color: root.danger ? rgb(248, 113, 113) : Theme.text;
+                }
+                if root.submenu : Icon { width: 14px; height: 14px; y: (parent.height - self.height) / 2; shape: Icons.forward; tint: Theme.subdued; }
             }
         }
     }
@@ -332,13 +379,16 @@ slint::slint! {
         min-width: t.preferred-width + 20px;
         Rectangle {
             border-radius: 15px;
-            background: root.chosen ? Theme.text : root.has-hover ? Theme.hover : Theme.raised;
-            t := Text { text: root.label; font-size: 13px; color: root.chosen ? Theme.base : Theme.text; }
+            background: root.chosen ? Theme.accent : root.has-hover ? Theme.hover : Theme.raised;
+            border-width: root.chosen ? 0px : 1px;
+            border-color: Theme.border;
+            t := Text { text: root.label; font-size: 12px; font-weight: 600; color: Theme.text; }
         }
     }
 
     export component App inherits Window {
         title: "SlimSpot";
+        default-font-family: "Poppins";
         icon: root.app-icon;
         background: Theme.base;
         // Decoded from assets/icon-64.png at startup (no runtime SVG renderer).
@@ -388,6 +438,25 @@ slint::slint! {
         callback show-queue();
         callback go-to-playing();
         callback go-home();
+        // Row menu: what it was opened on and where.
+        in-out property <Row> menu-row;
+        in-out property <bool> menu-sidebar;
+        in-out property <bool> menu-playlists;
+        in-out property <length> menu-x;
+        in-out property <length> menu-y;
+        public function open-row-menu(row: Row, x: length, y: length, sidebar: bool) {
+            root.menu-row = row;
+            root.menu-sidebar = sidebar;
+            root.menu-playlists = false;
+            // Kept inside the window; the menu is at most ~330 px tall.
+            root.menu-x = min(x, root.width - 248px);
+            root.menu-y = min(y, root.height - 340px);
+            row-menu.show();
+        }
+        function menu-act(action: string) {
+            root.row-action(action, root.menu-row.uri);
+            row-menu.close();
+        }
         callback play-page();
         callback filter-library(int, string, bool);
         in property <bool> numbered;
@@ -511,8 +580,10 @@ slint::slint! {
                 // Your Library
                 Rectangle {
                     width: 280px;
-                    border-radius: 8px;
+                    border-radius: 12px;
                     background: Theme.panel;
+                    border-width: 1px;
+                    border-color: Theme.border;
                     VerticalLayout {
                         padding: 8px;
                         spacing: 8px;
@@ -577,8 +648,8 @@ slint::slint! {
                                 cover-size: 48px;
                                 selected: row.uri == root.current-list;
                                 sidebar: true;
+                                open-menu(x, y) => { root.open-row-menu(row, x, y, true); }
                                 clicked => { root.open-list(row.uri); }
-                                action(a) => { root.row-action(a, row.uri); }
                                 need-cover => { root.need-cover(1, i, row.uri, row.cover-url); }
                             }
                         }
@@ -586,8 +657,10 @@ slint::slint! {
                 }
                 // Main panel
                 Rectangle {
-                    border-radius: 8px;
+                    border-radius: 12px;
                     background: Theme.panel;
+                    border-width: 1px;
+                    border-color: Theme.border;
                     Rectangle {
                         y: 0;
                         height: 280px;
@@ -610,7 +683,7 @@ slint::slint! {
                                 border-radius: 22px;
                                 background: query.has-focus ? Theme.hover : Theme.field;
                                 border-width: query.has-focus ? 2px : 0px;
-                                border-color: Theme.text;
+                                border-color: Theme.accent;
                                 HorizontalLayout {
                                     padding-left: 12px;
                                     padding-right: 16px;
@@ -667,8 +740,11 @@ slint::slint! {
                                 clicked => { root.play-page(); }
                                 Rectangle {
                                     border-radius: self.width / 2;
-                                    background: parent.has-hover ? rgb(60, 230, 120) : Theme.accent;
-                                    Icon { width: 26px; height: 26px; shape: Icons.play; filled: true; tint: Theme.base; }
+                                    background: Theme.accent;
+                                    drop-shadow-blur: parent.has-hover ? 22px : 12px;
+                                    drop-shadow-color: rgba(139, 92, 246, 0.6);
+                                    animate drop-shadow-blur { duration: 150ms; }
+                                    Icon { width: 26px; height: 26px; shape: Icons.play; filled: true; tint: Theme.text; }
                                 }
                             }
                             VerticalLayout {
@@ -708,10 +784,8 @@ slint::slint! {
                                 playing: row.uri == root.current-track;
                                 // "Show more tracks" and similar app rows have no menu.
                                 menu: !row.uri.starts-with("slimspot:");
-                                targets: root.targets;
-                                editable: root.editable;
                                 clicked => { root.play-uri(row.uri); }
-                                action(a) => { root.row-action(a, row.uri); }
+                                open-menu(x, y) => { root.open-row-menu(row, x, y, false); }
                                 need-cover => { root.need-cover(0, i, row.uri, row.cover-url); }
                             }
                         }
@@ -719,8 +793,10 @@ slint::slint! {
                 }
                 if root.show-now-panel : Rectangle {
                     width: 300px;
-                    border-radius: 8px;
+                    border-radius: 12px;
                     background: Theme.panel;
+                    border-width: 1px;
+                    border-color: Theme.border;
                     VerticalLayout {
                         padding: 16px;
                         spacing: 12px;
@@ -735,6 +811,52 @@ slint::slint! {
                         }
                         Text { text: now.title; font-size: 22px; font-weight: 700; color: Theme.text; wrap: word-wrap; }
                         Text { text: now.artist; font-size: 14px; color: Theme.subdued; wrap: word-wrap; }
+                    }
+                }
+            }
+            row-menu := PopupWindow {
+                x: root.menu-x;
+                y: root.menu-y;
+                width: 240px;
+                close-policy: close-on-click-outside;
+                property <bool> is-track: root.menu-row.uri.starts-with("spotify:track:");
+                Rectangle {
+                    background: Theme.raised;
+                    border-radius: 10px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    drop-shadow-blur: 24px;
+                    drop-shadow-color: rgba(0, 0, 0, 0.6);
+                    VerticalLayout {
+                        padding: 6px;
+                        spacing: 2px;
+                        Text {
+                            text: root.menu-playlists ? "Add to playlist" : root.menu-row.title;
+                            height: 28px;
+                            vertical-alignment: center;
+                            x: 10px;
+                            overflow: elide;
+                            font-size: 12px;
+                            font-weight: 600;
+                            color: Theme.subdued;
+                        }
+                        if !root.menu-playlists && is-track : MenuEntry { label: "Add to queue"; shape: Icons.queue; clicked => { root.menu-act("queue"); } }
+                        if !root.menu-playlists && is-track && root.targets.length > 0 : MenuEntry { label: "Add to playlist"; shape: Icons.plus; submenu: true; clicked => { root.menu-playlists = true; } }
+                        if !root.menu-playlists && is-track : MenuEntry { label: "Save to Liked Songs"; shape: Icons.heart; clicked => { root.menu-act("like"); } }
+                        if !root.menu-playlists && is-track : MenuEntry { label: "Start radio"; shape: Icons.radio; clicked => { root.menu-act("radio"); } }
+                        if !root.menu-playlists && is-track : MenuEntry { label: "Go to artist"; shape: Icons.person; clicked => { root.menu-act("artist"); } }
+                        if !root.menu-playlists && is-track : MenuEntry { label: "Go to album"; shape: Icons.disc; clicked => { root.menu-act("album"); } }
+                        if !root.menu-playlists && !is-track : MenuEntry { label: "Open"; shape: Icons.open; clicked => { root.menu-act("open"); } }
+                        if !root.menu-playlists : Rectangle { height: 1px; background: Theme.border; }
+                        if !root.menu-playlists : MenuEntry { label: "Copy link"; shape: Icons.link; clicked => { root.menu-act("copy"); } }
+                        if !root.menu-playlists && is-track && root.editable && !root.menu-sidebar : MenuEntry { label: "Remove from this playlist"; shape: Icons.trash; danger: true; clicked => { root.menu-act("remove"); } }
+                        if !root.menu-playlists && root.menu-sidebar && root.menu-row.uri.starts-with("spotify:playlist:") : MenuEntry { label: "Remove from Your Library"; shape: Icons.trash; danger: true; clicked => { root.menu-act("unfollow"); } }
+                        if root.menu-playlists : MenuEntry { label: "Back"; shape: Icons.back; clicked => { root.menu-playlists = false; } }
+                        if root.menu-playlists : Rectangle { height: 1px; background: Theme.border; }
+                        if root.menu-playlists : VerticalLayout {
+                            spacing: 2px;
+                            for t in root.targets : MenuEntry { label: t.title; shape: Icons.plus; clicked => { root.menu-act("add:" + t.uri); } }
+                        }
                     }
                 }
             }
@@ -853,9 +975,17 @@ slint::slint! {
                     }
                 }
             }
-            // Player bar
+            // Player bar: a floating capsule under the panels.
+            Rectangle {
+            height: 80px;
+            border-radius: 16px;
+            background: Theme.raised;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: rgba(0, 0, 0, 0.5);
             HorizontalLayout {
-                height: 72px;
+                height: 80px;
                 spacing: 16px;
                 padding-left: 8px;
                 padding-right: 8px;
@@ -954,6 +1084,7 @@ slint::slint! {
                         released(v) => { root.set-volume(v, true); }
                     }
                 }
+            }
             }
         }
         }
