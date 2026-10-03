@@ -34,7 +34,7 @@ paths:
 - `Spirc::new` needs a fresh, unconnected `Session`; it connects it itself.
 - `HttpClient::request` turns non-2xx into opaque errors and gives up on 429 when Retry-After > 10 s; use `request_fut` and handle status yourself.
 - Spirc commands are ignored while the device isn't active; local-only effects (e.g. volume) must also be applied directly.
-- A truncated file in the `audio/` cache (e.g. the app killed mid-download) fails to decode with "end of stream", and the Connect session ends; playing a different track works. Kill the app while paused when testing.
+- "Unable to read audio file: end of stream" with "Audio key response timeout" right before it is a dropped session, not a corrupt cache: librespot continues without decryption and the decoder chokes. A truly bad cached file is removed and re-downloaded by librespot itself ("Unable to read cached audio file ... Trying to download it"). Read the log lines before the error before blaming the cache.
 
 ## Style
 - Named constants with a comment saying where the value comes from (measured, Spotify limit, librespot default).
