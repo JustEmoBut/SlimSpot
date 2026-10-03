@@ -1,5 +1,7 @@
 #![windows_subsystem = "windows"]
 
+#[cfg(windows)]
+mod autostart;
 mod covers;
 #[cfg(windows)]
 mod instance;
@@ -52,6 +54,22 @@ fn main() -> Result<(), slint::PlatformError> {
     let (tx, rx) = mpsc::unbounded_channel();
     let icon = app_icon();
     app.set_app_icon(icon.clone());
+    // Launched by the Windows Run entry: stay in the tray.
+    #[cfg(windows)]
+    let start_in_tray = std::env::args().any(|a| a == autostart::TRAY_ARG);
+    #[cfg(windows)]
+    {
+        app.set_start_with_windows(autostart::is_enabled());
+        let weak = app.as_weak();
+        app.on_set_autostart(move |on| {
+            let Some(app) = weak.upgrade() else { return };
+            if let Err(e) = autostart::set(on) {
+                app.set_status(e.into());
+            }
+            // Show what Windows will actually do, even if the change failed.
+            app.set_start_with_windows(autostart::is_enabled());
+        });
+    }
 
     // Closing the window hides it to the tray; playback continues. Quit from the tray or Ctrl+Q.
     app.window().on_close_requested(|| slint::CloseRequestResponse::HideWindow);
@@ -148,11 +166,20 @@ fn main() -> Result<(), slint::PlatformError> {
         media_keys_timer.start(slint::TimerMode::Repeated, MEDIA_KEYS_RETRY, move || {
             let Some(app) = weak.upgrade() else { return timer.stop() };
             tries += 1;
-            if media_keys::setup(&app, &tx) {
-                timer.stop();
+            let done = if media_keys::setup(&app, &tx) {
+                true
             } else if tries >= MEDIA_KEYS_MAX_TRIES {
                 app.set_status("Media keys unavailable (no window handle)".into());
+                true
+            } else {
+                false
+            };
+            if done {
                 timer.stop();
+                // Tray start: the window was only shown so its HWND exists for the media keys.
+                if start_in_tray {
+                    let _ = app.hide();
+                }
             }
         });
     }
@@ -200,6 +227,8 @@ fn main() -> Result<(), slint::PlatformError> {
         rt.block_on(player::run(weak, rx, cover_rx));
     });
 
+    // Shown even when starting in the tray: the media keys need the native window, which
+    // exists only after a first show; it is hidden again as soon as they are attached.
     app.show()?;
     // Not `app.run()`: that ends when the last window closes, but a hidden window must keep playing.
     slint::run_event_loop_until_quit()

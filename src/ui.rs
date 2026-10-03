@@ -100,6 +100,9 @@ slint::slint! {
         in-out property <bool> normalize;
         callback set-quality(int);
         callback set-normalize(bool);
+        // Mirrors the Windows Run registry value (see autostart.rs).
+        in-out property <bool> start-with-windows;
+        callback set-autostart(bool);
         callback cycle-repeat();
         // Lyrics pane replaces the track list while `show-lyrics` is on.
         in-out property <bool> show-lyrics;
@@ -199,6 +202,11 @@ slint::slint! {
                             text: "Normalize volume";
                             checked <=> root.normalize;
                             toggled => { root.set-normalize(self.checked); }
+                        }
+                        CheckBox {
+                            text: "Start with Windows";
+                            checked <=> root.start-with-windows;
+                            toggled => { root.set-autostart(self.checked); }
                         }
                     }
                     if root.show-lyrics : LyricsView {
