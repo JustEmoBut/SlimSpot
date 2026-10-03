@@ -23,6 +23,10 @@ use slint::{ComponentHandle, Model};
 use tokio::sync::mpsc;
 
 use crate::covers::CoverRequest;
+
+// Mini player window: just wide enough for the bar's three sections.
+const MINI_WIDTH: f32 = 860.0;
+const MINI_HEIGHT: f32 = 96.0;
 use crate::player::Command;
 use crate::ui::{App, Tray};
 
@@ -134,8 +138,35 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_play_page(send(|| Command::PlayPage));
     {
         let tx = tx.clone();
-        app.on_filter_library(move |kind, text| {
-            let _ = tx.send(Command::FilterLibrary { kind, text: text.to_string() });
+        app.on_filter_library(move |kind, text, az| {
+            let _ = tx.send(Command::FilterLibrary { kind, text: text.to_string(), az });
+        });
+    }
+    {
+        let tx = tx.clone();
+        app.on_set_sleep(move |minutes| {
+            let _ = tx.send(Command::SleepTimer(minutes));
+        });
+    }
+    app.on_create_playlist(send(|| Command::CreatePlaylist));
+    app.on_rename_playlist(send_str(Command::RenamePlaylist));
+    {
+        // Mini player: remember the full size and shrink to the player bar (and back).
+        let weak = app.as_weak();
+        let full_size = std::cell::Cell::new(None);
+        app.on_toggle_mini(move || {
+            let Some(app) = weak.upgrade() else { return };
+            let window = app.window();
+            let mini = !app.get_mini();
+            if mini {
+                full_size.set(Some(window.size()));
+            }
+            app.set_mini(mini);
+            match (mini, full_size.get()) {
+                (true, _) => window.set_size(slint::LogicalSize::new(MINI_WIDTH, MINI_HEIGHT)),
+                (false, Some(size)) => window.set_size(size),
+                (false, None) => {}
+            }
         });
     }
     let action_tx = tx.clone();

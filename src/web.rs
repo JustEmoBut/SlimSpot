@@ -239,6 +239,25 @@ impl WebApi {
             .collect())
     }
 
+    /// A new private playlist owned by the user (`POST /me/playlists`).
+    pub async fn create_playlist(&mut self, session: &Session, name: &str) -> Result<Item, String> {
+        let body = serde_json::json!({ "name": name, "public": false });
+        let json = self.send(session, http::Method::POST, &format!("{API}/me/playlists"), Some(body)).await?;
+        playlist_row(&json).ok_or_else(|| "Spotify returned no playlist".to_string())
+    }
+
+    pub async fn rename_playlist(&mut self, session: &Session, playlist: &str, name: &str) -> Result<(), String> {
+        let id = playlist.strip_prefix("spotify:playlist:").ok_or("Not a playlist")?;
+        let body = serde_json::json!({ "name": name });
+        self.send(session, http::Method::PUT, &format!("{API}/playlists/{id}"), Some(body)).await.map(|_| ())
+    }
+
+    /// Removes a playlist from the library; for the user's own playlist this is Spotify's "Delete".
+    pub async fn unfollow_playlist(&mut self, session: &Session, playlist: &str) -> Result<(), String> {
+        let id = playlist.strip_prefix("spotify:playlist:").ok_or("Not a playlist")?;
+        self.send(session, http::Method::DELETE, &format!("{API}/playlists/{id}/followers"), None).await.map(|_| ())
+    }
+
     /// Plays `uri` after the current track on the active device.
     pub async fn add_to_queue(&mut self, session: &Session, uri: &str) -> Result<(), String> {
         self.send(session, http::Method::POST, &format!("{API}/me/player/queue?uri={uri}"), None).await.map(|_| ())

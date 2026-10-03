@@ -21,6 +21,9 @@ paths:
 - `ListView.viewport-y` is deprecated in 1.18; use `content-y`.
 - The software renderer ignores `border-radius` in `clip: true` (its `combine_clip` drops the radius). Rounded or circular images must be masked in the pixels; a `Rectangle`'s own rounded background still renders fine.
 - A `checkable` Button flips its own `checked` on click and breaks a one-way binding; for state owned by the backend use a plain Button (or `primary:`) and set it from Rust.
+- An element inside `if cond : ...` can't be referenced by id from outside it, and a PopupWindow's children can't be written from outside the popup: collapse with `visible` + `min/max-height: 0` instead of `if`, and bind popup inputs to root properties (`text <=> root.x`).
+- A layout's minimum height comes from its children; `max-height: 0` alone doesn't shrink it, an explicit `min-height: 0px` is needed too.
+- `ContextMenuArea` has a `show(point)` function for opening its menu from a button.
 - Computer-use/SendKeys Escape presses never reach the app (no key event at all), while a real keyboard's Esc works: test Esc by hand, don't "fix" it from automated runs.
 - To check the UI visually, capture the window with Win32 `PrintWindow(hwnd, dc, PW_RENDERFULLCONTENT)` from Windows PowerShell 5.1 (`System.Drawing`); screen capture grabs whatever window is in front. The app window is class `Window Class`, title `SlimSpot` (the tray has its own hidden window).
 
@@ -28,6 +31,7 @@ paths:
 - `Spirc::new` needs a fresh, unconnected `Session`; it connects it itself.
 - `HttpClient::request` turns non-2xx into opaque errors and gives up on 429 when Retry-After > 10 s; use `request_fut` and handle status yourself.
 - Spirc commands are ignored while the device isn't active; local-only effects (e.g. volume) must also be applied directly.
+- A truncated file in the `audio/` cache (e.g. the app killed mid-download) fails to decode with "end of stream", and the Connect session ends; playing a different track works. Kill the app while paused when testing.
 
 ## Style
 - Named constants with a comment saying where the value comes from (measured, Spotify limit, librespot default).

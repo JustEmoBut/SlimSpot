@@ -45,6 +45,10 @@ slint::slint! {
         out property <string> home: "M4 11 L12 4 L20 11 V20 H14.5 V14 H9.5 V20 H4 Z";
         out property <string> more: "M5 10.5 H8 V13.5 H5 Z M10.5 10.5 H13.5 V13.5 H10.5 Z M16 10.5 H19 V13.5 H16 Z";
         out property <string> check: "M6.5 12.5 L10.5 16.5 L17.5 8.5";
+        out property <string> plus: "M12 5 V19 M5 12 H19";
+        out property <string> pencil: "M5 19 L6 14.5 L15.5 5 L19 8.5 L9.5 18 Z M13.5 7 L17 10.5";
+        out property <string> panel: "M3.5 5 H20.5 V19 H3.5 Z M14.5 5 V19";
+        out property <string> mini: "M3.5 5 H20.5 V19 H3.5 Z M11 12 H18 V17 H11 Z";
         out property <string> bars: "M5 10 H8 V19 H5 Z M10.5 5 H13.5 V19 H10.5 Z M16 13 H19 V19 H16 Z";
         out property <string> queue: "M4 6 H20 M4 11 H20 M4 16 H11 M15 14 V20 L20 17 Z";
     }
@@ -176,6 +180,8 @@ slint::slint! {
         in property <bool> editable;
         // Position shown left of the cover in track lists; 0 hides it.
         in property <int> number;
+        // Sidebar rows can be removed from the library.
+        in property <bool> sidebar;
         callback action(string);
         // Fired whenever this (possibly recycled) row instance shows a row without a loaded cover.
         callback need-cover();
@@ -274,6 +280,7 @@ slint::slint! {
                 }
                 if is-track && root.editable : MenuItem { title: "Remove from this playlist"; activated => { root.action("remove"); } }
                 if !is-track : MenuItem { title: "Open"; activated => { root.action("open"); } }
+                if root.sidebar && data.uri.starts-with("spotify:playlist:") : MenuItem { title: "Remove from Your Library"; activated => { root.action("unfollow"); } }
                 MenuSeparator {}
                 MenuItem { title: "Copy link"; activated => { root.action("copy"); } }
             }
@@ -322,7 +329,7 @@ slint::slint! {
         in property <bool> chosen;
         height: 30px;
         mouse-cursor: pointer;
-        min-width: t.preferred-width + 24px;
+        min-width: t.preferred-width + 20px;
         Rectangle {
             border-radius: 15px;
             background: root.chosen ? Theme.text : root.has-hover ? Theme.hover : Theme.raised;
@@ -339,8 +346,9 @@ slint::slint! {
         callback quit();
         preferred-width: 1040px;
         preferred-height: 680px;
-        min-width: 760px;
-        min-height: 480px;
+        min-width: root.mini ? 480px : 760px;
+        min-height: root.mini ? 72px : 480px;
+        always-on-top: root.mini;
         in property <string> status: "Starting...";
         // Big heading of the main panel and the back/forward arrows next to it.
         in property <string> page-title: "Home";
@@ -381,8 +389,26 @@ slint::slint! {
         callback go-to-playing();
         callback go-home();
         callback play-page();
-        callback filter-library(int, string);
+        callback filter-library(int, string, bool);
         in property <bool> numbered;
+        // Compact window with only the player bar.
+        in-out property <bool> mini;
+        callback toggle-mini();
+        // Right-hand "Now playing" panel with a large cover.
+        in-out property <bool> show-now-panel;
+        in-out property <image> now-big;
+        // Header cover of playlist/album pages; Rust sets the URL, the image is fetched on change.
+        in property <string> page-cover-url;
+        in property <image> page-cover;
+        changed page-cover-url => { if (page-cover-url != "") { root.need-cover(4, 0, page-cover-url, page-cover-url); } }
+        changed show-now-panel => { if (show-now-panel && now.cover-url != "") { root.need-cover(3, 0, now.uri, now.cover-url); } }
+        // Sleep timer choice: 0 off, -1 end of track, otherwise minutes.
+        in-out property <int> sleep-minutes;
+        callback set-sleep(int);
+        callback create-playlist();
+        callback rename-playlist(string);
+        in-out property <string> rename-text;
+        in-out property <bool> library-az;
         in property <bool> page-playable;
         in-out property <int> library-kind;
         in property <[Row]> targets;
@@ -426,6 +452,7 @@ slint::slint! {
         in-out property <bool> seeking;
         changed now => {
             if (now.cover-url != "" && now.cover.width == 0) { root.need-cover(2, 0, now.uri, now.cover-url) }
+            if (show-now-panel && now.cover-url != "") { root.now-big = now.cover; root.need-cover(3, 0, now.uri, now.cover-url) }
             root.now-playing-changed();
         }
         changed playing => { root.now-playing-changed(); }
@@ -473,9 +500,14 @@ slint::slint! {
         VerticalLayout {
             padding: 8px;
             spacing: 8px;
+            // Collapsed rather than removed in mini mode: ids inside (the search box) stay reachable.
             HorizontalLayout {
                 spacing: 8px;
                 vertical-stretch: 1;
+                visible: !root.mini;
+                // Explicit bounds override the children's minimum, which would push the bar out of a mini window.
+                min-height: 0px;
+                max-height: root.mini ? 0px : 100000px;
                 // Your Library
                 Rectangle {
                     width: 280px;
@@ -484,23 +516,35 @@ slint::slint! {
                     VerticalLayout {
                         padding: 8px;
                         spacing: 8px;
-                        Text {
-                            text: "Your Library";
-                            font-size: 16px;
-                            font-weight: 700;
-                            color: Theme.text;
-                            horizontal-alignment: left;
+                        HorizontalLayout {
+                            padding-left: 8px;
                             height: 32px;
-                            vertical-alignment: center;
-                            x: 8px;
+                            Text {
+                                text: "Your Library";
+                                font-size: 16px;
+                                font-weight: 700;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            IconButton { y: (parent.height - self.height) / 2; shape: Icons.plus; dot: false; size: 18px; clicked => { root.create-playlist(); } }
                         }
                         HorizontalLayout {
-                            spacing: 6px;
+                            spacing: 4px;
                             alignment: start;
-                            for label[k] in ["All", "Playlists", "Albums", "Artists"] : Chip {
+                            // Like Spotify: no "All" chip; clicking the chosen filter again clears it.
+                            for label[i] in ["Playlists", "Albums", "Artists"] : Chip {
                                 label: label;
-                                chosen: root.library-kind == k;
-                                clicked => { root.library-kind = k; root.filter-library(k, lib-filter.text); }
+                                chosen: root.library-kind == i + 1;
+                                clicked => {
+                                    root.library-kind = root.library-kind == i + 1 ? 0 : i + 1;
+                                    root.filter-library(root.library-kind, lib-filter.text, root.library-az);
+                                }
+                            }
+                            Chip {
+                                label: "A-Z";
+                                chosen: root.library-az;
+                                clicked => { root.library-az = !root.library-az; root.filter-library(root.library-kind, lib-filter.text, root.library-az); }
                             }
                         }
                         Rectangle {
@@ -516,7 +560,7 @@ slint::slint! {
                                 single-line: true;
                                 font-size: 13px;
                                 color: Theme.text;
-                                edited => { root.filter-library(root.library-kind, self.text); }
+                                edited => { root.filter-library(root.library-kind, self.text, root.library-az); }
                             }
                             if lib-filter.text == "" : Text {
                                 x: 32px;
@@ -532,6 +576,7 @@ slint::slint! {
                                 data: row;
                                 cover-size: 48px;
                                 selected: row.uri == root.current-list;
+                                sidebar: true;
                                 clicked => { root.open-list(row.uri); }
                                 action(a) => { root.row-action(a, row.uri); }
                                 need-cover => { root.need-cover(1, i, row.uri, row.cover-url); }
@@ -604,6 +649,16 @@ slint::slint! {
                         }
                         if !root.show-lyrics : HorizontalLayout {
                             spacing: 16px;
+                            if root.page-cover-url != "" : Rectangle {
+                                width: 96px;
+                                height: 96px;
+                                border-radius: 6px;
+                                clip: true;
+                                background: Theme.raised;
+                                drop-shadow-blur: 12px;
+                                drop-shadow-color: #00000080;
+                                Image { source: root.page-cover; width: parent.width; height: parent.height; image-fit: cover; }
+                            }
                             if root.page-playable : TouchArea {
                                 width: 56px;
                                 height: 56px;
@@ -620,7 +675,18 @@ slint::slint! {
                                 spacing: 2px;
                                 alignment: center;
                                 if root.page-kind != "" : Text { text: root.page-kind; font-size: 12px; font-weight: 600; color: Theme.text; }
-                                Text { text: root.page-title; font-size: 32px; font-weight: 800; color: Theme.text; overflow: elide; }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+                                    Text { text: root.page-title; font-size: 32px; font-weight: 800; color: Theme.text; overflow: elide; }
+                                    if root.editable : IconButton {
+                                        y: (parent.height - self.height) / 2;
+                                        shape: Icons.pencil;
+                                        dot: false;
+                                        size: 18px;
+                                        clicked => { root.rename-text = root.page-title; rename-popup.show(); }
+                                    }
+                                }
                             }
                         }
                         Text { text: root.status; font-size: 12px; color: Theme.subdued; overflow: elide; }
@@ -651,12 +717,66 @@ slint::slint! {
                         }
                     }
                 }
+                if root.show-now-panel : Rectangle {
+                    width: 300px;
+                    border-radius: 8px;
+                    background: Theme.panel;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+                        alignment: start;
+                        Text { text: "Now playing"; font-size: 16px; font-weight: 700; color: Theme.text; }
+                        Rectangle {
+                            height: self.width;
+                            border-radius: 8px;
+                            clip: true;
+                            background: Theme.raised;
+                            Image { source: root.now-big; width: parent.width; height: parent.height; image-fit: cover; }
+                        }
+                        Text { text: now.title; font-size: 22px; font-weight: 700; color: Theme.text; wrap: word-wrap; }
+                        Text { text: now.artist; font-size: 14px; color: Theme.subdued; wrap: word-wrap; }
+                    }
+                }
+            }
+            rename-popup := PopupWindow {
+                x: 320px;
+                y: 120px;
+                width: 360px;
+                height: 120px;
+                close-policy: close-on-click-outside;
+                Rectangle {
+                    background: Theme.raised;
+                    border-radius: 8px;
+                    drop-shadow-blur: 16px;
+                    drop-shadow-color: #00000099;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+                        Text { text: "Rename playlist"; font-size: 15px; font-weight: 700; color: Theme.text; }
+                        Rectangle {
+                            height: 36px;
+                            border-radius: 4px;
+                            background: Theme.field;
+                            TextInput {
+                                text <=> root.rename-text;
+                                x: 10px;
+                                width: parent.width - 20px;
+                                height: parent.height;
+                                vertical-alignment: center;
+                                single-line: true;
+                                font-size: 14px;
+                                color: Theme.text;
+                                accepted => { root.rename-playlist(self.text); rename-popup.close(); }
+                            }
+                        }
+                    }
+                }
             }
             settings-popup := PopupWindow {
-                x: root.width - 340px;
+                x: root.width - 420px;
                 y: 64px;
-                width: 320px;
-                height: 210px;
+                width: 400px;
+                height: 280px;
                 close-policy: close-on-click-outside;
                 Rectangle {
                     background: Theme.raised;
@@ -681,6 +801,16 @@ slint::slint! {
                             text: "Normalize volume";
                             checked <=> root.normalize;
                             toggled => { root.set-normalize(self.checked); }
+                        }
+                        Text { text: "Sleep timer"; font-size: 13px; font-weight: 700; color: Theme.text; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            for choice[i] in [{ label: "Off", m: 0 }, { label: "15 min", m: 15 }, { label: "30 min", m: 30 }, { label: "1 hr", m: 60 }, { label: "End of track", m: -1 }] : Chip {
+                                label: choice.label;
+                                chosen: root.sleep-minutes == choice.m;
+                                clicked => { root.sleep-minutes = choice.m; root.set-sleep(choice.m); }
+                            }
                         }
                         CheckBox {
                             text: "Start with Windows";
@@ -802,6 +932,8 @@ slint::slint! {
                     width: 30%;
                     spacing: 4px;
                     alignment: end;
+                    IconButton { y: (parent.height - self.height) / 2; shape: Icons.panel; active: root.show-now-panel; size: 18px; clicked => { root.show-now-panel = !root.show-now-panel; } }
+                    IconButton { y: (parent.height - self.height) / 2; shape: Icons.mini; active: root.mini; size: 18px; clicked => { root.toggle-mini(); } }
                     IconButton { y: (parent.height - self.height) / 2; shape: Icons.lyrics; active: root.show-lyrics; size: 18px; clicked => { root.show-lyrics = !root.show-lyrics; } }
                     IconButton { y: (parent.height - self.height) / 2; shape: Icons.queue; size: 18px; clicked => { root.show-lyrics = false; root.show-queue(); } }
                     IconButton { y: (parent.height - self.height) / 2; shape: Icons.radio; size: 18px; enabled: root.now.uri != ""; clicked => { root.start-radio(); } }

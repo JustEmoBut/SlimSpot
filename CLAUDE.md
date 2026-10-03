@@ -22,8 +22,8 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 | `main.rs` | Wires Slint callbacks to `player::Command`, tray, UI timers (seek interpolation, minimize-restore repaint, media-key setup retry) |
 | `ui.rs` | `slint::slint!` markup + helpers that push state to the UI thread |
 | `player.rs` | Backend tokio thread: login, Spotify Connect device (Spirc), command/event loop, reconnect |
-| `web.rs` | Spotify Web API (separate OAuth grant): search (+ paged tracks), queue (view, add), playlists (+ add/remove tracks), Liked Songs, albums, artist albums, saved albums, followed artists, like/unlike, devices, transfer |
-| `covers.rs` | Thumbnails for instantiated rows only, 64 px, max 300 decoded |
+| `web.rs` | Spotify Web API (separate OAuth grant): search (+ paged tracks), queue (view, add), recently played, liked checks, playlists (create, rename, remove, add/remove tracks), Liked Songs, albums, artist albums, saved albums, followed artists, like/unlike, devices, transfer |
+| `covers.rs` | Thumbnails for instantiated rows only, 64 px, max 300 decoded; 300 px for the now-playing panel and page header (one each) |
 | `settings.rs` | `settings.json`: volume, shuffle, repeat, quality, normalize, last session |
 | `media_keys.rs` | Windows SystemMediaTransportControls (windows-only) |
 | `logger.rs` | File logger for warn/error, including librespot's |
@@ -46,7 +46,7 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - **Keyboard**: shortcuts live in one root `FocusScope`; Esc returns focus to it from the search box.
 - **Lyrics**: fetched per track change, not cached on disk; shown in place of the track list (`Ctrl+Y`). Fixed line height + elide so the sung line is centered arithmetically; highlighted on the 500 ms position tick.
 - **Radio**: `spclient().get_context("spotify:station:track:<id>")` is resolved once and its 50 tracks are shown and played as a track list. Spotify reshuffles a station on every resolve, so loading the station context into Spirc would play a different order than the list shown.
-- **Track metadata** (radio, artist popular tracks) comes from librespot `Track::get`, fetched concurrently in `player::track_items`. Radio raised private RAM to ~25 MB (vs ~17 MB) on 2026-10-03, cause unconfirmed; batching the requests is the noted fix if it matters.
+- **Track metadata** (radio, artist popular tracks, Spotify-made playlists) comes from librespot `Track::get` in `player::track_items`, at most 8 lookups in flight. All 50 radio lookups at once left private RAM ~10 MB higher for good (15.9 -> 26 MB); capped, a radio costs ~2.5 MB (2026-10-04).
 - **Design**: Spotify-like dark UI (familiarity for the owner). Colors live in the Slint `Theme` global, icons in `Icons` as 24×24 SVG path strings rendered with `Path` (no icon font/assets). Settings sit in a popup behind the top-right icon. Spotify's logo and icon artwork are not copied.
 - **Queue view** (`Ctrl+U`, bar icon): Spirc keeps its queue private, so the page comes from Web API `/me/player/queue`. It opens as a track list; clicking a row plays that list, not the original context.
 - **Search "Show more tracks"**: a full search page (10 tracks) ends with a `slimspot:more` row; clicking it appends the next `offset` page to the same history entry (`nav::History::current_mut`). Rows with a `slimspot:` URI have no context menu.
@@ -57,6 +57,11 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - **Home** is the recently played tracks (`/me/player/recently-played`, opened at startup and by the Home button). Spotify's own "Made for you" shelf is not reachable: Web API search for "Daily Mix"/"Discover Weekly" only finds other users' copies (Spotifast's approach, verified 2026-10-04). Opening a Spotify-made playlist falls back to librespot `get_context` when the Web API refuses it.
 - **Track rows** carry `duration_ms` and `liked`. Liked marks are fetched after a page is on screen (`mark_liked`, 40 URIs per request, first 400 tracks) and set in place (`set_liked_rows`) so covers stay. Rows of playlists/albums/radio/queue are numbered; the header shows "N songs, about X hr" and a green play button that starts the page from its first track. Hovering a row shows "..." which opens the same `ContextMenuArea` via `show()`.
 - **Library filters** (All/Playlists/Albums/Artists + name filter) filter the loaded sidebar rows in the backend (`Command::FilterLibrary`); no request.
+- **Library**: "+" creates "My Playlist #N" (private) and opens it; the pencil next to an own playlist's title renames it; "Remove from Your Library" in a sidebar row's menu unfollows (Spotify's delete for own playlists). Changes update the sidebar and "Add to playlist" targets without a reload. "A-Z" sorts the sidebar; there is no "All" chip, clicking the chosen filter clears it.
+- **Now playing panel** (bar button) shows the playing track's 300 px cover; **page headers** of playlists/albums show the page's cover. Rows keep only the smallest cover URL, so `covers::larger_cover` rewrites it to the 300 px variant (album image ids, mosaic paths).
+- **Mini player** (bar button): the panels are collapsed (`visible: false`, `min-height: 0`, `max-height: 0`), not removed, because ids inside them (the search box) are referenced from the root; the window shrinks to 860x96 and stays on top, and the previous size is restored.
+- **Sleep timer** (settings): 15/30/60 min pauses via a `sleep_until` branch in the backend loop; "End of track" pauses on the next `TrackChanged`.
+- **Queue rows**: clicking one skips ahead with `Spirc::next` (the playing context carries on) and drops the passed rows locally, since `/me/player/queue` lags right after a skip.
 - **Status line** holds transient messages and errors; play/pause resets it to the page's item count instead of "Playing".
 - **Cover tint**: the alpha-weighted average color of the now-playing cover, dimmed to 45%, colors a gradient at the top of the main panel (`now-tint`).
 - **Rounded covers are baked into pixels** (`covers::corner_coverage`): the software renderer ignores `border-radius` when clipping images. Artists are round, other covers get small rounded corners.
@@ -69,6 +74,7 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 ## Known external constraints (verified against the live API, 2026-10-03)
 - Development Mode Web API: `search` and `/artists/{id}/albums` reject `limit > 10`; playlists/saved tracks accept 50. Search `offset` works up to 990.
 - `/me/player/queue` works (empty: `{"currently_playing":null,"queue":[]}`). `POST /me/player/queue?uri=` answers 404 with no active device and 200 with a non-JSON body on success, so non-GET 2xx bodies that don't parse count as success.
+- `POST /me/playlists` creates, `PUT /playlists/{id}` renames, `DELETE /playlists/{id}/followers` removes from the library (all verified live 2026-10-04).
 - `/me/library/contains` rejects more than 40 URIs (400 "Too many uris requested"). Recently played needs `user-read-recently-played`.
 - Playlist edits need `playlist-modify-private`/`-public`; `POST /playlists/{id}/items` `{"uris":[..]}` adds, `DELETE` with `{"items":[{"uri":..}]}` removes (both verified live).
 - `/artists/{id}/top-tracks` returns 403 → top tracks come from librespot metadata (`Artist::get` + `Track::get`).

@@ -76,8 +76,13 @@ pub enum Command {
     Home,
     /// Play the current page from its first track (the header's play button).
     PlayPage,
-    /// Sidebar filter: 0 all, 1 playlists, 2 albums, 3 artists; plus a name filter.
-    FilterLibrary { kind: i32, text: String },
+    /// Sidebar filter: 0 all, 1 playlists, 2 albums, 3 artists; plus a name filter and A-Z order.
+    FilterLibrary { kind: i32, text: String, az: bool },
+    /// Pause after this many minutes; -1 = at the end of the current track, 0 = off.
+    SleepTimer(i32),
+    CreatePlaylist,
+    /// Rename the playlist on screen.
+    RenamePlaylist(String),
 }
 
 pub fn cache_dir() -> PathBuf {
@@ -205,13 +210,19 @@ async fn artist_top_tracks(session: &Session, artist_uri: &str) -> Result<(Strin
 
 /// Titles, artists and covers for track URIs via librespot metadata, fetched concurrently and
 /// returned in input order. Tracks that fail to load are left out rather than failing the list.
-// ponytail: all requests in flight at once (50 for a radio). After a radio the private RAM sat at
-// ~25 MB instead of ~17 MB (measured 2026-10-03, cause unconfirmed); fetch in batches if it matters.
+// With all 50 radio lookups in flight at once private RAM rose ~10 MB and stayed (15.9 -> 26 MB,
+// 2026-10-04, a plain track change cost 1 MB), so lookups run a few at a time.
+const TRACK_LOOKUPS_IN_FLIGHT: usize = 8;
+
 async fn track_items(session: &Session, uris: Vec<SpotifyUri>) -> Vec<Item> {
+    let limit = std::sync::Arc::new(tokio::sync::Semaphore::new(TRACK_LOOKUPS_IN_FLIGHT));
     let mut tasks = tokio::task::JoinSet::new();
     for (index, uri) in uris.into_iter().enumerate() {
-        let session = session.clone();
-        tasks.spawn(async move { (index, Track::get(&session, &uri).await.ok().map(|track| track_item(&uri, track))) });
+        let (session, limit) = (session.clone(), limit.clone());
+        tasks.spawn(async move {
+            let _permit = limit.acquire().await;
+            (index, Track::get(&session, &uri).await.ok().map(|track| track_item(&uri, track)))
+        });
     }
     let mut found: Vec<(usize, Item)> = tasks.join_all().await.into_iter().filter_map(|(i, item)| Some((i, item?))).collect();
     found.sort_by_key(|(i, _)| *i);
@@ -263,6 +274,17 @@ async fn context_tracks(session: &Session, context_uri: &str) -> Result<Vec<Item
         .filter(|u| matches!(u, SpotifyUri::Track { .. }) && seen.insert(u.to_uri().unwrap_or_default()))
         .collect();
     Ok(track_items(session, uris).await)
+}
+
+/// Header label of a page opened from `uri`.
+fn kind_of(uri: &str) -> &'static str {
+    if uri.starts_with("spotify:album:") {
+        "Album"
+    } else if uri.starts_with("spotify:artist:") {
+        "Artist"
+    } else {
+        "Playlist"
+    }
 }
 
 /// Rows that open a page instead of playing.
@@ -359,6 +381,8 @@ struct Page {
     editable: bool,
     /// Small label above the title ("Playlist", "Album", ...).
     kind: &'static str,
+    /// Header cover (playlists and albums), or "".
+    cover_url: String,
 }
 
 fn more_row() -> Item {
@@ -389,11 +413,23 @@ fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<S
     // Spotify numbers the rows of track lists, not of mixed pages like an artist's or search.
     let numbered = matches!(page.kind, "Playlist" | "Album" | "Radio" | "Up next");
     let playable = page.rows.iter().any(|r| r.uri.starts_with("spotify:track:"));
+    let cover = page.cover_url.clone();
     let _ = ui.upgrade_in_event_loop(move |app| {
+        if app.get_page_cover_url() != cover.as_str() {
+            app.set_page_cover(Default::default());
+            app.set_page_cover_url(cover.into());
+        }
         app.set_editable(editable);
         app.set_numbered(numbered);
         app.set_page_playable(playable);
     });
+}
+
+/// Pushes the sidebar and the "Add to playlist" targets after the library changed.
+fn refresh_library(ui: &slint::Weak<App>, library: &[Item], own_lists: &[Item]) {
+    set_rows(ui, library.to_vec(), App::set_lists);
+    set_rows(ui, own_lists.to_vec(), App::set_targets);
+    let _ = ui.upgrade_in_event_loop(|app| app.set_library_kind(0));
 }
 
 /// Scrolls the track list to `uri` if it is on the current page.
@@ -558,6 +594,9 @@ pub async fn run(
     let mut own_lists: Vec<Item> = Vec::new();
     // Set by GoToPlaying: scroll to this track once its page has loaded.
     let mut reveal: Option<String> = None;
+    // Sleep timer: pause at this instant, or when the playing track ends.
+    let mut sleep_at: Option<tokio::time::Instant> = None;
+    let mut sleep_after_track = false;
     if let Some(w) = web.as_mut() {
         set_status(&ui, "Loading playlists...");
         let mut lists = vec![Item { title: "Liked Songs".into(), uri: LIKED_SONGS.into(), ..Default::default() }];
@@ -649,12 +688,18 @@ pub async fn run(
                             };
                             let context = if uri == LIKED_SONGS { format!("spotify:user:{}:collection", session.username()) } else { uri.clone() };
                             let editable = own_lists.iter().any(|l| l.uri == uri);
-                            let kind = if uri.starts_with("spotify:album:") { "Album" } else if uri.starts_with("spotify:artist:") { "Artist" } else { "Playlist" };
+                            // Albums show their own cover; playlists the sidebar row's.
+                            let cover_url = match kind_of(&uri) {
+                                "Album" => rows.first().map(|r| r.cover_url.clone()).unwrap_or_default(),
+                                "Playlist" => find_item(&nav, &library, None, &uri).map(|i| i.cover_url.clone()).unwrap_or_default(),
+                                _ => String::new(),
+                            };
+                            let kind = kind_of(&uri);
                             // Only sidebar entries get highlighted.
                             let sidebar = uri == LIKED_SONGS || uri.starts_with("spotify:playlist:");
                             let list = if sidebar { uri } else { String::new() };
                             let reveal_row = reveal.take().filter(|_| playing_context.as_ref() == Some(&context));
-                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Context(context), list, more: None, editable, kind });
+                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Context(context), list, more: None, editable, kind, cover_url });
                             if let Some(track) = reveal_row {
                                 reveal_track(&ui, &nav, &track);
                             }
@@ -698,11 +743,23 @@ pub async fn run(
                     match w.queue(&session).await {
                         Ok(rows) => {
                             let uris = rows.iter().map(|r| r.uri.clone()).collect();
-                            open_page(&ui, &mut nav, &mut shown, Page { title: "Queue".into(), rows, shown: Shown::Tracks(uris), list: String::new(), more: None, editable: false, kind: "Up next" });
+                            open_page(&ui, &mut nav, &mut shown, Page { title: "Queue".into(), rows, shown: Shown::Tracks(uris), list: String::new(), more: None, editable: false, kind: "Up next", cover_url: String::new() });
                             mark_liked(&ui, w, &session, &mut nav).await;
                         }
                         Err(e) => set_status(&ui, e),
                     }
+                }
+                // A queue row: skip ahead to it, so the playing context carries on afterwards.
+                Command::PlayUri(uri) if nav.current().is_some_and(|p| p.kind == "Up next") => {
+                    let ahead = nav.current().and_then(|p| p.rows.iter().position(|r| r.uri == uri)).unwrap_or(0);
+                    for _ in 0..=ahead {
+                        spirc_result(&ui, spirc.next());
+                    }
+                    // Spotify's queue endpoint lags behind the skip; drop the passed rows locally instead.
+                    if let Some(page) = nav.current_mut() {
+                        page.rows.drain(..=ahead.min(page.rows.len().saturating_sub(1)));
+                    }
+                    show_current(&ui, &nav, &mut shown);
                 }
                 Command::PlayUri(uri) => {
                     set_status(&ui, "Loading...");
@@ -738,7 +795,7 @@ pub async fn run(
                                 rows.push(more_row());
                             }
                             let title = format!("Search: {}", q.trim());
-                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Tracks(tracks), list: String::new(), more, editable: false, kind: "Search" });
+                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Tracks(tracks), list: String::new(), more, editable: false, kind: "Search", cover_url: String::new() });
                             mark_liked(&ui, w, &session, &mut nav).await;
                         }
                         Err(e) => set_status(&ui, e),
@@ -793,7 +850,11 @@ pub async fn run(
                                 more: None,
                                 editable: false,
                                 kind: "Radio",
+                                cover_url: String::new(),
                             });
+                            if let Some(w) = web.as_mut() {
+                                mark_liked(&ui, w, &session, &mut nav).await;
+                            }
                             playing_context = None;
                             pending_resume = None;
                             let first = uris[0].clone();
@@ -868,6 +929,20 @@ pub async fn run(
                             }
                             None
                         }
+                        "unfollow" => {
+                            if let Some(w) = web.as_mut() {
+                                match w.unfollow_playlist(&session, &uri).await {
+                                    Ok(()) => {
+                                        library.retain(|i| i.uri != uri);
+                                        own_lists.retain(|i| i.uri != uri);
+                                        refresh_library(&ui, &library, &own_lists);
+                                        set_status(&ui, format!("Removed \"{}\" from Your Library", item.title));
+                                    }
+                                    Err(e) => set_status(&ui, e),
+                                }
+                            }
+                            None
+                        }
                         "copy" => {
                             #[cfg(windows)]
                             match crate::clipboard::web_link(&uri) {
@@ -901,6 +976,7 @@ pub async fn run(
                                 more: None,
                                 editable: false,
                                 kind: "Home",
+                                cover_url: String::new(),
                             });
                             mark_liked(&ui, w, &session, &mut nav).await;
                         }
@@ -913,9 +989,9 @@ pub async fn run(
                         let _ = tx.send(Command::PlayUri(row.uri.clone()));
                     }
                 }
-                Command::FilterLibrary { kind, text } => {
+                Command::FilterLibrary { kind, text, az } => {
                     let text = text.trim().to_lowercase();
-                    let rows = library
+                    let mut rows: Vec<Item> = library
                         .iter()
                         .filter(|i| match kind {
                             1 => i.uri == LIKED_SONGS || i.uri.starts_with("spotify:playlist:"),
@@ -926,7 +1002,54 @@ pub async fn run(
                         .filter(|i| text.is_empty() || i.title.to_lowercase().contains(&text) || i.artist.to_lowercase().contains(&text))
                         .cloned()
                         .collect();
+                    if az {
+                        rows.sort_by_key(|i| i.title.to_lowercase());
+                    }
                     set_rows(&ui, rows, App::set_lists);
+                }
+                Command::SleepTimer(minutes) => {
+                    sleep_at = (minutes > 0).then(|| tokio::time::Instant::now() + Duration::from_secs(minutes as u64 * 60));
+                    sleep_after_track = minutes < 0;
+                    set_status(&ui, match minutes {
+                        0 => "Sleep timer off".to_string(),
+                        m if m < 0 => "Pausing after this track".to_string(),
+                        m => format!("Pausing in {m} min"),
+                    });
+                }
+                Command::CreatePlaylist => {
+                    let Some(w) = web.as_mut() else { continue };
+                    let name = format!("My Playlist #{}", own_lists.len() + 1);
+                    match w.create_playlist(&session, &name).await {
+                        Ok(item) => {
+                            // New playlists come first, below Liked Songs, as in Spotify.
+                            library.insert(1.min(library.len()), item.clone());
+                            own_lists.insert(0, item.clone());
+                            refresh_library(&ui, &library, &own_lists);
+                            let _ = tx.send(Command::OpenList(item.uri));
+                        }
+                        Err(e) => set_status(&ui, e),
+                    }
+                }
+                Command::RenamePlaylist(name) => {
+                    let name = name.trim().to_string();
+                    let list = nav.current().filter(|p| p.editable).map(|p| p.list.clone());
+                    let (Some(w), Some(list)) = (web.as_mut(), list) else { continue };
+                    if name.is_empty() {
+                        continue;
+                    }
+                    match w.rename_playlist(&session, &list, &name).await {
+                        Ok(()) => {
+                            for item in library.iter_mut().chain(own_lists.iter_mut()).filter(|i| i.uri == list) {
+                                item.title = name.clone();
+                            }
+                            if let Some(page) = nav.current_mut() {
+                                page.title = name.clone();
+                            }
+                            refresh_library(&ui, &library, &own_lists);
+                            set_page_header(&ui, nav.current().map(|p| p.kind).unwrap_or(""), name, nav.can_back(), nav.can_forward());
+                        }
+                        Err(e) => set_status(&ui, e),
+                    }
                 }
                 Command::GoToPlaying => {
                     let Some(track) = now_uri.clone() else { continue };
@@ -1024,10 +1147,24 @@ pub async fn run(
                 set_status(&ui, "Reconnected");
                 resume(&ui, &spirc, shown.as_ref(), &settings, now_uri.as_deref(), position, was_playing);
             },
+            _ = async { tokio::time::sleep_until(sleep_at.expect("guarded")).await }, if sleep_at.is_some() => {
+                sleep_at = None;
+                spirc_result(&ui, spirc.pause());
+                set_status(&ui, "Sleep timer: paused");
+            },
             Some(ev) = events.recv() => {
                 match ev {
                     PlayerEvent::TrackChanged { audio_item } => {
                         let item = now_playing(&audio_item);
+                        if sleep_after_track && now_uri.is_some() {
+                            sleep_after_track = false;
+                            spirc_result(&ui, spirc.pause());
+                            set_status(&ui, "Sleep timer: paused");
+                        }
+                        // Without a cover the previous track's tint would linger.
+                        if item.cover_url.is_empty() {
+                            let _ = ui.upgrade_in_event_loop(|app| app.set_now_tint(slint::Color::from_rgb_u8(0x12, 0x12, 0x12)));
+                        }
                         now_uri = Some(item.uri.clone());
                         now_item = Some(item.clone());
                         pending_resume = None;

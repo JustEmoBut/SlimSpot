@@ -15,10 +15,13 @@ const COVER_PX: u32 = 64;
 // ~4.7 MiB of pixels at most, far more than the rows visible at once.
 const MAX_LOADED_COVERS: usize = 300;
 const COVER_FETCHES_IN_FLIGHT: usize = 6;
+// Now-playing panel and page header covers (kinds 3 and 4): 300 px is Spotify's middle size.
+const BIG_COVER_PX: u32 = 300;
 // Corner radius baked into non-artist covers, in thumbnail pixels (~4 px on a 48 px row at 1x).
 const CORNER_PX: f32 = 6.0;
 
-/// kind: 0 = track list, 1 = sidebar, 2 = now-playing bar (matches the Slint callback).
+/// kind: 0 = track list, 1 = sidebar, 2 = now-playing bar, 3 = now-playing panel, 4 = page header
+/// (matches the Slint callback).
 pub struct CoverRequest {
     pub kind: i32,
     pub index: usize,
@@ -42,7 +45,8 @@ pub async fn worker(session: Session, ui: slint::Weak<App>, mut rx: mpsc::Unboun
             // A missing cover leaves the grey placeholder; nothing else depends on it.
             // Artists are shown round, like Spotify.
             let round = req.uri.starts_with("spotify:artist:");
-            if let Ok(pixels) = fetch_thumbnail(&session, &req.url, round).await {
+            let (url, px) = if req.kind >= 3 { (larger_cover(&req.url), BIG_COVER_PX) } else { (req.url.clone(), COVER_PX) };
+            if let Ok(pixels) = fetch_thumbnail(&session, &url, round, px).await {
                 let _ = ui.upgrade_in_event_loop(move |app| set_cover(&app, req, pixels));
             }
             in_flight.lock().unwrap().remove(&key);
@@ -50,7 +54,7 @@ pub async fn worker(session: Session, ui: slint::Weak<App>, mut rx: mpsc::Unboun
     }
 }
 
-async fn fetch_thumbnail(session: &Session, url: &str, round: bool) -> Result<SharedPixelBuffer<Rgba8Pixel>, String> {
+async fn fetch_thumbnail(session: &Session, url: &str, round: bool, px: u32) -> Result<SharedPixelBuffer<Rgba8Pixel>, String> {
     let req = http::Request::get(url).body(bytes::Bytes::new()).map_err(|e| e.to_string())?;
     let resp = session.http_client().request_fut(req).map_err(|e| e.to_string())?.await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
@@ -58,7 +62,7 @@ async fn fetch_thumbnail(session: &Session, url: &str, round: bool) -> Result<Sh
     }
     let body = http_body_util::BodyExt::collect(resp.into_body()).await.map_err(|e| e.to_string())?.to_bytes();
     let img = image::load_from_memory(&body).map_err(|e| e.to_string())?;
-    let mut thumb = image::imageops::thumbnail(&img.to_rgba8(), COVER_PX, COVER_PX);
+    let mut thumb = image::imageops::thumbnail(&img.to_rgba8(), px, px);
     let (w, h) = thumb.dimensions();
     let radius = if round { w.min(h) as f32 / 2.0 } else { CORNER_PX };
     for (x, y, px) in thumb.enumerate_pixels_mut() {
@@ -77,6 +81,12 @@ fn corner_coverage(x: u32, y: u32, w: u32, h: u32, radius: f32) -> f32 {
     let cy = py.clamp(radius, h as f32 - radius);
     let dist = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
     (radius + 0.5 - dist).clamp(0.0, 1.0)
+}
+
+/// The 300 px variant of a Spotify cover URL; rows only keep the smallest one. Album covers encode
+/// the size in the image id, mosaics in the path. Unknown forms are returned as they are.
+pub fn larger_cover(url: &str) -> String {
+    url.replace("ab67616d00004851", "ab67616d00001e02").replace("mosaic.scdn.co/60/", "mosaic.scdn.co/300/")
 }
 
 // Share of the cover color kept for the panel tint, so white text stays readable (looked right at 0.45).
@@ -101,7 +111,14 @@ fn average_rgb(rgba: &[u8]) -> [u8; 3] {
 
 #[cfg(test)]
 mod tests {
-    use super::{average_rgb, corner_coverage};
+    use super::{average_rgb, corner_coverage, larger_cover};
+
+    #[test]
+    fn picks_the_300px_cover() {
+        assert_eq!(larger_cover("https://i.scdn.co/image/ab67616d00004851abc"), "https://i.scdn.co/image/ab67616d00001e02abc");
+        assert_eq!(larger_cover("https://mosaic.scdn.co/60/a"), "https://mosaic.scdn.co/300/a");
+        assert_eq!(larger_cover("https://other/x"), "https://other/x");
+    }
 
     #[test]
     fn average_ignores_transparent_pixels() {
@@ -135,6 +152,18 @@ fn row_model(app: &App, is_list: bool) -> ModelRc<Row> {
 /// Applies a cover if the row is still the one that asked (the list may have changed meanwhile),
 /// then evicts the oldest covers beyond MAX_LOADED_COVERS so RAM stays bounded on huge lists.
 fn set_cover(app: &App, req: CoverRequest, pixels: SharedPixelBuffer<Rgba8Pixel>) {
+    if req.kind == 3 {
+        if app.get_now().uri == req.uri.as_str() {
+            app.set_now_big(slint::Image::from_rgba8(pixels));
+        }
+        return;
+    }
+    if req.kind == 4 {
+        if app.get_page_cover_url() == req.url.as_str() {
+            app.set_page_cover(slint::Image::from_rgba8(pixels));
+        }
+        return;
+    }
     if req.kind == 2 {
         let mut now = app.get_now();
         if now.uri == req.uri.as_str() {
