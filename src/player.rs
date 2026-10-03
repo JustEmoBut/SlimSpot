@@ -28,7 +28,7 @@ use tokio::sync::mpsc;
 use crate::covers::{self, CoverRequest};
 use crate::nav::History;
 use crate::settings::{self, LastSession, Quality, Repeat, Settings};
-use crate::ui::{App, Row, clear_lyrics, set_current, set_lyrics, set_page_header, set_playing, set_position, set_rows, set_status};
+use crate::ui::{App, Row, clear_lyrics, set_liked_rows, set_current, set_lyrics, set_page_header, set_playing, set_position, set_rows, set_status};
 use crate::web::{Item, LIKED_SONGS, SEARCH_LIMIT, WebApi};
 
 // Spotify desktop client id; same as librespot's internal KEYMASTER_CLIENT_ID.
@@ -72,6 +72,12 @@ pub enum Command {
     Queue,
     /// Open the page the playing track came from and scroll to it.
     GoToPlaying,
+    /// Recently played tracks.
+    Home,
+    /// Play the current page from its first track (the header's play button).
+    PlayPage,
+    /// Sidebar filter: 0 all, 1 playlists, 2 albums, 3 artists; plus a name filter.
+    FilterLibrary { kind: i32, text: String },
 }
 
 pub fn cache_dir() -> PathBuf {
@@ -226,6 +232,8 @@ fn track_item(uri: &SpotifyUri, track: Track) -> Item {
             .unwrap_or_default(),
         artist_uri: track.artists.first().and_then(|a| a.id.to_uri().ok()).unwrap_or_default(),
         album_uri: track.album.id.to_uri().unwrap_or_default(),
+        duration_ms: track.duration.max(0) as u32,
+        liked: false,
     }
 }
 
@@ -233,11 +241,19 @@ fn track_item(uri: &SpotifyUri, track: Track) -> Item {
 /// these exact tracks are both shown and played (as a track list, not the station context).
 async fn radio_tracks(session: &Session, track_uri: &str) -> Result<Vec<Item>, String> {
     let id = track_uri.strip_prefix("spotify:track:").ok_or("Radio needs a Spotify track")?;
-    let context = session
-        .spclient()
-        .get_context(&format!("spotify:station:track:{id}"))
+    let rows = context_tracks(session, &format!("spotify:station:track:{id}"))
         .await
         .map_err(|e| format!("Radio unavailable: {e}"))?;
+    if rows.is_empty() {
+        return Err("Spotify has no radio for this track".into());
+    }
+    Ok(rows)
+}
+
+/// A context's tracks through librespot (the official client's protocol). Spotify-made playlists
+/// (Daily Mix, Discover Weekly, ...) answer 403/404 on the Web API but resolve here.
+async fn context_tracks(session: &Session, context_uri: &str) -> Result<Vec<Item>, String> {
+    let context = session.spclient().get_context(context_uri).await.map_err(|e| e.to_string())?;
     let mut seen = std::collections::HashSet::new();
     let uris: Vec<SpotifyUri> = context
         .pages
@@ -246,9 +262,6 @@ async fn radio_tracks(session: &Session, track_uri: &str) -> Result<Vec<Item>, S
         .filter_map(|t| t.uri.as_deref().and_then(|u| SpotifyUri::from_uri(u).ok()))
         .filter(|u| matches!(u, SpotifyUri::Track { .. }) && seen.insert(u.to_uri().unwrap_or_default()))
         .collect();
-    if uris.is_empty() {
-        return Err("Spotify has no radio for this track".into());
-    }
     Ok(track_items(session, uris).await)
 }
 
@@ -320,6 +333,8 @@ fn now_playing(item: &AudioItem) -> Item {
         artist_uri,
         // AudioItem names the album but carries no album id.
         album_uri: String::new(),
+        duration_ms: item.duration_ms,
+        liked: false,
     }
 }
 
@@ -371,7 +386,14 @@ fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<S
     set_page_header(ui, page.kind, page.title.clone(), nav.can_back(), nav.can_forward());
     set_status(ui, page_summary(nav));
     let editable = page.editable;
-    let _ = ui.upgrade_in_event_loop(move |app| app.set_editable(editable));
+    // Spotify numbers the rows of track lists, not of mixed pages like an artist's or search.
+    let numbered = matches!(page.kind, "Playlist" | "Album" | "Radio" | "Up next");
+    let playable = page.rows.iter().any(|r| r.uri.starts_with("spotify:track:"));
+    let _ = ui.upgrade_in_event_loop(move |app| {
+        app.set_editable(editable);
+        app.set_numbered(numbered);
+        app.set_page_playable(playable);
+    });
 }
 
 /// Scrolls the track list to `uri` if it is on the current page.
@@ -382,7 +404,48 @@ fn reveal_track(ui: &slint::Weak<App>, nav: &History<Page>, uri: &str) {
 
 /// The resting status line: the page's size. Transient messages ("Loading...") fall back to it.
 fn page_summary(nav: &History<Page>) -> String {
-    nav.current().map(|p| format!("{} items", p.rows.iter().filter(|r| r.uri != MORE_URI).count())).unwrap_or_default()
+    let Some(page) = nav.current() else { return String::new() };
+    let rows = page.rows.iter().filter(|r| r.uri != MORE_URI);
+    let tracks = rows.clone().filter(|r| r.uri.starts_with("spotify:track:")).count();
+    let total_ms: u64 = rows.clone().map(|r| r.duration_ms as u64).sum();
+    match (tracks, total_ms) {
+        (0, _) | (_, 0) => format!("{} items", rows.count()),
+        (n, ms) => format!("{n} songs, {}", about(ms)),
+    }
+}
+
+/// Spotify-style rounded length: "about 17 hr", "1 hr 5 min", "42 min 10 sec".
+fn about(ms: u64) -> String {
+    let (h, m, s) = (ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60);
+    match h {
+        h if h >= 10 => format!("about {h} hr"),
+        h if h > 0 => format!("{h} hr {m} min"),
+        _ => format!("{m} min {s} sec"),
+    }
+}
+
+/// Tracks at most this deep get their liked mark (10 requests of 40); deeper rows stay plain.
+// ponytail: fixed cap; check more on scroll if big playlists need marks all the way down.
+const LIKED_CHECK_MAX: usize = 400;
+
+/// Marks the current page's liked tracks, after the page is already on screen.
+async fn mark_liked(ui: &slint::Weak<App>, web: &mut WebApi, session: &Session, nav: &mut History<Page>) {
+    let Some(page) = nav.current_mut() else { return };
+    let uris: Vec<String> =
+        page.rows.iter().filter(|r| r.uri.starts_with("spotify:track:")).take(LIKED_CHECK_MAX).map(|r| r.uri.clone()).collect();
+    let flags = if page.list == LIKED_SONGS {
+        vec![true; uris.len()]
+    } else {
+        match web.contains(session, &uris).await {
+            Ok(f) => f,
+            Err(e) => return log::warn!("Liked check failed: {e}"),
+        }
+    };
+    let liked: std::collections::HashSet<String> = uris.into_iter().zip(flags).filter(|(_, l)| *l).map(|(u, _)| u).collect();
+    for row in &mut page.rows {
+        row.liked = liked.contains(&row.uri);
+    }
+    set_liked_rows(ui, liked.into_iter().collect(), true);
 }
 
 /// The item behind a URI on screen: the current page, the sidebar, or what is playing.
@@ -518,6 +581,9 @@ pub async fn run(
         set_rows(&ui, lists, App::set_lists);
     }
     set_status(&ui, format!("Logged in as {}. Visible in Spotify Connect as \"{DEVICE_NAME}\".", session.username()));
+    if web.is_some() {
+        let _ = tx.send(Command::Home);
+    }
 
     let mut playing = false;
     let mut shown: Option<Shown> = None;
@@ -564,7 +630,14 @@ pub async fn run(
                             Err(e) => Err(e),
                         }
                     } else {
-                        w.list_tracks(&session, &uri).await.map(|rows| (String::new(), rows))
+                        match w.list_tracks(&session, &uri).await {
+                            Ok(rows) => Ok((String::new(), rows)),
+                            Err(e) if uri.starts_with("spotify:playlist:") => {
+                                log::warn!("Web API refused {uri} ({e}); reading it through librespot");
+                                context_tracks(&session, &uri).await.map(|rows| (String::new(), rows))
+                            }
+                            Err(e) => Err(e),
+                        }
                     };
                     match result {
                         Ok((name, rows)) => {
@@ -585,6 +658,7 @@ pub async fn run(
                             if let Some(track) = reveal_row {
                                 reveal_track(&ui, &nav, &track);
                             }
+                            mark_liked(&ui, w, &session, &mut nav).await;
                         }
                         Err(e) => set_status(&ui, e),
                     }
@@ -625,6 +699,7 @@ pub async fn run(
                         Ok(rows) => {
                             let uris = rows.iter().map(|r| r.uri.clone()).collect();
                             open_page(&ui, &mut nav, &mut shown, Page { title: "Queue".into(), rows, shown: Shown::Tracks(uris), list: String::new(), more: None, editable: false, kind: "Up next" });
+                            mark_liked(&ui, w, &session, &mut nav).await;
                         }
                         Err(e) => set_status(&ui, e),
                     }
@@ -664,6 +739,7 @@ pub async fn run(
                             }
                             let title = format!("Search: {}", q.trim());
                             open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Tracks(tracks), list: String::new(), more, editable: false, kind: "Search" });
+                            mark_liked(&ui, w, &session, &mut nav).await;
                         }
                         Err(e) => set_status(&ui, e),
                     }
@@ -682,6 +758,7 @@ pub async fn run(
                     match w.set_saved(&session, &uri, !liked).await {
                         Ok(()) => {
                             liked = !liked;
+                            set_liked_rows(&ui, vec![uri.clone()], liked);
                             set_status(&ui, if liked { "Added to Liked Songs" } else { "Removed from Liked Songs" });
                         }
                         Err(e) => set_status(&ui, e),
@@ -741,6 +818,7 @@ pub async fn run(
                             if let Some(w) = web.as_mut() {
                                 match w.set_saved(&session, &uri, true).await {
                                     Ok(()) => {
+                                        set_liked_rows(&ui, vec![uri.clone()], true);
                                         set_status(&ui, format!("Added \"{}\" to Liked Songs", item.title));
                                         if now_uri.as_deref() == Some(uri.as_str()) {
                                             liked = true;
@@ -809,6 +887,46 @@ pub async fn run(
                     if let Some(cmd) = follow_up {
                         let _ = tx.send(cmd);
                     }
+                }
+                Command::Home => {
+                    let Some(w) = web.as_mut() else { continue };
+                    match w.recently_played(&session).await {
+                        Ok(rows) => {
+                            let uris = rows.iter().map(|r| r.uri.clone()).collect();
+                            open_page(&ui, &mut nav, &mut shown, Page {
+                                title: "Recently played".into(),
+                                rows,
+                                shown: Shown::Tracks(uris),
+                                list: String::new(),
+                                more: None,
+                                editable: false,
+                                kind: "Home",
+                            });
+                            mark_liked(&ui, w, &session, &mut nav).await;
+                        }
+                        Err(e) => set_status(&ui, e),
+                    }
+                }
+                Command::PlayPage => {
+                    let first = nav.current().and_then(|p| p.rows.iter().find(|r| r.uri.starts_with("spotify:track:")));
+                    if let Some(row) = first {
+                        let _ = tx.send(Command::PlayUri(row.uri.clone()));
+                    }
+                }
+                Command::FilterLibrary { kind, text } => {
+                    let text = text.trim().to_lowercase();
+                    let rows = library
+                        .iter()
+                        .filter(|i| match kind {
+                            1 => i.uri == LIKED_SONGS || i.uri.starts_with("spotify:playlist:"),
+                            2 => i.uri.starts_with("spotify:album:"),
+                            3 => i.uri.starts_with("spotify:artist:"),
+                            _ => true,
+                        })
+                        .filter(|i| text.is_empty() || i.title.to_lowercase().contains(&text) || i.artist.to_lowercase().contains(&text))
+                        .cloned()
+                        .collect();
+                    set_rows(&ui, rows, App::set_lists);
                 }
                 Command::GoToPlaying => {
                     let Some(track) = now_uri.clone() else { continue };
@@ -999,6 +1117,13 @@ mod tests {
         assert!(parse_track("https://open.spotify.com/intl-tr/track/2WUy2Uywcj5cP0IXQagO3z").is_some());
         assert!(parse_track("https://open.spotify.com/album/2WUy2Uywcj5cP0IXQagO3z").is_none());
         assert!(parse_track("garbage").is_none());
+    }
+
+    #[test]
+    fn rounds_page_length_like_spotify() {
+        assert_eq!(about(17 * 3_600_000 + 25 * 60_000), "about 17 hr");
+        assert_eq!(about(3_600_000 + 5 * 60_000 + 59_000), "1 hr 5 min");
+        assert_eq!(about(42 * 60_000 + 10_000), "42 min 10 sec");
     }
 
     #[test]

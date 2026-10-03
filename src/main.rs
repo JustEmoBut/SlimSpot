@@ -130,6 +130,14 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_start_radio(send(|| Command::Radio(None)));
     app.on_show_queue(send(|| Command::Queue));
     app.on_go_to_playing(send(|| Command::GoToPlaying));
+    app.on_go_home(send(|| Command::Home));
+    app.on_play_page(send(|| Command::PlayPage));
+    {
+        let tx = tx.clone();
+        app.on_filter_library(move |kind, text| {
+            let _ = tx.send(Command::FilterLibrary { kind, text: text.to_string() });
+        });
+    }
     let action_tx = tx.clone();
     app.on_row_action(move |action, uri| {
         let _ = action_tx.send(Command::RowAction { action: action.into(), uri: uri.into() });

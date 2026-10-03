@@ -24,6 +24,7 @@ const WEB_SCOPES: &[&str] = &[
     "user-modify-playback-state",
     "playlist-modify-private",
     "playlist-modify-public",
+    "user-read-recently-played",
 ];
 const WEB_TOKEN_FILE: &str = "web_refresh_token";
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(60);
@@ -40,6 +41,7 @@ const ARTIST_ALBUM_PAGES: usize = 5;
 // Search shows a few artists and albums above the tracks; tracks still get SEARCH_LIMIT.
 const SEARCH_ARTISTS: usize = 3;
 const SEARCH_ALBUMS: usize = 6;
+const CONTAINS_LIMIT: usize = 40;
 const PAGE_LIMIT: u32 = 50;
 pub const LIKED_SONGS: &str = "liked";
 
@@ -53,6 +55,10 @@ pub struct Item {
     /// First artist and the album of a track (for the row menu); empty when unknown.
     pub artist_uri: String,
     pub album_uri: String,
+    /// Track length; 0 when unknown (non-track rows).
+    pub duration_ms: u32,
+    /// In Liked Songs; filled in after a page opens (`WebApi::contains`).
+    pub liked: bool,
 }
 
 pub struct WebApi {
@@ -207,6 +213,32 @@ impl WebApi {
         Ok(json["queue"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(track_row).collect())
     }
 
+    /// Liked Songs membership for each URI, in order. `/me/library/contains` takes at most 40 URIs
+    /// per request ("Too many uris requested" at 50, verified 2026-10-03).
+    pub async fn contains(&mut self, session: &Session, uris: &[String]) -> Result<Vec<bool>, String> {
+        let mut found = Vec::with_capacity(uris.len());
+        for chunk in uris.chunks(CONTAINS_LIMIT) {
+            let json = self.get_json(session, &format!("{API}/me/library/contains?uris={}", chunk.join(","))).await?;
+            let flags = json.as_array().map(Vec::as_slice).unwrap_or_default();
+            found.extend((0..chunk.len()).map(|i| flags.get(i).and_then(|f| f.as_bool()).unwrap_or(false)));
+        }
+        Ok(found)
+    }
+
+    /// Recently played tracks, newest first, each once.
+    pub async fn recently_played(&mut self, session: &Session) -> Result<Vec<Item>, String> {
+        let json = self.get_json(session, &format!("{API}/me/player/recently-played?limit={PAGE_LIMIT}")).await?;
+        let mut seen = std::collections::HashSet::new();
+        Ok(json["items"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|i| track_row(&i["track"]))
+            .filter(|t| seen.insert(t.uri.clone()))
+            .collect())
+    }
+
     /// Plays `uri` after the current track on the active device.
     pub async fn add_to_queue(&mut self, session: &Session, uri: &str) -> Result<(), String> {
         self.send(session, http::Method::POST, &format!("{API}/me/player/queue?uri={uri}"), None).await.map(|_| ())
@@ -356,6 +388,8 @@ fn track_row(t: &serde_json::Value) -> Option<Item> {
         cover_url: smallest_image(&t["album"]["images"]).into(),
         artist_uri: t["artists"][0]["uri"].as_str().unwrap_or_default().into(),
         album_uri: t["album"]["uri"].as_str().unwrap_or_default().into(),
+        duration_ms: t["duration_ms"].as_u64().unwrap_or(0) as u32,
+        liked: false,
     })
 }
 

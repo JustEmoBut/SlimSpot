@@ -1,12 +1,12 @@
 //! Slint markup and the small helpers that push backend state onto the UI thread.
 
-use slint::{ModelRc, VecModel};
+use slint::{Model, ModelRc, VecModel};
 
 use crate::web::Item;
 
 slint::slint! {
     import { CheckBox, ListView, Palette } from "std-widgets.slint";
-    export struct Row { title: string, artist: string, uri: string, cover-url: string, cover: image }
+    export struct Row { title: string, artist: string, uri: string, cover-url: string, cover: image, duration: string, liked: bool }
 
     // Spotify-like dark palette. Colors whose hex starts with a digit and `e` are written as rgb():
     // inside slint! the Rust tokenizer reads them as float exponents.
@@ -42,6 +42,9 @@ slint::slint! {
         out property <string> settings: "M4 7 H20 M4 12 H20 M4 17 H20 M9 5 V9 M15 10 V14 M7 15 V19";
         out property <string> back: "M15 5 L8 12 L15 19";
         out property <string> forward: "M9 5 L16 12 L9 19";
+        out property <string> home: "M4 11 L12 4 L20 11 V20 H14.5 V14 H9.5 V20 H4 Z";
+        out property <string> more: "M5 10.5 H8 V13.5 H5 Z M10.5 10.5 H13.5 V13.5 H10.5 Z M16 10.5 H19 V13.5 H16 Z";
+        out property <string> check: "M6.5 12.5 L10.5 16.5 L17.5 8.5";
         out property <string> bars: "M5 10 H8 V19 H5 Z M10.5 5 H13.5 V19 H10.5 Z M16 13 H19 V19 H16 Z";
         out property <string> queue: "M4 6 H20 M4 11 H20 M4 16 H11 M15 14 V20 L20 17 Z";
     }
@@ -171,6 +174,8 @@ slint::slint! {
         // The user's own playlists ("Add to playlist") and whether this row's page is one of them.
         in property <[Row]> targets;
         in property <bool> editable;
+        // Position shown left of the cover in track lists; 0 hides it.
+        in property <int> number;
         callback action(string);
         // Fired whenever this (possibly recycled) row instance shows a row without a loaded cover.
         callback need-cover();
@@ -183,9 +188,17 @@ slint::slint! {
             background: root.selected ? Theme.selected : root.has-hover ? Theme.hover : transparent;
             HorizontalLayout {
                 padding-left: 8px;
-                padding-right: 8px;
+                // Room for the hover "more" button.
+                padding-right: root.menu ? 44px : 8px;
                 spacing: 12px;
-                alignment: start;
+                if root.number > 0 : Text {
+                    width: 24px;
+                    text: root.number;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    font-size: 14px;
+                    color: root.playing ? Theme.accent : Theme.subdued;
+                }
                 Rectangle {
                     width: root.cover-size;
                     height: root.cover-size;
@@ -213,14 +226,42 @@ slint::slint! {
                 VerticalLayout {
                     alignment: center;
                     spacing: 2px;
+                    horizontal-stretch: 1;
                     Text { text: data.title; overflow: elide; font-size: 14px; color: root.playing ? Theme.accent : Theme.text; }
                     Text { text: data.artist; overflow: elide; font-size: 12px; color: Theme.subdued; }
+                }
+                // Spotify's green circle with a dark tick; a filled path would hide the tick, so two layers.
+                if data.liked : Rectangle {
+                    width: 16px;
+                    height: 16px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 8px;
+                    background: Theme.accent;
+                    Icon { width: 14px; height: 14px; shape: Icons.check; tint: Theme.base; }
+                }
+                if data.duration != "" : Text {
+                    width: 40px;
+                    text: data.duration;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    font-size: 13px;
+                    color: Theme.subdued;
                 }
             }
         }
         // Takes right-clicks only; left-clicks still reach the row.
-        if root.menu : ContextMenuArea {
+        if root.menu : cm := ContextMenuArea {
             property <bool> is-track: data.uri.starts-with("spotify:track:");
+            // Spotify's "..." on hover: the same menu as a right-click, for mouse-only discovery.
+            if root.has-hover : IconButton {
+                x: parent.width - self.width - 8px;
+                y: (parent.height - self.height) / 2;
+                shape: Icons.more;
+                filled: true;
+                dot: false;
+                size: 18px;
+                clicked => { cm.show({ x: self.x, y: self.y + self.height }); }
+            }
             Menu {
                 if is-track : MenuItem { title: "Start radio"; activated => { root.action("radio"); } }
                 if is-track : MenuItem { title: "Go to artist"; activated => { root.action("artist"); } }
@@ -338,6 +379,12 @@ slint::slint! {
         callback start-radio();
         callback show-queue();
         callback go-to-playing();
+        callback go-home();
+        callback play-page();
+        callback filter-library(int, string);
+        in property <bool> numbered;
+        in property <bool> page-playable;
+        in-out property <int> library-kind;
         in property <[Row]> targets;
         in property <bool> editable;
         // Track list scroll position, so Rust can reveal the playing row.
@@ -447,6 +494,39 @@ slint::slint! {
                             vertical-alignment: center;
                             x: 8px;
                         }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            for label[k] in ["All", "Playlists", "Albums", "Artists"] : Chip {
+                                label: label;
+                                chosen: root.library-kind == k;
+                                clicked => { root.library-kind = k; root.filter-library(k, lib-filter.text); }
+                            }
+                        }
+                        Rectangle {
+                            height: 32px;
+                            border-radius: 6px;
+                            background: lib-filter.has-focus ? Theme.hover : Theme.field;
+                            Icon { x: 8px; width: 16px; height: 16px; y: (parent.height - 16px) / 2; shape: Icons.search; tint: Theme.subdued; }
+                            lib-filter := TextInput {
+                                x: 32px;
+                                width: parent.width - 40px;
+                                height: parent.height;
+                                vertical-alignment: center;
+                                single-line: true;
+                                font-size: 13px;
+                                color: Theme.text;
+                                edited => { root.filter-library(root.library-kind, self.text); }
+                            }
+                            if lib-filter.text == "" : Text {
+                                x: 32px;
+                                height: parent.height;
+                                vertical-alignment: center;
+                                text: "Search in Your Library";
+                                font-size: 13px;
+                                color: Theme.muted;
+                            }
+                        }
                         ListView {
                             for row[i] in lists: RowItem {
                                 data: row;
@@ -476,6 +556,7 @@ slint::slint! {
                         HorizontalLayout {
                             spacing: 8px;
                             height: 44px;
+                            IconButton { y: (parent.height - self.height) / 2; shape: Icons.home; filled: root.page-kind == "Home"; dot: false; clicked => { root.go-home(); } }
                             IconButton { y: (parent.height - self.height) / 2; shape: Icons.back; dot: false; enabled: root.can-back; clicked => { root.go-back(); } }
                             IconButton { y: (parent.height - self.height) / 2; shape: Icons.forward; dot: false; enabled: root.can-forward; clicked => { root.go-forward(); } }
                             // Search pill
@@ -521,10 +602,26 @@ slint::slint! {
                                 clicked => { settings-popup.show(); }
                             }
                         }
-                        if !root.show-lyrics : VerticalLayout {
-                            spacing: 2px;
-                            if root.page-kind != "" : Text { text: root.page-kind; font-size: 12px; font-weight: 600; color: Theme.text; }
-                            Text { text: root.page-title; font-size: 32px; font-weight: 800; color: Theme.text; overflow: elide; }
+                        if !root.show-lyrics : HorizontalLayout {
+                            spacing: 16px;
+                            if root.page-playable : TouchArea {
+                                width: 56px;
+                                height: 56px;
+                                y: (parent.height - self.height) / 2;
+                                mouse-cursor: pointer;
+                                clicked => { root.play-page(); }
+                                Rectangle {
+                                    border-radius: self.width / 2;
+                                    background: parent.has-hover ? rgb(60, 230, 120) : Theme.accent;
+                                    Icon { width: 26px; height: 26px; shape: Icons.play; filled: true; tint: Theme.base; }
+                                }
+                            }
+                            VerticalLayout {
+                                spacing: 2px;
+                                alignment: center;
+                                if root.page-kind != "" : Text { text: root.page-kind; font-size: 12px; font-weight: 600; color: Theme.text; }
+                                Text { text: root.page-title; font-size: 32px; font-weight: 800; color: Theme.text; overflow: elide; }
+                            }
                         }
                         Text { text: root.status; font-size: 12px; color: Theme.subdued; overflow: elide; }
                         Rectangle { height: 1px; background: #ffffff1a; }
@@ -541,6 +638,7 @@ slint::slint! {
                             changed visible-height => { root.list-height = self.visible-height; }
                             for row[i] in tracks: RowItem {
                                 data: row;
+                                number: root.numbered && row.uri.starts-with("spotify:track:") ? i + 1 : 0;
                                 playing: row.uri == root.current-track;
                                 // "Show more tracks" and similar app rows have no menu.
                                 menu: !row.uri.starts-with("slimspot:");
@@ -760,8 +858,30 @@ impl From<Item> for Row {
             uri: i.uri.into(),
             cover_url: i.cover_url.into(),
             cover: Default::default(),
+            duration: if i.duration_ms > 0 { fmt_duration(i.duration_ms).into() } else { Default::default() },
+            liked: i.liked,
         }
     }
+}
+
+/// "3:07", like the player bar.
+fn fmt_duration(ms: u32) -> String {
+    let s = ms / 1000;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// Sets the liked mark on track-list rows with these URIs, in place so loaded covers stay.
+pub fn set_liked_rows(ui: &slint::Weak<App>, uris: Vec<String>, liked: bool) {
+    let _ = ui.upgrade_in_event_loop(move |app| {
+        let model = app.get_tracks();
+        for i in 0..model.row_count() {
+            let Some(mut row) = model.row_data(i) else { continue };
+            if row.liked != liked && uris.iter().any(|u| row.uri == u.as_str()) {
+                row.liked = liked;
+                model.set_row_data(i, row);
+            }
+        }
+    });
 }
 
 pub fn set_status(ui: &slint::Weak<App>, text: impl Into<String>) {
