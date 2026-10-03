@@ -22,7 +22,7 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 | `main.rs` | Wires Slint callbacks to `player::Command`, tray, UI timers (seek interpolation, minimize-restore repaint, media-key setup retry) |
 | `ui.rs` | `slint::slint!` markup + helpers that push state to the UI thread |
 | `player.rs` | Backend tokio thread: login, Spotify Connect device (Spirc), command/event loop, reconnect |
-| `web.rs` | Spotify Web API (separate OAuth grant): search (+ paged tracks), queue, playlists, Liked Songs, albums, artist albums, saved albums, followed artists, like/unlike, devices, transfer |
+| `web.rs` | Spotify Web API (separate OAuth grant): search (+ paged tracks), queue (view, add), playlists (+ add/remove tracks), Liked Songs, albums, artist albums, saved albums, followed artists, like/unlike, devices, transfer |
 | `covers.rs` | Thumbnails for instantiated rows only, 64 px, max 300 decoded |
 | `settings.rs` | `settings.json`: volume, shuffle, repeat, quality, normalize, last session |
 | `media_keys.rs` | Windows SystemMediaTransportControls (windows-only) |
@@ -50,6 +50,9 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - **Design**: Spotify-like dark UI (familiarity for the owner). Colors live in the Slint `Theme` global, icons in `Icons` as 24×24 SVG path strings rendered with `Path` (no icon font/assets). Settings sit in a popup behind the top-right icon. Spotify's logo and icon artwork are not copied.
 - **Queue view** (`Ctrl+U`, bar icon): Spirc keeps its queue private, so the page comes from Web API `/me/player/queue`. It opens as a track list; clicking a row plays that list, not the original context.
 - **Search "Show more tracks"**: a full search page (10 tracks) ends with a `slimspot:more` row; clicking it appends the next `offset` page to the same history entry (`nav::History::current_mut`). Rows with a `slimspot:` URI have no context menu.
+- **Playlist editing**: "Add to playlist" offers only the user's own playlists (`web::Item.artist_uri` holds a playlist's owner URI, compared with `spotify:user:<username>`). "Remove from this playlist" shows only on such a page (`Page.editable`) and removes every occurrence of the track.
+- **Go to playing** (click the now-playing title): opens the context the track was started from in this window and scrolls the list to it (`reveal`, row height 56 px, clamped to the list end). Tracks started elsewhere have no known context.
+- **Page header**: a kind label ("Playlist", "Album", ...; `Page.kind`) above the title. Track rows show a play arrow on hover and equalizer bars while playing, over the cover.
 - **Status line** holds transient messages and errors; play/pause resets it to the page's item count instead of "Playing".
 - **Cover tint**: the alpha-weighted average color of the now-playing cover, dimmed to 45%, colors a gradient at the top of the main panel (`now-tint`).
 - **Rounded covers are baked into pixels** (`covers::corner_coverage`): the software renderer ignores `border-radius` when clipping images. Artists are round, other covers get small rounded corners.
@@ -61,7 +64,8 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 
 ## Known external constraints (verified against the live API, 2026-10-03)
 - Development Mode Web API: `search` and `/artists/{id}/albums` reject `limit > 10`; playlists/saved tracks accept 50. Search `offset` works up to 990.
-- `/me/player/queue` works (empty: `{"currently_playing":null,"queue":[]}`); the filled shape was not verified live.
+- `/me/player/queue` works (empty: `{"currently_playing":null,"queue":[]}`). `POST /me/player/queue?uri=` answers 404 with no active device and 200 with a non-JSON body on success, so non-GET 2xx bodies that don't parse count as success.
+- Playlist edits need `playlist-modify-private`/`-public`; `POST /playlists/{id}/items` `{"uris":[..]}` adds, `DELETE` with `{"items":[{"uri":..}]}` removes (both verified live).
 - `/artists/{id}/top-tracks` returns 403 → top tracks come from librespot metadata (`Artist::get` + `Track::get`).
 - `/me/tracks/contains` returns 403 → like state and like/unlike use the unified `/me/library` (`contains`, `PUT`, `DELETE`) with `uris=`. `/me/albums`, `/me/following?type=artist` (cursor paging under `artists`) and `/me/player/devices` accept limit 50.
 - Changing `WEB_SCOPES` changes the saved grant key, so the next start asks for a browser consent once.
