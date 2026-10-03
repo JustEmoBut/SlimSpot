@@ -23,7 +23,9 @@ paths:
 - A `checkable` Button flips its own `checked` on click and breaks a one-way binding; for state owned by the backend use a plain Button (or `primary:`) and set it from Rust.
 - An element inside `if cond : ...` can't be referenced by id from outside it, and a PopupWindow's children can't be written from outside the popup: collapse with `visible` + `min/max-height: 0` instead of `if`, and bind popup inputs to root properties (`text <=> root.x`).
 - A layout's minimum height comes from its children; `max-height: 0` alone doesn't shrink it, an explicit `min-height: 0px` is needed too.
-- `ContextMenuArea` has a `show(point)` function for opening its menu from a button.
+- The software renderer also ignores `border-radius` on gradient backgrounds (they render square); rounded elements use solid colors.
+- `if cond : for x in list : ...` doesn't parse; put the `for` inside a layout under the `if`.
+- Fonts embed with `import "../assets/fonts/X.ttf";` inside `slint!` (path relative to the source file) plus `default-font-family` on the Window.
 - Computer-use/SendKeys Escape presses never reach the app (no key event at all), while a real keyboard's Esc works: test Esc by hand, don't "fix" it from automated runs.
 - To check the UI visually, capture the window with Win32 `PrintWindow(hwnd, dc, PW_RENDERFULLCONTENT)` from Windows PowerShell 5.1 (`System.Drawing`); screen capture grabs whatever window is in front. The app window is class `Window Class`, title `SlimSpot` (the tray has its own hidden window).
 

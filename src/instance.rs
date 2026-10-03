@@ -55,14 +55,26 @@ pub fn dark_title_bar(app: &crate::ui::App) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use slint::ComponentHandle;
     use windows::Win32::Foundation::HWND;
-    use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+    use windows::Win32::Graphics::Dwm::{
+        DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWINDOWATTRIBUTE,
+        DwmSetWindowAttribute,
+    };
 
-    if let Ok(RawWindowHandle::Win32(h)) = app.window().window_handle().window_handle().map(|h| h.as_raw()) {
-        let on: i32 = 1;
-        let _ = unsafe {
-            DwmSetWindowAttribute(HWND(h.hwnd.get() as _), DWMWA_USE_IMMERSIVE_DARK_MODE, (&on as *const i32).cast(), size_of::<i32>() as u32)
-        };
-    }
+    let Ok(RawWindowHandle::Win32(h)) = app.window().window_handle().window_handle().map(|h| h.as_raw()) else { return };
+    let hwnd = HWND(h.hwnd.get() as _);
+    let set = |attribute: DWMWINDOWATTRIBUTE, value: u32| {
+        // Windows 10 ignores the color attributes (Windows 11 only); the dark mode flag still applies.
+        let _ = unsafe { DwmSetWindowAttribute(hwnd, attribute, (&value as *const u32).cast(), size_of::<u32>() as u32) };
+    };
+    set(DWMWA_USE_IMMERSIVE_DARK_MODE, 1);
+    // Theme colors as COLORREF (0x00BBGGRR): the caption blends into Theme.base, the title is Theme.subdued.
+    set(DWMWA_CAPTION_COLOR, colorref(8, 8, 26));
+    set(DWMWA_TEXT_COLOR, colorref(163, 168, 195));
+    set(DWMWA_BORDER_COLOR, colorref(27, 27, 56));
+}
+
+fn colorref(r: u8, g: u8, b: u8) -> u32 {
+    u32::from(r) | u32::from(g) << 8 | u32::from(b) << 16
 }
 
 impl Instance {
