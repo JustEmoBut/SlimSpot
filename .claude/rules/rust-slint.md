@@ -19,6 +19,9 @@ paths:
 - `alignment: center` on a layout shrinks a `Slider` to its handle; give it `horizontal-stretch: 1` instead.
 - Inside `slint::slint!`, hex colors that start with a digit followed by `e` (e.g. `#5eead4`) fail to tokenize as Rust ("expected at least one digit in exponent"); write them as `rgb(...)`.
 - `ListView.viewport-y` is deprecated in 1.18; use `content-y`.
+- The software renderer ignores `border-radius` in `clip: true` (its `combine_clip` drops the radius). Rounded or circular images must be masked in the pixels; a `Rectangle`'s own rounded background still renders fine.
+- A `checkable` Button flips its own `checked` on click and breaks a one-way binding; for state owned by the backend use a plain Button (or `primary:`) and set it from Rust.
+- To check the UI visually, capture the window with Win32 `PrintWindow(hwnd, dc, PW_RENDERFULLCONTENT)` from Windows PowerShell 5.1 (`System.Drawing`); screen capture grabs whatever window is in front. The app window is class `Window Class`, title `SlimSpot` (the tray has its own hidden window).
 
 ## librespot
 - `Spirc::new` needs a fresh, unconnected `Session`; it connects it itself.
