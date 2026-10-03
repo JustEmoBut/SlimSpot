@@ -25,6 +25,7 @@ paths:
 - A layout's minimum height comes from its children; `max-height: 0` alone doesn't shrink it, an explicit `min-height: 0px` is needed too.
 - The software renderer also ignores `border-radius` on gradient backgrounds (they render square); rounded elements use solid colors.
 - `if cond : for x in list : ...` doesn't parse; put the `for` inside a layout under the `if`.
+- The winit backend passes `Window.icon` to Windows only when the image's cache key changes; a `slint::Image::from_rgba8` image has no key, so a window icon set from Rust never shows. Embed it with `@image-url(...)` in the markup.
 - Fonts embed with `import "../assets/fonts/X.ttf";` inside `slint!` (path relative to the source file) plus `default-font-family` on the Window.
 - Computer-use/SendKeys Escape presses never reach the app (no key event at all), while a real keyboard's Esc works: test Esc by hand, don't "fix" it from automated runs.
 - To check the UI visually, capture the window with Win32 `PrintWindow(hwnd, dc, PW_RENDERFULLCONTENT)` from Windows PowerShell 5.1 (`System.Drawing`); screen capture grabs whatever window is in front. The app window is class `Window Class`, title `SlimSpot` (the tray has its own hidden window).

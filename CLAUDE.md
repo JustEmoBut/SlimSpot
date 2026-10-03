@@ -43,7 +43,7 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - Spotify Connect device name: `SlimSpot`, type Computer.
 - **Close hides to the tray**, playback continues; real quit is tray "Quit" or `Ctrl+Q` (saves the session, shuts Spirc down so no stale device lingers). The event loop runs via `run_event_loop_until_quit`, not `app.run()`.
 - **Last session is shown paused and loaded on the first Play**, never at startup: loading would make SlimSpot the active device and pause the phone. Saved on track change, pause and quit (`settings.json` → `last`).
-- **Icons**: `assets/icon.svg` is the source; `icon-64.png`/`icon-256.png` are rendered from it (headless Edge, 64 downscaled from 256) and embedded with `include_bytes!`, so no runtime SVG renderer.
+- **Icons**: `assets/icon.svg` is the source; `icon-64.png`/`icon-256.png` are rendered from it (headless Edge, 64 downscaled from 256) and embedded, so no runtime SVG renderer: the tray icon with `include_bytes!`, the window icon with `@image-url` in the markup (an icon set from Rust never reaches the title bar).
 - **Keyboard**: shortcuts live in one root `FocusScope`; Esc returns focus to it from the search box.
 - **Lyrics**: fetched per track change, not cached on disk; shown in place of the track list (`Ctrl+Y`). Fixed line height + elide so the sung line is centered arithmetically; highlighted on the 500 ms position tick.
 - **Radio**: `spclient().get_context("spotify:station:track:<id>")` is resolved once and its 50 tracks are shown and played as a track list. Spotify reshuffles a station on every resolve, so loading the station context into Spirc would play a different order than the list shown.
