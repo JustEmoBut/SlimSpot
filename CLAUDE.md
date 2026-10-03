@@ -1,0 +1,46 @@
+# SlimSpot
+
+Personal-use, minimum-RAM native Spotify client for Windows. Rust + Slint (software renderer) + librespot.
+Spotify ToS concerns are accepted by the owner; this is not for distribution.
+
+## Goal & how it's judged
+- RAM is the deciding metric. Measure **Private bytes** of the release build while a track plays, sampled 3× over 10 s
+  (`Get-Process slimspot`), after opening a playlist and scrolling. Working Set includes shared DLLs and is secondary.
+- Reference points: ~15–20 MB private while playing with covers. Spotifast (egui) claims 100–250 MB; a Tauri app measured 194 MB.
+- Any new feature reports its RAM delta. No GPU renderer, no webview, no browser engine.
+
+## Commands
+- Test: `cargo test` (unit tests live next to the code they test)
+- Release build: `cargo build --release` → `target/release/slimspot.exe`
+- Runtime files: `%APPDATA%\SlimSpot\` — `credentials.json` (librespot), `web_refresh_token`, `settings.json`, `slimspot.log` (warn/error only), `audio/` cache
+- Web API client id: env `SLIMSPOT_WEB_CLIENT_ID` (owner's own dev app; redirect `http://127.0.0.1:8989/login`). Without it, the client id the saved token belongs to is reused.
+
+## Architecture (`src/`)
+| Module | Responsibility |
+|---|---|
+| `main.rs` | Wires Slint callbacks to `player::Command`, UI timers (seek interpolation, minimize-restore repaint, media-key setup retry) |
+| `ui.rs` | `slint::slint!` markup + helpers that push state to the UI thread |
+| `player.rs` | Backend tokio thread: login, Spotify Connect device (Spirc), command/event loop, reconnect |
+| `web.rs` | Spotify Web API (separate OAuth grant): search, playlists, Liked Songs, albums, artist albums |
+| `covers.rs` | Thumbnails for instantiated rows only, 64 px, max 300 decoded |
+| `settings.rs` | `settings.json`: volume, shuffle, repeat, quality, normalize |
+| `media_keys.rs` | Windows SystemMediaTransportControls (windows-only) |
+| `logger.rs` | File logger for warn/error, including librespot's |
+
+## Confirmed decisions
+- **Spirc owns playback state** (queue, shuffle, repeat, track advance). Local actions become Spirc calls; there is no local queue. Playlists/albums/artists/Liked Songs play as Spotify contexts; search results as a track list.
+- **Two OAuth grants**: librespot playback (Spotify desktop client id, port 8898) and Web API (own app, port 8989). The playback token is rejected/rate-limited on api.spotify.com.
+- **Quality/normalisation are per-Player**: changing them restarts the Connect device and resumes at the same position.
+- **Volume**: slider drags set the local mixer only; Spirc (and thus Spotify) gets one update on release. Per-step Spirc updates hit 429 and stalled the loop.
+- Spotify Connect device name: `SlimSpot`, type Computer.
+
+## Known external constraints (verified against the live API, 2026-10-03)
+- Development Mode Web API: `search` and `/artists/{id}/albums` reject `limit > 10`; playlists/saved tracks accept 50.
+- `/artists/{id}/top-tracks` returns 403 → top tracks come from librespot metadata (`Artist::get` + `Track::get`).
+- Spotify-owned/editorial playlists can return 403/404 to third-party apps.
+- Spotify doesn't always rotate refresh tokens; librespot-oauth then returns `""` — keep the previous token (`web::refresh`).
+
+## Dependency pins
+- `Cargo.lock` pins `vergen` 9.0.6: librespot-core 0.8.0's build script fails with 9.1.0. Don't blanket `cargo update`.
+- `librespot`/`librespot-oauth` =0.8.0, `slint` =1.18.1, `windows` =0.62.2 (already pulled in by cpal/winit; only features added).
+- Prefer crates already in `Cargo.lock`; check with `cargo tree -d` that an addition doesn't add a second version.
