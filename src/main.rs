@@ -128,6 +128,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_toggle_like(send(|| Command::ToggleLike));
     app.on_load_devices(send(|| Command::LoadDevices));
     app.on_start_radio(send(|| Command::Radio(None)));
+    app.on_show_queue(send(|| Command::Queue));
     let action_tx = tx.clone();
     app.on_row_action(move |action, uri| {
         let _ = action_tx.send(Command::RowAction { action: action.into(), uri: uri.into() });

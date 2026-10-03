@@ -48,6 +48,11 @@ impl<T> History<T> {
         self.current.as_ref()
     }
 
+    /// For pages that grow in place ("Show more"); back/forward keep the grown page.
+    pub fn current_mut(&mut self) -> Option<&mut T> {
+        self.current.as_mut()
+    }
+
     pub fn can_back(&self) -> bool {
         !self.back.is_empty()
     }

@@ -31,7 +31,7 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
 const API: &str = "https://api.spotify.com/v1";
 // Spotify rejects limit > 10 ("Invalid limit") on search and artist albums for Development Mode
 // apps (verified 2026-10-03 with a personal client id); playlists and saved tracks still take 50.
-const SEARCH_LIMIT: u32 = 10;
+pub const SEARCH_LIMIT: u32 = 10;
 const ARTIST_ALBUMS_LIMIT: u32 = 10;
 // Artist albums are paged 10 at a time; stop after this many pages.
 const ARTIST_ALBUM_PAGES: usize = 5;
@@ -188,6 +188,19 @@ impl WebApi {
             .chain(albums.iter().filter_map(album_row).take(SEARCH_ALBUMS))
             .chain(tracks.iter().filter_map(track_row))
             .collect())
+    }
+
+    /// The next page of track results for "Show more" (offset verified to work up to 990, 2026-10-03).
+    pub async fn search_tracks(&mut self, session: &Session, query: &str, offset: u32) -> Result<Vec<Item>, String> {
+        let url = format!("{API}/search?type=track&limit={SEARCH_LIMIT}&offset={offset}&q={}", url_encode(query));
+        let json = self.get_json(session, &url).await?;
+        Ok(json["tracks"]["items"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(track_row).collect())
+    }
+
+    /// Up next on the active device; `{"currently_playing":null,"queue":[]}` when nothing plays.
+    pub async fn queue(&mut self, session: &Session) -> Result<Vec<Item>, String> {
+        let json = self.get_json(session, &format!("{API}/me/player/queue")).await?;
+        Ok(json["queue"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(track_row).collect())
     }
 
     /// Albums saved to the library (`/me/albums` items wrap the album).

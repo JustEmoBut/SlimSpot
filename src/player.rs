@@ -29,13 +29,15 @@ use crate::covers::{self, CoverRequest};
 use crate::nav::History;
 use crate::settings::{self, LastSession, Quality, Repeat, Settings};
 use crate::ui::{App, Row, clear_lyrics, set_current, set_lyrics, set_page_header, set_playing, set_position, set_rows, set_status};
-use crate::web::{Item, LIKED_SONGS, WebApi};
+use crate::web::{Item, LIKED_SONGS, SEARCH_LIMIT, WebApi};
 
 // Spotify desktop client id; same as librespot's internal KEYMASTER_CLIENT_ID.
 const SPOTIFY_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
 const REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 const OAUTH_SCOPES: &[&str] = &["streaming"];
 const DEVICE_NAME: &str = "SlimSpot";
+// Last row of a full search page; clicking it appends the next page of tracks.
+const MORE_URI: &str = "slimspot:more";
 // Pauses between reconnect attempts after the Connect device drops; the last one repeats.
 const RECONNECT_BACKOFF: [Duration; 4] =
     [Duration::from_secs(2), Duration::from_secs(5), Duration::from_secs(15), Duration::from_secs(30)];
@@ -66,6 +68,8 @@ pub enum Command {
     RowAction { action: String, uri: String },
     Back,
     Forward,
+    /// Show what the active device plays next.
+    Queue,
 }
 
 pub fn cache_dir() -> PathBuf {
@@ -332,6 +336,12 @@ struct Page {
     shown: Shown,
     /// Sidebar entry to highlight (playlists and Liked Songs only), or "".
     list: String,
+    /// Search query and next track offset while "Show more" is offered.
+    more: Option<(String, u32)>,
+}
+
+fn more_row() -> Item {
+    Item { title: "Show more tracks".into(), uri: MORE_URI.into(), ..Default::default() }
 }
 
 /// Opens `page` as a new history entry and shows it.
@@ -347,7 +357,12 @@ fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<S
     set_current(ui, page.list.clone(), App::set_current_list);
     set_rows(ui, page.rows.clone(), App::set_tracks);
     set_page_header(ui, page.title.clone(), nav.can_back(), nav.can_forward());
-    set_status(ui, format!("{} items", page.rows.len()));
+    set_status(ui, page_summary(nav));
+}
+
+/// The resting status line: the page's size. Transient messages ("Loading...") fall back to it.
+fn page_summary(nav: &History<Page>) -> String {
+    nav.current().map(|p| format!("{} items", p.rows.iter().filter(|r| r.uri != MORE_URI).count())).unwrap_or_default()
 }
 
 /// The item behind a URI on screen: the current page, the sidebar, or what is playing.
@@ -536,7 +551,45 @@ pub async fn run(
                             // Only sidebar entries get highlighted.
                             let sidebar = uri == LIKED_SONGS || uri.starts_with("spotify:playlist:");
                             let list = if sidebar { uri } else { String::new() };
-                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Context(context), list });
+                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Context(context), list, more: None });
+                        }
+                        Err(e) => set_status(&ui, e),
+                    }
+                }
+                Command::PlayUri(uri) if uri == MORE_URI => {
+                    let (Some(w), Some(page)) = (web.as_mut(), nav.current_mut()) else { continue };
+                    let Some((query, offset)) = page.more.take() else { continue };
+                    set_status(&ui, "Loading more...");
+                    match w.search_tracks(&session, &query, offset).await {
+                        Ok(found) => {
+                            page.rows.pop(); // the "Show more" row
+                            if let Shown::Tracks(uris) = &mut page.shown {
+                                uris.extend(found.iter().map(|r| r.uri.clone()));
+                            }
+                            if found.len() == SEARCH_LIMIT as usize {
+                                page.more = Some((query, offset + SEARCH_LIMIT));
+                            }
+                            page.rows.extend(found);
+                            if page.more.is_some() {
+                                page.rows.push(more_row());
+                            }
+                        }
+                        // Keep the row so the click can be retried.
+                        Err(e) => {
+                            page.more = Some((query, offset));
+                            set_status(&ui, e);
+                            continue;
+                        }
+                    }
+                    show_current(&ui, &nav, &mut shown);
+                }
+                Command::Queue => {
+                    let Some(w) = web.as_mut() else { continue };
+                    set_status(&ui, "Loading queue...");
+                    match w.queue(&session).await {
+                        Ok(rows) => {
+                            let uris = rows.iter().map(|r| r.uri.clone()).collect();
+                            open_page(&ui, &mut nav, &mut shown, Page { title: "Queue".into(), rows, shown: Shown::Tracks(uris), list: String::new(), more: None });
                         }
                         Err(e) => set_status(&ui, e),
                     }
@@ -567,12 +620,15 @@ pub async fn run(
                     };
                     set_status(&ui, "Searching...");
                     match w.search(&session, q.trim()).await {
-                        Ok(rows) => {
-                            set_status(&ui, format!("{} results", rows.len()));
+                        Ok(mut rows) => {
                             // Only the track rows form the play queue; album/artist rows open pages.
-                            let tracks = rows.iter().filter(|r| r.uri.starts_with("spotify:track:")).map(|r| r.uri.clone()).collect();
+                            let tracks: Vec<String> = rows.iter().filter(|r| r.uri.starts_with("spotify:track:")).map(|r| r.uri.clone()).collect();
+                            let more = (tracks.len() == SEARCH_LIMIT as usize).then(|| (q.trim().to_string(), SEARCH_LIMIT));
+                            if more.is_some() {
+                                rows.push(more_row());
+                            }
                             let title = format!("Search: {}", q.trim());
-                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Tracks(tracks), list: String::new() });
+                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Tracks(tracks), list: String::new(), more });
                         }
                         Err(e) => set_status(&ui, e),
                     }
@@ -622,6 +678,7 @@ pub async fn run(
                                 rows,
                                 shown: Shown::Tracks(uris.clone()),
                                 list: String::new(),
+                                more: None,
                             });
                             playing_context = None;
                             pending_resume = None;
@@ -831,7 +888,7 @@ pub async fn run(
                     _ => continue,
                 }
                 set_playing(&ui, playing);
-                if playing { set_status(&ui, "Playing") } else { set_status(&ui, "Paused / stopped") }
+                set_status(&ui, page_summary(&nav));
             },
             else => break,
         }

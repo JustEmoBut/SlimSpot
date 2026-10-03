@@ -42,6 +42,7 @@ slint::slint! {
         out property <string> settings: "M4 7 H20 M4 12 H20 M4 17 H20 M9 5 V9 M15 10 V14 M7 15 V19";
         out property <string> back: "M15 5 L8 12 L15 19";
         out property <string> forward: "M9 5 L16 12 L9 19";
+        out property <string> queue: "M4 6 H20 M4 11 H20 M4 16 H11 M15 14 V20 L20 17 Z";
     }
 
     component Icon inherits Path {
@@ -312,6 +313,9 @@ slint::slint! {
         callback load-devices();
         callback transfer(string);
         callback start-radio();
+        callback show-queue();
+        // Dark shade of the playing cover's average color; tints the top of the main panel.
+        in property <color> now-tint: Theme.panel;
         // Row menu: action is radio/artist/album/like/open/copy, uri is the row's.
         callback row-action(string, string);
         // Mirrors the Windows Run registry value (see autostart.rs).
@@ -376,6 +380,7 @@ slint::slint! {
                     if (event.text == "q") { root.quit(); return accept; }
                     if (event.text == "y") { root.show-lyrics = !root.show-lyrics; return accept; }
                     if (event.text == "e") { root.start-radio(); return accept; }
+                    if (event.text == "u") { root.show-lyrics = false; root.show-queue(); return accept; }
                 }
                 if (event.modifiers.alt && event.text == Key.LeftArrow) { root.go-back(); return accept; }
                 if (event.modifiers.alt && event.text == Key.RightArrow) { root.go-forward(); return accept; }
@@ -423,6 +428,13 @@ slint::slint! {
                 Rectangle {
                     border-radius: 8px;
                     background: Theme.panel;
+                    Rectangle {
+                        y: 0;
+                        height: 280px;
+                        border-radius: 8px;
+                        background: @linear-gradient(180deg, root.now-tint 0%, Theme.panel 100%);
+                        animate background { duration: 600ms; }
+                    }
                     VerticalLayout {
                         padding: 16px;
                         spacing: 12px;
@@ -487,6 +499,8 @@ slint::slint! {
                             for row[i] in tracks: RowItem {
                                 data: row;
                                 playing: row.uri == root.current-track;
+                                // "Show more tracks" and similar app rows have no menu.
+                                menu: !row.uri.starts-with("slimspot:");
                                 clicked => { root.play-uri(row.uri); }
                                 action(a) => { root.row-action(a, row.uri); }
                                 need-cover => { root.need-cover(0, i, row.uri, row.cover-url); }
@@ -642,6 +656,7 @@ slint::slint! {
                     spacing: 4px;
                     alignment: end;
                     IconButton { y: (parent.height - self.height) / 2; shape: Icons.lyrics; active: root.show-lyrics; size: 18px; clicked => { root.show-lyrics = !root.show-lyrics; } }
+                    IconButton { y: (parent.height - self.height) / 2; shape: Icons.queue; size: 18px; clicked => { root.show-lyrics = false; root.show-queue(); } }
                     IconButton { y: (parent.height - self.height) / 2; shape: Icons.radio; size: 18px; enabled: root.now.uri != ""; clicked => { root.start-radio(); } }
                     IconButton { y: (parent.height - self.height) / 2; shape: Icons.devices; size: 18px; clicked => { root.load-devices(); devices-popup.show(); } }
                     IconButton {

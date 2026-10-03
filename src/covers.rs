@@ -79,9 +79,35 @@ fn corner_coverage(x: u32, y: u32, w: u32, h: u32, radius: f32) -> f32 {
     (radius + 0.5 - dist).clamp(0.0, 1.0)
 }
 
+// Share of the cover color kept for the panel tint, so white text stays readable (looked right at 0.45).
+const TINT_BRIGHTNESS: f32 = 0.45;
+
+fn dim(channel: u8) -> u8 {
+    (channel as f32 * TINT_BRIGHTNESS) as u8
+}
+
+/// Alpha-weighted average of RGBA bytes; the transparent rounded corners don't pull it to black.
+fn average_rgb(rgba: &[u8]) -> [u8; 3] {
+    let (mut sum, mut weight) = ([0u64; 3], 0u64);
+    for px in rgba.chunks_exact(4) {
+        let a = px[3] as u64;
+        for c in 0..3 {
+            sum[c] += px[c] as u64 * a;
+        }
+        weight += a;
+    }
+    sum.map(|s| s.checked_div(weight).unwrap_or(0) as u8)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::corner_coverage;
+    use super::{average_rgb, corner_coverage};
+
+    #[test]
+    fn average_ignores_transparent_pixels() {
+        assert_eq!(average_rgb(&[200, 100, 0, 255, 0, 0, 0, 0]), [200, 100, 0]);
+        assert_eq!(average_rgb(&[]), [0, 0, 0]);
+    }
 
     #[test]
     fn corners_are_transparent_and_centre_opaque() {
@@ -112,6 +138,8 @@ fn set_cover(app: &App, req: CoverRequest, pixels: SharedPixelBuffer<Rgba8Pixel>
     if req.kind == 2 {
         let mut now = app.get_now();
         if now.uri == req.uri.as_str() {
+            let [r, g, b] = average_rgb(pixels.as_bytes());
+            app.set_now_tint(slint::Color::from_rgb_u8(dim(r), dim(g), dim(b)));
             now.cover = slint::Image::from_rgba8(pixels);
             app.set_now(now);
         }
