@@ -50,6 +50,21 @@ pub fn bring_to_front(app: &crate::ui::App) {
     }
 }
 
+/// Dark title bar to match the dark UI (Windows 10 20H1+; ignored where unsupported).
+pub fn dark_title_bar(app: &crate::ui::App) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use slint::ComponentHandle;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+
+    if let Ok(RawWindowHandle::Win32(h)) = app.window().window_handle().window_handle().map(|h| h.as_raw()) {
+        let on: i32 = 1;
+        let _ = unsafe {
+            DwmSetWindowAttribute(HWND(h.hwnd.get() as _), DWMWA_USE_IMMERSIVE_DARK_MODE, (&on as *const i32).cast(), size_of::<i32>() as u32)
+        };
+    }
+}
+
 impl Instance {
     /// Calls `on_wake` (from a background thread) every time another launch signals us.
     pub fn listen(self, on_wake: impl Fn() + Send + 'static) {

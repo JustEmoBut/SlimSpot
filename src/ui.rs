@@ -5,35 +5,194 @@ use slint::{ModelRc, VecModel};
 use crate::web::Item;
 
 slint::slint! {
-    import { Button, CheckBox, ComboBox, LineEdit, ListView, Palette, Slider } from "std-widgets.slint";
+    import { CheckBox, ListView, Palette } from "std-widgets.slint";
     export struct Row { title: string, artist: string, uri: string, cover-url: string, cover: image }
+
+    // Spotify-like dark palette. Colors whose hex starts with a digit and `e` are written as rgb():
+    // inside slint! the Rust tokenizer reads them as float exponents.
+    global Theme {
+        out property <color> base: #000000;
+        out property <color> panel: #121212;
+        out property <color> raised: #1f1f1f;
+        out property <color> hover: #2a2a2a;
+        out property <color> selected: #333333;
+        out property <color> field: #242424;
+        out property <color> text: #ffffff;
+        out property <color> subdued: #b3b3b3;
+        out property <color> muted: #727272;
+        out property <color> track: #4d4d4d;
+        out property <color> accent: rgb(30, 215, 96);
+    }
+
+    // 24x24 line/fill icons, drawn here (no icon font or image assets).
+    global Icons {
+        out property <string> play: "M8 5 L19 12 L8 19 Z";
+        out property <string> pause: "M6.5 5 H10 V19 H6.5 Z M14 5 H17.5 V19 H14 Z";
+        out property <string> next: "M5.5 5.5 L15 12 L5.5 18.5 Z M16 5 H18.5 V19 H16 Z";
+        out property <string> prev: "M18.5 5.5 L9 12 L18.5 18.5 Z M5.5 5 H8 V19 H5.5 Z";
+        out property <string> shuffle: "M3 7 H7 L15 17 H20 M3 17 H7 L9.6 13.8 M14.4 10.2 L15 7 H20 M17 4 L20 7 L17 10 M17 14 L20 17 L17 20";
+        out property <string> repeat: "M4 12 V10 C4 8 5.5 6.5 7.5 6.5 H18 M15 3.5 L18 6.5 L15 9.5 M20 12 V14 C20 16 18.5 17.5 16.5 17.5 H6 M9 20.5 L6 17.5 L9 14.5";
+        out property <string> heart: "M12 20 C12 20 3 14.5 3 8.8 C3 6 5.1 4 7.6 4 C9.4 4 11 5 12 6.6 C13 5 14.6 4 16.4 4 C18.9 4 21 6 21 8.8 C21 14.5 12 20 12 20 Z";
+        out property <string> lyrics: "M9.5 3.5 H14.5 V11.5 C14.5 14 9.5 14 9.5 11.5 Z M6 11 C6 18 18 18 18 11 M12 16.5 V21 M8.5 21 H15.5";
+        out property <string> radio: "M8.8 8.8 C7 10.6 7 13.4 8.8 15.2 M15.2 8.8 C17 10.6 17 13.4 15.2 15.2 M5.8 5.8 C2.4 9.2 2.4 14.8 5.8 18.2 M18.2 5.8 C21.6 9.2 21.6 14.8 18.2 18.2 M12 10.6 C12.8 10.6 13.4 11.2 13.4 12 C13.4 12.8 12.8 13.4 12 13.4 C11.2 13.4 10.6 12.8 10.6 12 C10.6 11.2 11.2 10.6 12 10.6 Z";
+        out property <string> devices: "M3 5 H14 V15 H3 Z M6 19 H11 M8.5 15 V19 M17 7 H21 V19 H17 Z";
+        out property <string> volume: "M4 9.5 H7.5 L12 5.5 V18.5 L7.5 14.5 H4 Z M15.5 9 C16.8 10.5 16.8 13.5 15.5 15 M18 6.5 C20.8 9.5 20.8 14.5 18 17.5";
+        out property <string> muted: "M4 9.5 H7.5 L12 5.5 V18.5 L7.5 14.5 H4 Z M15.5 9.5 L20.5 14.5 M20.5 9.5 L15.5 14.5";
+        out property <string> search: "M17 10.5 C17 14.1 14.1 17 10.5 17 C6.9 17 4 14.1 4 10.5 C4 6.9 6.9 4 10.5 4 C14.1 4 17 6.9 17 10.5 Z M15.5 15.5 L20 20";
+        out property <string> settings: "M4 7 H20 M4 12 H20 M4 17 H20 M9 5 V9 M15 10 V14 M7 15 V19";
+    }
+
+    component Icon inherits Path {
+        in property <string> shape;
+        in property <bool> filled;
+        in property <color> tint: Theme.subdued;
+        commands: shape;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        fill: filled ? tint : transparent;
+        stroke: filled ? transparent : tint;
+        stroke-width: 1.8px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+
+    // Flat icon button: grey, white on hover, green with a dot underneath while `active`.
+    component IconButton inherits TouchArea {
+        in property <string> shape;
+        in property <bool> filled;
+        in property <bool> active;
+        in property <bool> dot: active;
+        in property <length> size: 20px;
+        width: 34px;
+        height: 34px;
+        mouse-cursor: pointer;
+        Icon {
+            x: (parent.width - root.size) / 2;
+            y: (parent.height - root.size) / 2;
+            width: root.size;
+            height: root.size;
+            shape: root.shape;
+            filled: root.filled;
+            tint: !root.enabled ? Theme.muted : root.active ? Theme.accent : root.has-hover ? Theme.text : Theme.subdued;
+        }
+        if root.dot : Rectangle {
+            x: (parent.width - 4px) / 2;
+            y: parent.height - 4px;
+            width: 4px;
+            height: 4px;
+            border-radius: 2px;
+            background: Theme.accent;
+        }
+    }
+
+    // The round white play/pause button in the middle of the player bar.
+    component PlayButton inherits TouchArea {
+        in property <bool> playing;
+        width: 36px;
+        height: 36px;
+        mouse-cursor: pointer;
+        Rectangle {
+            width: root.has-hover ? 38px : 36px;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: Theme.text;
+            Icon {
+                width: 18px;
+                height: 18px;
+                shape: root.playing ? Icons.pause : Icons.play;
+                filled: true;
+                tint: Theme.base;
+            }
+        }
+    }
+
+    // Slim progress/volume bar: white fill, green with a knob while hovered or dragged.
+    component Bar inherits Rectangle {
+        in-out property <float> value;
+        in property <float> maximum: 1;
+        in property <bool> enabled: true;
+        callback dragged(float);
+        callback released(float);
+        property <float> fraction: root.maximum > 0 ? max(0, min(1, root.value / root.maximum)) : 0;
+        property <bool> hot: ta.has-hover || ta.pressed;
+        height: 14px;
+        Rectangle {
+            y: (parent.height - self.height) / 2;
+            height: 4px;
+            border-radius: 2px;
+            background: Theme.track;
+            Rectangle {
+                x: 0;
+                width: parent.width * root.fraction;
+                border-radius: 2px;
+                background: root.hot && root.enabled ? Theme.accent : Theme.text;
+            }
+        }
+        if root.hot && root.enabled : Rectangle {
+            x: parent.width * root.fraction - 6px;
+            y: (parent.height - 12px) / 2;
+            width: 12px;
+            height: 12px;
+            border-radius: 6px;
+            background: Theme.text;
+        }
+        ta := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: pointer;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    root.value = max(0, min(1, self.mouse-x / root.width)) * root.maximum;
+                    root.dragged(root.value);
+                } else if (event.kind == PointerEventKind.up) {
+                    root.released(root.value);
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    root.value = max(0, min(1, self.mouse-x / root.width)) * root.maximum;
+                    root.dragged(root.value);
+                }
+            }
+        }
+    }
 
     component RowItem inherits TouchArea {
         in property <Row> data;
         in property <bool> selected;
+        // Playing rows show their title in green, like Spotify.
+        in property <bool> playing;
+        in property <length> cover-size: 40px;
         // Fired whenever this (possibly recycled) row instance shows a row without a loaded cover.
         callback need-cover();
         init => { if (data.cover-url != "" && data.cover.width == 0) { need-cover() } }
         changed data => { if (data.cover-url != "" && data.cover.width == 0) { need-cover() } }
-        height: 40px;
+        height: root.cover-size + 16px;
+        mouse-cursor: pointer;
         Rectangle {
-            background: root.selected ? #1db95440 : root.has-hover ? #8882 : transparent;
+            border-radius: 6px;
+            background: root.selected ? Theme.selected : root.has-hover ? Theme.hover : transparent;
             HorizontalLayout {
-                padding-left: 4px;
-                spacing: 8px;
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 12px;
                 alignment: start;
                 Rectangle {
-                    width: 32px;
-                    height: 32px;
-                    y: 4px;
+                    width: root.cover-size;
+                    height: root.cover-size;
+                    y: (parent.height - self.height) / 2;
+                    // Artists are round, everything else gets slightly rounded corners.
+                    border-radius: data.uri.starts-with("spotify:artist:") ? root.cover-size / 2 : 4px;
+                    clip: true;
                     // Spotify has no image for Liked Songs; mimic its gradient tile.
-                    background: data.uri == "liked" ? @linear-gradient(135deg, #450af5 0%, #c4efd9 100%) : #8883;
-                    Image { source: data.cover; width: 32px; height: 32px; }
+                    background: data.uri == "liked" ? @linear-gradient(135deg, #450af5 0%, #c4efd9 100%) : Theme.raised;
+                    Image { source: data.cover; width: parent.width; height: parent.height; image-fit: cover; }
+                    if data.uri == "liked" : Icon { width: parent.width * 0.5; height: self.width; shape: Icons.heart; filled: true; tint: Theme.text; }
                 }
                 VerticalLayout {
                     alignment: center;
-                    Text { text: data.title; overflow: elide; }
-                    Text { text: data.artist; overflow: elide; font-size: 11px; opacity: 0.7; }
+                    spacing: 2px;
+                    Text { text: data.title; overflow: elide; font-size: 14px; color: root.playing ? Theme.accent : Theme.text; }
+                    Text { text: data.artist; overflow: elide; font-size: 12px; color: Theme.subdued; }
                 }
             }
         }
@@ -44,7 +203,7 @@ slint::slint! {
         in property <[string]> lines;
         in property <int> current: -1;
         in property <string> note;
-        property <length> line-height: 36px;
+        property <length> line-height: 46px;
         // Keep the sung line in the middle; the user can still scroll in between line changes.
         changed current => {
             if (current >= 0) {
@@ -55,7 +214,8 @@ slint::slint! {
             text: note;
             horizontal-alignment: center;
             vertical-alignment: center;
-            opacity: 0.7;
+            font-size: 18px;
+            color: Theme.subdued;
         }
         lv := ListView {
             for line[i] in lines : Text {
@@ -63,22 +223,39 @@ slint::slint! {
                 height: line-height;
                 vertical-alignment: center;
                 overflow: elide;
-                font-size: i == current ? 18px : 15px;
-                font-weight: i == current ? 700 : 400;
-                color: i == current ? rgb(94, 234, 212) : Palette.foreground;
-                opacity: current < 0 || i <= current ? 1 : 0.55;
+                font-size: 24px;
+                font-weight: 700;
+                // Sung and current lines are white, upcoming ones dimmed.
+                color: current < 0 || i <= current ? Theme.text : #ffffff66;
             }
+        }
+    }
+
+    // A pill-shaped choice used in the settings popup.
+    component Chip inherits TouchArea {
+        in property <string> label;
+        in property <bool> chosen;
+        height: 30px;
+        mouse-cursor: pointer;
+        min-width: t.preferred-width + 24px;
+        Rectangle {
+            border-radius: 15px;
+            background: root.chosen ? Theme.text : root.has-hover ? Theme.hover : Theme.raised;
+            t := Text { text: root.label; font-size: 13px; color: root.chosen ? Theme.base : Theme.text; }
         }
     }
 
     export component App inherits Window {
         title: "SlimSpot";
         icon: root.app-icon;
+        background: Theme.base;
         // Decoded from assets/icon-64.png at startup (no runtime SVG renderer).
         in property <image> app-icon;
         callback quit();
-        preferred-width: 820px;
-        preferred-height: 560px;
+        preferred-width: 1040px;
+        preferred-height: 680px;
+        min-width: 760px;
+        min-height: 480px;
         in property <string> status: "Starting...";
         in property <bool> playing: false;
         in property <[Row]> lists;
@@ -95,7 +272,7 @@ slint::slint! {
         // save: false while dragging, true on release (so the settings file isn't rewritten per pixel).
         callback set-volume(float, bool);
         callback toggle-shuffle();
-        // Index into the quality ComboBox: 0 = 96, 1 = 160, 2 = 320 kbps (matches settings::Quality).
+        // Index of the chosen quality: 0 = 96, 1 = 160, 2 = 320 kbps (matches settings::Quality).
         in-out property <int> quality: 2;
         in-out property <bool> normalize;
         callback set-quality(int);
@@ -130,7 +307,7 @@ slint::slint! {
         in property <bool> shuffle;
         // 0 = off, 1 = all, 2 = one (matches settings::Repeat).
         in property <int> repeat;
-        // True while the seek slider is dragged, so the timer doesn't fight the user.
+        // True while the seek bar is dragged, so the timer doesn't fight the user.
         in-out property <bool> seeking;
         changed now => {
             if (now.cover-url != "" && now.cover.width == 0) { root.need-cover(2, 0, now.uri, now.cover-url) }
@@ -144,6 +321,8 @@ slint::slint! {
         in-out property <bool> repaint-flip;
         // Mirrors title/artist/playing state to the OS media overlay.
         callback now-playing-changed();
+        // The std widgets left (CheckBox) follow the dark palette.
+        init => { Palette.color-scheme = ColorScheme.dark; }
 
         pure function fmt(ms: float) -> string {
             let s = floor(ms / 1000);
@@ -174,38 +353,131 @@ slint::slint! {
                 reject
             }
         VerticalLayout {
+            padding: 8px;
+            spacing: 8px;
             HorizontalLayout {
-                padding: 12px;
-                spacing: 12px;
+                spacing: 8px;
                 vertical-stretch: 1;
-                ListView {
-                    width: 240px;
-                    for row[i] in lists: RowItem {
-                        data: row;
-                        selected: row.uri == root.current-list;
-                        clicked => { root.open-list(row.uri); }
-                        need-cover => { root.need-cover(1, i, row.uri, row.cover-url); }
+                // Your Library
+                Rectangle {
+                    width: 280px;
+                    border-radius: 8px;
+                    background: Theme.panel;
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 8px;
+                        Text {
+                            text: "Your Library";
+                            font-size: 16px;
+                            font-weight: 700;
+                            color: Theme.text;
+                            horizontal-alignment: left;
+                            height: 32px;
+                            vertical-alignment: center;
+                            x: 8px;
+                        }
+                        ListView {
+                            for row[i] in lists: RowItem {
+                                data: row;
+                                cover-size: 48px;
+                                selected: row.uri == root.current-list;
+                                clicked => { root.open-list(row.uri); }
+                                need-cover => { root.need-cover(1, i, row.uri, row.cover-url); }
+                            }
+                        }
                     }
                 }
-                VerticalLayout {
-                    spacing: 8px;
-                    Text { text: status; wrap: word-wrap; }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        query := LineEdit {
-                            placeholder-text: "Search, or paste a track link";
-                            accepted => { root.submit(self.text); }
+                // Main panel
+                Rectangle {
+                    border-radius: 8px;
+                    background: Theme.panel;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            height: 44px;
+                            // Search pill
+                            Rectangle {
+                                max-width: 420px;
+                                border-radius: 22px;
+                                background: query.has-focus ? Theme.hover : Theme.field;
+                                border-width: query.has-focus ? 2px : 0px;
+                                border-color: Theme.text;
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 16px;
+                                    spacing: 10px;
+                                    Icon { width: 20px; height: 20px; y: (parent.height - 20px) / 2; shape: Icons.search; tint: Theme.subdued; }
+                                    Rectangle {
+                                        query := TextInput {
+                                            y: (parent.height - self.height) / 2;
+                                            width: parent.width;
+                                            single-line: true;
+                                            font-size: 14px;
+                                            color: Theme.text;
+                                            accepted => { root.submit(self.text); }
+                                        }
+                                        if query.text == "" : Text {
+                                            x: 0;
+                                            text: "What do you want to play? Search or paste a link";
+                                            font-size: 14px;
+                                            color: Theme.muted;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            settings-button := IconButton {
+                                y: (parent.height - self.height) / 2;
+                                shape: Icons.settings;
+                                clicked => { settings-popup.show(); }
+                            }
                         }
-                        Button { text: "Go"; clicked => { root.submit(query.text); } }
+                        Text { text: root.status; font-size: 12px; color: Theme.subdued; overflow: elide; }
+                        if root.show-lyrics : LyricsView {
+                            vertical-stretch: 1;
+                            lines: root.lyric-lines;
+                            current: root.lyric-index;
+                            note: root.lyrics-note;
+                        }
+                        if !root.show-lyrics : ListView {
+                            vertical-stretch: 1;
+                            for row[i] in tracks: RowItem {
+                                data: row;
+                                playing: row.uri == root.current-track;
+                                clicked => { root.play-uri(row.uri); }
+                                need-cover => { root.need-cover(0, i, row.uri, row.cover-url); }
+                            }
+                        }
                     }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-                        Text { text: "Quality"; vertical-alignment: center; font-size: 11px; }
-                        ComboBox {
-                            model: ["96 kbps", "160 kbps", "320 kbps"];
-                            current-index <=> root.quality;
-                            selected => { root.set-quality(self.current-index); }
+                }
+            }
+            settings-popup := PopupWindow {
+                x: root.width - 340px;
+                y: 64px;
+                width: 320px;
+                height: 210px;
+                close-policy: close-on-click-outside;
+                Rectangle {
+                    background: Theme.raised;
+                    border-radius: 8px;
+                    drop-shadow-blur: 16px;
+                    drop-shadow-color: #00000099;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+                        Text { text: "Audio quality"; font-size: 13px; font-weight: 700; color: Theme.text; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            for label[i] in ["96 kbps", "160 kbps", "320 kbps"] : Chip {
+                                label: label;
+                                chosen: root.quality == i;
+                                clicked => { root.quality = i; root.set-quality(i); }
+                            }
                         }
                         CheckBox {
                             text: "Normalize volume";
@@ -218,41 +490,34 @@ slint::slint! {
                             toggled => { root.set-autostart(self.checked); }
                         }
                     }
-                    if root.show-lyrics : LyricsView {
-                        vertical-stretch: 1;
-                        lines: root.lyric-lines;
-                        current: root.lyric-index;
-                        note: root.lyrics-note;
-                    }
-                    if !root.show-lyrics : ListView {
-                        vertical-stretch: 1;
-                        for row[i] in tracks: RowItem {
-                            data: row;
-                            selected: row.uri == root.current-track;
-                            clicked => { root.play-uri(row.uri); }
-                            need-cover => { root.need-cover(0, i, row.uri, row.cover-url); }
-                        }
-                    }
                 }
             }
             devices-popup := PopupWindow {
-                x: root.width - 312px;
-                y: root.height - 72px - 236px;
-                width: 300px;
-                height: 230px;
+                x: root.width - 340px;
+                y: root.height - 88px - 290px;
+                width: 320px;
+                height: 280px;
+                close-policy: close-on-click-outside;
                 Rectangle {
-                    background: Palette.background;
-                    border-color: Palette.border;
-                    border-width: 1px;
-                    border-radius: 6px;
+                    background: Theme.raised;
+                    border-radius: 8px;
+                    drop-shadow-blur: 16px;
+                    drop-shadow-color: #00000099;
                     VerticalLayout {
-                        padding: 8px;
-                        spacing: 4px;
-                        Text { text: "Play on"; font-weight: 700; }
-                        if root.devices.length == 0 : Text { text: "Loading devices... (open Spotify on the other device if it's missing)"; wrap: word-wrap; opacity: 0.7; }
+                        padding: 12px;
+                        spacing: 8px;
+                        Text { text: "Connect to a device"; font-size: 15px; font-weight: 700; color: Theme.text; }
+                        if root.devices.length == 0 : Text {
+                            text: "Looking for devices... (open Spotify on the other device if it's missing)";
+                            wrap: word-wrap;
+                            font-size: 12px;
+                            color: Theme.subdued;
+                        }
                         ListView {
                             for d in root.devices : RowItem {
                                 data: d;
+                                cover-size: 32px;
+                                playing: d.artist.ends-with("playing here");
                                 clicked => { root.transfer(d.uri); devices-popup.close(); }
                             }
                         }
@@ -261,92 +526,96 @@ slint::slint! {
             }
             // Player bar
             HorizontalLayout {
-                padding: 12px;
-                padding-top: 0px;
-                spacing: 12px;
                 height: 72px;
-                Rectangle {
-                    width: 56px;
-                    height: 56px;
-                    y: 0px;
-                    background: #8883;
-                    Image { source: now.cover; width: 56px; height: 56px; }
+                spacing: 16px;
+                padding-left: 8px;
+                padding-right: 8px;
+                // Now playing
+                HorizontalLayout {
+                    width: 30%;
+                    spacing: 12px;
+                    alignment: start;
+                    Rectangle {
+                        width: 56px;
+                        height: 56px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 4px;
+                        clip: true;
+                        background: Theme.raised;
+                        Image { source: now.cover; width: parent.width; height: parent.height; image-fit: cover; }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        Text { text: now.title; overflow: elide; font-size: 14px; color: Theme.text; }
+                        Text { text: now.artist; overflow: elide; font-size: 12px; color: Theme.subdued; }
+                    }
+                    // Not a toggle: the heart shows only what Spotify reported, even if a click fails.
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        shape: Icons.heart;
+                        filled: root.liked;
+                        active: root.liked;
+                        dot: false;
+                        size: 18px;
+                        enabled: root.now.uri != "";
+                        clicked => { root.toggle-like(); }
+                    }
                 }
-                VerticalLayout {
-                    width: 200px;
-                    alignment: center;
-                    Text { text: now.title; overflow: elide; }
-                    Text { text: now.artist; overflow: elide; font-size: 11px; opacity: 0.7; }
-                }
+                // Controls + progress
                 VerticalLayout {
                     horizontal-stretch: 1;
                     alignment: center;
                     spacing: 4px;
                     HorizontalLayout {
                         alignment: center;
-                        spacing: 6px;
-                        Button {
-                            text: "Shuffle";
-                            checkable: true;
-                            checked: root.shuffle;
-                            clicked => { root.toggle-shuffle(); }
-                        }
-                        Button { text: "Prev"; clicked => { root.prev(); } }
-                        Button { text: playing ? "Pause" : "Play"; clicked => { root.toggle(); } }
-                        Button { text: "Next"; clicked => { root.next(); } }
-                        Button {
-                            text: "Lyrics";
-                            checkable: true;
-                            checked <=> root.show-lyrics;
-                        }
-                        // Not checkable: a checkable button flips itself on click, which would show
-                        // "liked" even when the request fails. The state comes only from the backend.
-                        Button {
-                            text: root.liked ? "Liked" : "Like";
-                            primary: root.liked;
-                            enabled: root.now.uri != "";
-                            clicked => { root.toggle-like(); }
-                        }
-                        Button {
-                            text: "Radio";
-                            enabled: root.now.uri != "";
-                            clicked => { root.start-radio(); }
-                        }
-                        Button {
-                            text: "Devices";
-                            clicked => { root.load-devices(); devices-popup.show(); }
-                        }
-                        Button {
-                            text: root.repeat == 2 ? "Repeat: One" : root.repeat == 1 ? "Repeat: All" : "Repeat: Off";
-                            checkable: true;
-                            checked: root.repeat != 0;
-                            clicked => { root.cycle-repeat(); }
+                        spacing: 12px;
+                        IconButton { shape: Icons.shuffle; active: root.shuffle; size: 18px; clicked => { root.toggle-shuffle(); } }
+                        IconButton { shape: Icons.prev; filled: true; size: 18px; clicked => { root.prev(); } }
+                        PlayButton { y: (parent.height - self.height) / 2; playing: root.playing; clicked => { root.toggle(); } }
+                        IconButton { shape: Icons.next; filled: true; size: 18px; clicked => { root.next(); } }
+                        Rectangle {
+                            width: 34px;
+                            IconButton { shape: Icons.repeat; active: root.repeat != 0; size: 18px; clicked => { root.cycle-repeat(); } }
+                            // Repeat one: a small "1" badge like Spotify's.
+                            if root.repeat == 2 : Text { x: 21px; y: 3px; text: "1"; font-size: 9px; font-weight: 700; color: Theme.accent; }
                         }
                     }
                     HorizontalLayout {
                         spacing: 8px;
-                        Text { text: fmt(position); vertical-alignment: center; font-size: 11px; }
-                        Slider {
-                            minimum: 0;
-                            maximum: max(duration, 1);
+                        Text { text: fmt(position); width: 40px; horizontal-alignment: right; vertical-alignment: center; font-size: 11px; color: Theme.subdued; }
+                        Bar {
+                            horizontal-stretch: 1;
+                            maximum: max(root.duration, 1);
                             value <=> root.position;
-                            enabled: duration > 0;
-                            changed => { root.seeking = true; }
+                            enabled: root.duration > 0;
+                            dragged => { root.seeking = true; }
                             released(v) => { root.seeking = false; root.seek(v); }
                         }
-                        Text { text: fmt(duration); vertical-alignment: center; font-size: 11px; }
+                        Text { text: fmt(duration); width: 40px; vertical-alignment: center; font-size: 11px; color: Theme.subdued; }
                     }
                 }
+                // Extras + volume
                 HorizontalLayout {
-                    width: 140px;
-                    spacing: 6px;
-                    Text { text: "Vol"; vertical-alignment: center; font-size: 11px; }
-                    Slider {
-                        horizontal-stretch: 1;
-                        minimum: 0;
+                    width: 30%;
+                    spacing: 4px;
+                    alignment: end;
+                    IconButton { y: (parent.height - self.height) / 2; shape: Icons.lyrics; active: root.show-lyrics; size: 18px; clicked => { root.show-lyrics = !root.show-lyrics; } }
+                    IconButton { y: (parent.height - self.height) / 2; shape: Icons.radio; size: 18px; enabled: root.now.uri != ""; clicked => { root.start-radio(); } }
+                    IconButton { y: (parent.height - self.height) / 2; shape: Icons.devices; size: 18px; clicked => { root.load-devices(); devices-popup.show(); } }
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        shape: root.volume <= 0 ? Icons.muted : Icons.volume;
+                        size: 18px;
+                        dot: false;
+                        clicked => { root.volume = root.volume > 0 ? 0 : 50; root.set-volume(root.volume, true); }
+                    }
+                    Bar {
+                        y: (parent.height - self.height) / 2;
+                        width: 100px;
                         maximum: 100;
                         value <=> root.volume;
-                        changed(v) => { root.set-volume(v, false); }
+                        dragged(v) => { root.set-volume(v, false); }
                         released(v) => { root.set-volume(v, true); }
                     }
                 }

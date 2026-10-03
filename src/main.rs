@@ -180,6 +180,7 @@ fn main() -> Result<(), slint::PlatformError> {
             };
             if done {
                 timer.stop();
+                instance::dark_title_bar(&app);
                 // Tray start: the window was only shown so its HWND exists for the media keys.
                 if start_in_tray {
                     let _ = app.hide();

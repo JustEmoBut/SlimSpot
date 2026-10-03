@@ -15,6 +15,8 @@ const COVER_PX: u32 = 64;
 // ~4.7 MiB of pixels at most, far more than the rows visible at once.
 const MAX_LOADED_COVERS: usize = 300;
 const COVER_FETCHES_IN_FLIGHT: usize = 6;
+// Corner radius baked into non-artist covers, in thumbnail pixels (~4 px on a 48 px row at 1x).
+const CORNER_PX: f32 = 6.0;
 
 /// kind: 0 = track list, 1 = sidebar, 2 = now-playing bar (matches the Slint callback).
 pub struct CoverRequest {
@@ -38,7 +40,9 @@ pub async fn worker(session: Session, ui: slint::Weak<App>, mut rx: mpsc::Unboun
             let _permit = limit.acquire().await;
             let key = (req.kind, req.uri.clone());
             // A missing cover leaves the grey placeholder; nothing else depends on it.
-            if let Ok(pixels) = fetch_thumbnail(&session, &req.url).await {
+            // Artists are shown round, like Spotify.
+            let round = req.uri.starts_with("spotify:artist:");
+            if let Ok(pixels) = fetch_thumbnail(&session, &req.url, round).await {
                 let _ = ui.upgrade_in_event_loop(move |app| set_cover(&app, req, pixels));
             }
             in_flight.lock().unwrap().remove(&key);
@@ -46,7 +50,7 @@ pub async fn worker(session: Session, ui: slint::Weak<App>, mut rx: mpsc::Unboun
     }
 }
 
-async fn fetch_thumbnail(session: &Session, url: &str) -> Result<SharedPixelBuffer<Rgba8Pixel>, String> {
+async fn fetch_thumbnail(session: &Session, url: &str, round: bool) -> Result<SharedPixelBuffer<Rgba8Pixel>, String> {
     let req = http::Request::get(url).body(bytes::Bytes::new()).map_err(|e| e.to_string())?;
     let resp = session.http_client().request_fut(req).map_err(|e| e.to_string())?.await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
@@ -54,8 +58,43 @@ async fn fetch_thumbnail(session: &Session, url: &str) -> Result<SharedPixelBuff
     }
     let body = http_body_util::BodyExt::collect(resp.into_body()).await.map_err(|e| e.to_string())?.to_bytes();
     let img = image::load_from_memory(&body).map_err(|e| e.to_string())?;
-    let thumb = image::imageops::thumbnail(&img.to_rgba8(), COVER_PX, COVER_PX);
-    Ok(SharedPixelBuffer::clone_from_slice(thumb.as_raw(), thumb.width(), thumb.height()))
+    let mut thumb = image::imageops::thumbnail(&img.to_rgba8(), COVER_PX, COVER_PX);
+    let (w, h) = thumb.dimensions();
+    let radius = if round { w.min(h) as f32 / 2.0 } else { CORNER_PX };
+    for (x, y, px) in thumb.enumerate_pixels_mut() {
+        px[3] = (px[3] as f32 * corner_coverage(x, y, w, h, radius)).round() as u8;
+    }
+    Ok(SharedPixelBuffer::clone_from_slice(thumb.as_raw(), w, h))
+}
+
+/// How much of pixel (x, y) lies inside a w×h rectangle with rounded corners of `radius`, 0..=1,
+/// with a one-pixel soft edge. Slint's software renderer ignores border-radius when clipping
+/// images, so rounded/round covers are baked into the pixels instead.
+fn corner_coverage(x: u32, y: u32, w: u32, h: u32, radius: f32) -> f32 {
+    let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+    // Distance from the pixel to the nearest corner circle centre, only inside the corner zones.
+    let cx = px.clamp(radius, w as f32 - radius);
+    let cy = py.clamp(radius, h as f32 - radius);
+    let dist = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
+    (radius + 0.5 - dist).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::corner_coverage;
+
+    #[test]
+    fn corners_are_transparent_and_centre_opaque() {
+        // Circle on 64 px: corners out, centre and edge midpoints in.
+        assert_eq!(corner_coverage(0, 0, 64, 64, 32.0), 0.0);
+        assert_eq!(corner_coverage(32, 32, 64, 64, 32.0), 1.0);
+        assert!(corner_coverage(32, 0, 64, 64, 32.0) > 0.99); // on the rim: anti-aliased, ~opaque
+        // Small radius: only the very corner is cut.
+        assert_eq!(corner_coverage(0, 0, 64, 64, 6.0), 0.0);
+        assert_eq!(corner_coverage(10, 0, 64, 64, 6.0), 1.0);
+        let edge = corner_coverage(1, 1, 64, 64, 6.0);
+        assert!(edge > 0.0 && edge < 1.0, "soft edge, got {edge}");
+    }
 }
 
 thread_local! {
