@@ -22,7 +22,7 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 | `main.rs` | Wires Slint callbacks to `player::Command`, tray, UI timers (seek interpolation, minimize-restore repaint, media-key setup retry) |
 | `ui.rs` | `slint::slint!` markup + helpers that push state to the UI thread |
 | `player.rs` | Backend tokio thread: login, Spotify Connect device (Spirc), command/event loop, reconnect |
-| `web.rs` | Spotify Web API (separate OAuth grant): search, playlists, Liked Songs, albums, artist albums, saved albums, followed artists, like/unlike, devices, transfer |
+| `web.rs` | Spotify Web API (separate OAuth grant): search (+ paged tracks), queue, playlists, Liked Songs, albums, artist albums, saved albums, followed artists, like/unlike, devices, transfer |
 | `covers.rs` | Thumbnails for instantiated rows only, 64 px, max 300 decoded |
 | `settings.rs` | `settings.json`: volume, shuffle, repeat, quality, normalize, last session |
 | `media_keys.rs` | Windows SystemMediaTransportControls (windows-only) |
@@ -48,6 +48,10 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - **Radio**: `spclient().get_context("spotify:station:track:<id>")` is resolved once and its 50 tracks are shown and played as a track list. Spotify reshuffles a station on every resolve, so loading the station context into Spirc would play a different order than the list shown.
 - **Track metadata** (radio, artist popular tracks) comes from librespot `Track::get`, fetched concurrently in `player::track_items`. Radio raised private RAM to ~25 MB (vs ~17 MB) on 2026-10-03, cause unconfirmed; batching the requests is the noted fix if it matters.
 - **Design**: Spotify-like dark UI (familiarity for the owner). Colors live in the Slint `Theme` global, icons in `Icons` as 24×24 SVG path strings rendered with `Path` (no icon font/assets). Settings sit in a popup behind the top-right icon. Spotify's logo and icon artwork are not copied.
+- **Queue view** (`Ctrl+U`, bar icon): Spirc keeps its queue private, so the page comes from Web API `/me/player/queue`. It opens as a track list; clicking a row plays that list, not the original context.
+- **Search "Show more tracks"**: a full search page (10 tracks) ends with a `slimspot:more` row; clicking it appends the next `offset` page to the same history entry (`nav::History::current_mut`). Rows with a `slimspot:` URI have no context menu.
+- **Status line** holds transient messages and errors; play/pause resets it to the page's item count instead of "Playing".
+- **Cover tint**: the alpha-weighted average color of the now-playing cover, dimmed to 45%, colors a gradient at the top of the main panel (`now-tint`).
 - **Rounded covers are baked into pixels** (`covers::corner_coverage`): the software renderer ignores `border-radius` when clipping images. Artists are round, other covers get small rounded corners.
 - **Pages and navigation**: every main-panel screen (list, album, artist, search, radio) is a `player::Page` pushed onto `nav::History`; back/forward restores it without a request. Album/artist pages take their title from the loaded data, playlists from the clicked row.
 - **Row menu** (`ContextMenuArea` in `RowItem`): actions travel as `Command::RowAction` and re-enter the backend queue as the command they stand for (`OpenList`, `Radio(Some(uri))`). `web::Item` carries the first artist and the album URI for this; the now-playing item from librespot has no album id, so "Go to album" is unavailable for tracks started elsewhere.
@@ -56,7 +60,8 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - **`--tray` start**: the window is shown once so its HWND exists for the media keys, then hidden as soon as they attach (Slint creates the native window only on first show).
 
 ## Known external constraints (verified against the live API, 2026-10-03)
-- Development Mode Web API: `search` and `/artists/{id}/albums` reject `limit > 10`; playlists/saved tracks accept 50.
+- Development Mode Web API: `search` and `/artists/{id}/albums` reject `limit > 10`; playlists/saved tracks accept 50. Search `offset` works up to 990.
+- `/me/player/queue` works (empty: `{"currently_playing":null,"queue":[]}`); the filled shape was not verified live.
 - `/artists/{id}/top-tracks` returns 403 → top tracks come from librespot metadata (`Artist::get` + `Track::get`).
 - `/me/tracks/contains` returns 403 → like state and like/unlike use the unified `/me/library` (`contains`, `PUT`, `DELETE`) with `uris=`. `/me/albums`, `/me/following?type=artist` (cursor paging under `artists`) and `/me/player/devices` accept limit 50.
 - Changing `WEB_SCOPES` changes the saved grant key, so the next start asks for a browser consent once.
