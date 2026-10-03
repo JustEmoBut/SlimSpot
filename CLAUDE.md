@@ -4,15 +4,16 @@ Personal-use, minimum-RAM native Spotify client for Windows. Rust + Slint (softw
 Spotify ToS concerns are accepted by the owner; this is not for distribution.
 
 ## Goal & how it's judged
-- RAM is the deciding metric. Measure **Private bytes** of the release build while a track plays, sampled 3× over 10 s
+- RAM is the deciding metric. Measure **Private bytes** of the installed build (`fast` profile; same RAM as the LTO release, measured 2026-10-04) while a track plays, sampled 3× over 10 s
   (`Get-Process slimspot`), after opening a playlist and scrolling. Working Set includes shared DLLs and is secondary.
 - Reference points: ~15–20 MB private while playing with covers. Spotifast (egui) claims 100–250 MB; a Tauri app measured 194 MB.
 - Any new feature reports its RAM delta. No GPU renderer, no webview, no browser engine.
 
 ## Commands
 - Test: `cargo test` (unit tests live next to the code they test)
-- Release build: `cargo build --release` → `target/release/slimspot.exe`
-- Install/update for daily use: `.\install.ps1` (build, copy to `%LOCALAPPDATA%\Programs\SlimSpot\SlimSpot.exe`, Start menu shortcut, autostart on first install). `-NoAutostart`, `-Uninstall`. It stops a running SlimSpot first.
+- Day-to-day build: `cargo build --profile fast` → `target/fast/slimspot.exe` (~25–40 s after a change: no LTO, 16 codegen units, incremental)
+- Release build: `cargo build --release` → `target/release/slimspot.exe` (full LTO, ~4 min after any change since it re-optimises the whole program on one thread; 0.5 MB smaller exe, no RAM difference)
+- Install/update for daily use: `.\install.ps1` (`fast` build, copy to `%LOCALAPPDATA%\Programs\SlimSpot\SlimSpot.exe`, Start menu shortcut, autostart on first install). `-Release` (LTO build), `-NoAutostart`, `-Uninstall`. It stops a running SlimSpot first.
 - Runtime files: `%APPDATA%\SlimSpot\` — `credentials.json` (librespot), `web_refresh_token`, `settings.json`, `slimspot.log` (warn/error only), `audio/` cache
 - Web API client id: env `SLIMSPOT_WEB_CLIENT_ID` (owner's own dev app; redirect `http://127.0.0.1:8989/login`). Without it, the client id the saved token belongs to is reused.
 
