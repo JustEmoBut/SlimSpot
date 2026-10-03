@@ -18,6 +18,10 @@ const WEB_SCOPES: &[&str] = &[
     "user-library-read",
     "playlist-read-private",
     "playlist-read-collaborative",
+    "user-library-modify",
+    "user-follow-read",
+    "user-read-playback-state",
+    "user-modify-playback-state",
 ];
 const WEB_TOKEN_FILE: &str = "web_refresh_token";
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(60);
@@ -104,11 +108,29 @@ impl WebApi {
     /// Uses `request_fut`, not `request`: the latter turns every non-2xx into an opaque error
     /// and gives up on 429 when Retry-After exceeds librespot's 10 s cap (Spotify sends ~13 s).
     async fn get_json(&mut self, session: &Session, url: &str) -> Result<serde_json::Value, String> {
+        self.send(session, http::Method::GET, url, None).await
+    }
+
+    /// Any Web API call. Write endpoints often answer 200/204 with an empty body: that is `Null`.
+    async fn send(
+        &mut self,
+        session: &Session,
+        method: http::Method,
+        url: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let payload = bytes::Bytes::from(body.map(|b| b.to_string()).unwrap_or_default());
         for attempt in 0..=RATE_LIMIT_RETRIES {
             let token = self.access_token().await?;
-            let req = http::Request::get(url)
+            let req = http::Request::builder()
+                .method(method.clone())
+                .uri(url)
                 .header("Authorization", format!("Bearer {token}"))
-                .body(bytes::Bytes::new())
+                .header("Content-Type", "application/json")
+                // Spotify's front end rejects body-less PUT/DELETE without it ("411 Length Required");
+                // the HTTP client doesn't add it for an empty body.
+                .header("Content-Length", payload.len())
+                .body(payload.clone())
                 .map_err(|e| e.to_string())?;
             let fut = session.http_client().request_fut(req).map_err(|e| format!("Request failed: {e}"))?;
             let resp = fut.await.map_err(|e| format!("Request failed: {e}"))?;
@@ -123,6 +145,7 @@ impl WebApi {
                 .map_err(|e| format!("Response read failed: {e}"))?
                 .to_bytes();
             match status.as_u16() {
+                200..=299 if body.is_empty() => return Ok(serde_json::Value::Null),
                 200..=299 => return serde_json::from_slice(&body).map_err(|e| format!("Response parse failed: {e}")),
                 429 => match retry_after.filter(|d| *d <= MAX_RETRY_AFTER) {
                     Some(wait) if attempt < RATE_LIMIT_RETRIES => tokio::time::sleep(wait).await,
@@ -162,6 +185,48 @@ impl WebApi {
             .chain(albums.iter().filter_map(album_row).take(SEARCH_ALBUMS))
             .chain(tracks.iter().filter_map(track_row))
             .collect())
+    }
+
+    /// Albums saved to the library (`/me/albums` items wrap the album).
+    pub async fn saved_albums(&mut self, session: &Session) -> Result<Vec<Item>, String> {
+        let items = self.all_items(session, format!("{API}/me/albums?limit={PAGE_LIMIT}")).await?;
+        Ok(items.iter().filter_map(|i| album_row(&i["album"])).collect())
+    }
+
+    /// Followed artists; this endpoint pages by cursor under `artists`, not by `items`/`next` at the top.
+    pub async fn followed_artists(&mut self, session: &Session) -> Result<Vec<Item>, String> {
+        let mut rows = Vec::new();
+        let mut next = Some(format!("{API}/me/following?type=artist&limit={PAGE_LIMIT}"));
+        while let Some(url) = next {
+            let page = self.get_json(session, &url).await?;
+            rows.extend(page["artists"]["items"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(artist_row));
+            next = page["artists"]["next"].as_str().map(String::from);
+        }
+        Ok(rows)
+    }
+
+    /// Whether a track is in Liked Songs. `/me/tracks/contains` is 403 for this app; the unified
+    /// `/me/library` endpoints take URIs and work (verified 2026-10-03).
+    pub async fn is_saved(&mut self, session: &Session, uri: &str) -> Result<bool, String> {
+        let json = self.get_json(session, &format!("{API}/me/library/contains?uris={uri}")).await?;
+        Ok(json[0].as_bool().unwrap_or(false))
+    }
+
+    pub async fn set_saved(&mut self, session: &Session, uri: &str, saved: bool) -> Result<(), String> {
+        let method = if saved { http::Method::PUT } else { http::Method::DELETE };
+        self.send(session, method, &format!("{API}/me/library?uris={uri}"), None).await.map(|_| ())
+    }
+
+    /// Spotify Connect devices of this account, as rows: `uri` holds the device id.
+    pub async fn devices(&mut self, session: &Session) -> Result<Vec<Item>, String> {
+        let json = self.get_json(session, &format!("{API}/me/player/devices")).await?;
+        Ok(json["devices"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(device_row).collect())
+    }
+
+    /// Moves playback to `device_id` and keeps it playing.
+    pub async fn transfer(&mut self, session: &Session, device_id: &str) -> Result<(), String> {
+        let body = serde_json::json!({ "device_ids": [device_id], "play": true });
+        self.send(session, http::Method::PUT, &format!("{API}/me/player"), Some(body)).await.map(|_| ())
     }
 
     /// Album tracks carry no images, so they all get the album's cover.
@@ -276,6 +341,17 @@ fn album_row(a: &serde_json::Value) -> Option<Item> {
     })
 }
 
+fn device_row(d: &serde_json::Value) -> Option<Item> {
+    let active = if d["is_active"].as_bool() == Some(true) { " · playing here" } else { "" };
+    Some(Item {
+        title: d["name"].as_str().unwrap_or("?").into(),
+        artist: format!("{}{active}", d["type"].as_str().unwrap_or("Device")),
+        // Restricted devices can't be controlled through the Web API.
+        uri: d["id"].as_str().filter(|_| d["is_restricted"].as_bool() != Some(true))?.into(),
+        cover_url: String::new(),
+    })
+}
+
 fn playlist_row(p: &serde_json::Value) -> Option<Item> {
     let uri = p["uri"].as_str()?;
     let owner = p["owner"]["display_name"].as_str().unwrap_or_default();
@@ -332,6 +408,15 @@ mod tests {
         assert!(album_row(&json!({"uri": "spotify:track:1"})).is_none());
         assert_eq!(artist_row(&json!({"name": "Daft Punk", "uri": "spotify:artist:1"})).unwrap().artist, "Artist");
         assert!(artist_row(&json!(null)).is_none());
+    }
+
+    #[test]
+    fn device_rows() {
+        let d = json!({"id": "abc", "name": "SlimSpot", "type": "Computer", "is_active": true, "is_restricted": false});
+        let row = device_row(&d).unwrap();
+        assert_eq!((row.uri.as_str(), row.artist.as_str()), ("abc", "Computer · playing here"));
+        assert!(device_row(&json!({"id": "x", "is_restricted": true})).is_none());
+        assert!(device_row(&json!({"name": "no id"})).is_none());
     }
 
     #[test]

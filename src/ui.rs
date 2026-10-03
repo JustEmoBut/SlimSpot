@@ -100,6 +100,13 @@ slint::slint! {
         in-out property <bool> normalize;
         callback set-quality(int);
         callback set-normalize(bool);
+        // Whether the playing track is in Liked Songs.
+        in property <bool> liked;
+        callback toggle-like();
+        // Spotify Connect devices (Row.uri = device id), fetched when the popup opens.
+        in property <[Row]> devices;
+        callback load-devices();
+        callback transfer(string);
         // Mirrors the Windows Run registry value (see autostart.rs).
         in-out property <bool> start-with-windows;
         callback set-autostart(bool);
@@ -226,6 +233,30 @@ slint::slint! {
                     }
                 }
             }
+            devices-popup := PopupWindow {
+                x: root.width - 312px;
+                y: root.height - 72px - 236px;
+                width: 300px;
+                height: 230px;
+                Rectangle {
+                    background: Palette.background;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: 6px;
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 4px;
+                        Text { text: "Play on"; font-weight: 700; }
+                        if root.devices.length == 0 : Text { text: "Loading devices... (open Spotify on the other device if it's missing)"; wrap: word-wrap; opacity: 0.7; }
+                        ListView {
+                            for d in root.devices : RowItem {
+                                data: d;
+                                clicked => { root.transfer(d.uri); devices-popup.close(); }
+                            }
+                        }
+                    }
+                }
+            }
             // Player bar
             HorizontalLayout {
                 padding: 12px;
@@ -265,6 +296,18 @@ slint::slint! {
                             text: "Lyrics";
                             checkable: true;
                             checked <=> root.show-lyrics;
+                        }
+                        // Not checkable: a checkable button flips itself on click, which would show
+                        // "liked" even when the request fails. The state comes only from the backend.
+                        Button {
+                            text: root.liked ? "Liked" : "Like";
+                            primary: root.liked;
+                            enabled: root.now.uri != "";
+                            clicked => { root.toggle-like(); }
+                        }
+                        Button {
+                            text: "Devices";
+                            clicked => { root.load-devices(); devices-popup.show(); }
                         }
                         Button {
                             text: root.repeat == 2 ? "Repeat: One" : root.repeat == 1 ? "Repeat: All" : "Repeat: Off";

@@ -55,6 +55,10 @@ pub enum Command {
     Normalize(bool),
     /// Save the session, disconnect the Connect device and end the UI event loop.
     Quit,
+    ToggleLike,
+    LoadDevices,
+    /// Move playback to this Spotify Connect device id.
+    Transfer(String),
 }
 
 pub fn cache_dir() -> PathBuf {
@@ -364,6 +368,15 @@ pub async fn run(
             Ok(p) => lists.extend(p),
             Err(e) => set_status(&ui, format!("Playlists failed: {e}")),
         }
+        // Saved albums and followed artists follow the playlists; their rows open album/artist pages.
+        match w.saved_albums(&session).await {
+            Ok(a) => lists.extend(a),
+            Err(e) => set_status(&ui, format!("Saved albums failed: {e}")),
+        }
+        match w.followed_artists(&session).await {
+            Ok(a) => lists.extend(a),
+            Err(e) => set_status(&ui, format!("Followed artists failed: {e}")),
+        }
         set_rows(&ui, lists, App::set_lists);
     }
     set_status(&ui, format!("Logged in as {}. Visible in Spotify Connect as \"{DEVICE_NAME}\".", session.username()));
@@ -380,6 +393,8 @@ pub async fn run(
     // Last session from the previous run: shown paused, loaded on the first Play. Loading it
     // eagerly would make this the active device and pause whatever the phone is playing.
     let mut pending_resume = settings.last.clone();
+    // Liked Songs membership of the current track, refreshed on every track change.
+    let mut liked = false;
     if let Some(last) = &pending_resume {
         let (item, at, total) = (last.item.clone(), last.position_ms as f32, last.duration_ms as f32);
         let _ = ui.upgrade_in_event_loop(move |app| {
@@ -474,6 +489,34 @@ pub async fn run(
                     }
                     None => spirc_result(&ui, if playing { spirc.pause() } else { spirc.play() }),
                 },
+                Command::ToggleLike => {
+                    let (Some(w), Some(uri)) = (web.as_mut(), now_uri.clone()) else { continue };
+                    match w.set_saved(&session, &uri, !liked).await {
+                        Ok(()) => {
+                            liked = !liked;
+                            set_status(&ui, if liked { "Added to Liked Songs" } else { "Removed from Liked Songs" });
+                        }
+                        Err(e) => set_status(&ui, e),
+                    }
+                    let now_liked = liked;
+                    let _ = ui.upgrade_in_event_loop(move |app| app.set_liked(now_liked));
+                }
+                Command::LoadDevices => {
+                    let Some(w) = web.as_mut() else { continue };
+                    set_rows(&ui, Vec::new(), App::set_devices);
+                    match w.devices(&session).await {
+                        Ok(devices) => set_rows(&ui, devices, App::set_devices),
+                        Err(e) => set_status(&ui, e),
+                    }
+                }
+                Command::Transfer(device_id) => {
+                    let Some(w) = web.as_mut() else { continue };
+                    pending_resume = None;
+                    match w.transfer(&session, &device_id).await {
+                        Ok(()) => set_status(&ui, "Playback moved"),
+                        Err(e) => set_status(&ui, e),
+                    }
+                }
                 Command::Quit => {
                     save_last(&ui, &mut settings, now_item.as_ref(), position, playing, duration_ms, &playing_context);
                     let _ = spirc.shutdown();
@@ -544,6 +587,13 @@ pub async fn run(
                         duration_ms = audio_item.duration_ms;
                         position = (0, Instant::now());
                         save_last(&ui, &mut settings, now_item.as_ref(), position, false, duration_ms, &playing_context);
+                        // One quick request; failures just show the track as not liked.
+                        liked = match web.as_mut() {
+                            Some(w) => w.is_saved(&session, &item.uri).await.unwrap_or(false),
+                            None => false,
+                        };
+                        let now_liked = liked;
+                        let _ = ui.upgrade_in_event_loop(move |app| app.set_liked(now_liked));
                         // Fetched off the event loop; set_lyrics drops it if the track changed meanwhile.
                         clear_lyrics(&ui, "Loading lyrics...");
                         let (lyrics_session, lyrics_ui, lyrics_uri) = (session.clone(), ui.clone(), item.uri.clone());
