@@ -29,6 +29,8 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 | `logger.rs` | File logger for warn/error, including librespot's |
 | `instance.rs` | Single instance via a named event; a second launch wakes the running window (windows-only) |
 | `lyrics.rs` | Lyrics via librespot `spclient().get_lyrics` (Spotify's color-lyrics, no Web API), parsing and current-line lookup |
+| `nav.rs` | Back/forward history of whole pages (rows included, 20 deep) |
+| `clipboard.rs` | Win32 plain-text clipboard and `open.spotify.com` links for "Copy link" (windows-only) |
 | `autostart.rs` | "Start with Windows": HKCU `Run` value `"<exe>" --tray` (windows-only) |
 | `build.rs` | Embeds `assets/icon.ico` into the exe via the Windows SDK's `rc.exe` (skipped with a warning if missing) |
 
@@ -47,6 +49,8 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - **Track metadata** (radio, artist popular tracks) comes from librespot `Track::get`, fetched concurrently in `player::track_items`. Radio raised private RAM to ~25 MB (vs ~17 MB) on 2026-10-03, cause unconfirmed; batching the requests is the noted fix if it matters.
 - **Design**: Spotify-like dark UI (familiarity for the owner). Colors live in the Slint `Theme` global, icons in `Icons` as 24×24 SVG path strings rendered with `Path` (no icon font/assets). Settings sit in a popup behind the top-right icon. Spotify's logo and icon artwork are not copied.
 - **Rounded covers are baked into pixels** (`covers::corner_coverage`): the software renderer ignores `border-radius` when clipping images. Artists are round, other covers get small rounded corners.
+- **Pages and navigation**: every main-panel screen (list, album, artist, search, radio) is a `player::Page` pushed onto `nav::History`; back/forward restores it without a request. Album/artist pages take their title from the loaded data, playlists from the clicked row.
+- **Row menu** (`ContextMenuArea` in `RowItem`): actions travel as `Command::RowAction` and re-enter the backend queue as the command they stand for (`OpenList`, `Radio(Some(uri))`). `web::Item` carries the first artist and the album URI for this; the now-playing item from librespot has no album id, so "Go to album" is unavailable for tracks started elsewhere.
 - **Exe icon without a build-dependency crate**: `build.rs` calls `rc.exe` directly. `assets/icon.ico` holds PNG-compressed 16–256 px entries generated from `icon-256.png`.
 - **Autostart**: the registry `Run` value is the source of truth (the checkbox reads it back after every change). `install.ps1` turns it on only for a first install, so turning it off in the app survives updates.
 - **`--tray` start**: the window is shown once so its HWND exists for the media keys, then hidden as soon as they attach (Slint creates the native window only on first show).
