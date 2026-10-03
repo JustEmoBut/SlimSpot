@@ -107,6 +107,7 @@ slint::slint! {
         in property <[Row]> devices;
         callback load-devices();
         callback transfer(string);
+        callback start-radio();
         // Mirrors the Windows Run registry value (see autostart.rs).
         in-out property <bool> start-with-windows;
         callback set-autostart(bool);
@@ -166,6 +167,7 @@ slint::slint! {
                     if (event.text == "r") { root.cycle-repeat(); return accept; }
                     if (event.text == "q") { root.quit(); return accept; }
                     if (event.text == "y") { root.show-lyrics = !root.show-lyrics; return accept; }
+                    if (event.text == "e") { root.start-radio(); return accept; }
                 }
                 if (event.text == " ") { root.toggle(); return accept; }
                 if (event.text == Key.Escape) { self.focus(); return accept; }
@@ -304,6 +306,11 @@ slint::slint! {
                             primary: root.liked;
                             enabled: root.now.uri != "";
                             clicked => { root.toggle-like(); }
+                        }
+                        Button {
+                            text: "Radio";
+                            enabled: root.now.uri != "";
+                            clicked => { root.start-radio(); }
                         }
                         Button {
                             text: "Devices";

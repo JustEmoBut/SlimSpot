@@ -124,6 +124,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_transfer(send_str(Command::Transfer));
     app.on_toggle_like(send(|| Command::ToggleLike));
     app.on_load_devices(send(|| Command::LoadDevices));
+    app.on_start_radio(send(|| Command::Radio));
     app.on_toggle(send(|| Command::Toggle));
     app.on_prev(send(|| Command::Prev));
     app.on_next(send(|| Command::Next));

@@ -59,6 +59,8 @@ pub enum Command {
     LoadDevices,
     /// Move playback to this Spotify Connect device id.
     Transfer(String),
+    /// Start a radio from the playing track.
+    Radio,
 }
 
 pub fn cache_dir() -> PathBuf {
@@ -179,24 +181,60 @@ fn resume(
 async fn artist_top_tracks(session: &Session, artist_uri: &str) -> Result<Vec<Item>, String> {
     let id = SpotifyUri::from_uri(artist_uri).map_err(|e| e.to_string())?;
     let artist = Artist::get(session, &id).await.map_err(|e| format!("Artist lookup failed: {e}"))?;
-    let mut items = Vec::new();
-    for uri in artist.top_tracks.for_country(&session.country()).iter() {
-        // One unavailable track shouldn't sink the whole page.
-        let Ok(track) = Track::get(session, uri).await else { continue };
-        items.push(Item {
-            title: track.name,
-            artist: track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "),
-            uri: uri.to_uri().unwrap_or_default(),
-            cover_url: track
-                .album
-                .covers
-                .iter()
-                .min_by_key(|c| c.width)
-                .map(|c| format!("https://i.scdn.co/image/{}", c.id))
-                .unwrap_or_default(),
-        });
+    Ok(track_items(session, artist.top_tracks.for_country(&session.country()).to_vec()).await)
+}
+
+/// Titles, artists and covers for track URIs via librespot metadata, fetched concurrently and
+/// returned in input order. Tracks that fail to load are left out rather than failing the list.
+// ponytail: all requests in flight at once (50 for a radio). After a radio the private RAM sat at
+// ~25 MB instead of ~17 MB (measured 2026-10-03, cause unconfirmed); fetch in batches if it matters.
+async fn track_items(session: &Session, uris: Vec<SpotifyUri>) -> Vec<Item> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for (index, uri) in uris.into_iter().enumerate() {
+        let session = session.clone();
+        tasks.spawn(async move { (index, Track::get(&session, &uri).await.ok().map(|track| track_item(&uri, track))) });
     }
-    Ok(items)
+    let mut found: Vec<(usize, Item)> = tasks.join_all().await.into_iter().filter_map(|(i, item)| Some((i, item?))).collect();
+    found.sort_by_key(|(i, _)| *i);
+    found.into_iter().map(|(_, item)| item).collect()
+}
+
+fn track_item(uri: &SpotifyUri, track: Track) -> Item {
+    Item {
+        title: track.name,
+        artist: track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "),
+        uri: uri.to_uri().unwrap_or_default(),
+        cover_url: track
+            .album
+            .covers
+            .iter()
+            .min_by_key(|c| c.width)
+            .map(|c| format!("https://i.scdn.co/image/{}", c.id))
+            .unwrap_or_default(),
+    }
+}
+
+/// A track's radio, resolved once: Spotify reshuffles a station every time it is resolved, so
+/// these exact tracks are both shown and played (as a track list, not the station context).
+async fn radio_tracks(session: &Session, track_uri: &str) -> Result<Vec<Item>, String> {
+    let id = track_uri.strip_prefix("spotify:track:").ok_or("Radio needs a Spotify track")?;
+    let context = session
+        .spclient()
+        .get_context(&format!("spotify:station:track:{id}"))
+        .await
+        .map_err(|e| format!("Radio unavailable: {e}"))?;
+    let mut seen = std::collections::HashSet::new();
+    let uris: Vec<SpotifyUri> = context
+        .pages
+        .iter()
+        .flat_map(|page| &page.tracks)
+        .filter_map(|t| t.uri.as_deref().and_then(|u| SpotifyUri::from_uri(u).ok()))
+        .filter(|u| matches!(u, SpotifyUri::Track { .. }) && seen.insert(u.to_uri().unwrap_or_default()))
+        .collect();
+    if uris.is_empty() {
+        return Err("Spotify has no radio for this track".into());
+    }
+    Ok(track_items(session, uris).await)
 }
 
 /// Rows that open a page instead of playing.
@@ -506,6 +544,28 @@ pub async fn run(
                     set_rows(&ui, Vec::new(), App::set_devices);
                     match w.devices(&session).await {
                         Ok(devices) => set_rows(&ui, devices, App::set_devices),
+                        Err(e) => set_status(&ui, e),
+                    }
+                }
+                Command::Radio => {
+                    let Some(seed) = now_uri.clone() else {
+                        set_status(&ui, "Play a track first to start its radio");
+                        continue;
+                    };
+                    set_status(&ui, "Building radio...");
+                    match radio_tracks(&session, &seed).await {
+                        Ok(rows) => {
+                            let uris: Vec<String> = rows.iter().map(|r| r.uri.clone()).collect();
+                            set_status(&ui, format!("Radio: {} tracks", rows.len()));
+                            shown = Some(Shown::Tracks(uris.clone()));
+                            playing_context = None;
+                            pending_resume = None;
+                            set_current(&ui, String::new(), App::set_current_list);
+                            set_rows(&ui, rows, App::set_tracks);
+                            let first = uris[0].clone();
+                            let request = load_request(shown.as_ref(), &first, &settings, 0, true);
+                            spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
+                        }
                         Err(e) => set_status(&ui, e),
                     }
                 }
