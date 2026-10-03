@@ -54,6 +54,9 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - **Go to playing** (click the now-playing title): opens the context the track was started from in this window and scrolls the list to it (`reveal`, row height 56 px, clamped to the list end). Tracks started elsewhere have no known context.
 - **Page header**: a kind label ("Playlist", "Album", ...; `Page.kind`) above the title. Track rows show a play arrow on hover and equalizer bars while playing, over the cover.
 - **Scroll**: opening a page or going back/forward resets the track list to the top (`scroll_to_top`); pages that change in place ("Show more", removing a row) keep their scroll. "Show more" drops tracks already on the page, since later search pages repeat earlier hits.
+- **Home** is the recently played tracks (`/me/player/recently-played`, opened at startup and by the Home button). Spotify's own "Made for you" shelf is not reachable: Web API search for "Daily Mix"/"Discover Weekly" only finds other users' copies (Spotifast's approach, verified 2026-10-04). Opening a Spotify-made playlist falls back to librespot `get_context` when the Web API refuses it.
+- **Track rows** carry `duration_ms` and `liked`. Liked marks are fetched after a page is on screen (`mark_liked`, 40 URIs per request, first 400 tracks) and set in place (`set_liked_rows`) so covers stay. Rows of playlists/albums/radio/queue are numbered; the header shows "N songs, about X hr" and a green play button that starts the page from its first track. Hovering a row shows "..." which opens the same `ContextMenuArea` via `show()`.
+- **Library filters** (All/Playlists/Albums/Artists + name filter) filter the loaded sidebar rows in the backend (`Command::FilterLibrary`); no request.
 - **Status line** holds transient messages and errors; play/pause resets it to the page's item count instead of "Playing".
 - **Cover tint**: the alpha-weighted average color of the now-playing cover, dimmed to 45%, colors a gradient at the top of the main panel (`now-tint`).
 - **Rounded covers are baked into pixels** (`covers::corner_coverage`): the software renderer ignores `border-radius` when clipping images. Artists are round, other covers get small rounded corners.
@@ -66,6 +69,7 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 ## Known external constraints (verified against the live API, 2026-10-03)
 - Development Mode Web API: `search` and `/artists/{id}/albums` reject `limit > 10`; playlists/saved tracks accept 50. Search `offset` works up to 990.
 - `/me/player/queue` works (empty: `{"currently_playing":null,"queue":[]}`). `POST /me/player/queue?uri=` answers 404 with no active device and 200 with a non-JSON body on success, so non-GET 2xx bodies that don't parse count as success.
+- `/me/library/contains` rejects more than 40 URIs (400 "Too many uris requested"). Recently played needs `user-read-recently-played`.
 - Playlist edits need `playlist-modify-private`/`-public`; `POST /playlists/{id}/items` `{"uris":[..]}` adds, `DELETE` with `{"items":[{"uri":..}]}` removes (both verified live).
 - `/artists/{id}/top-tracks` returns 403 → top tracks come from librespot metadata (`Artist::get` + `Track::get`).
 - `/me/tracks/contains` returns 403 → like state and like/unlike use the unified `/me/library` (`contains`, `PUT`, `DELETE`) with `uris=`. `/me/albums`, `/me/following?type=artist` (cursor paging under `artists`) and `/me/player/devices` accept limit 50.
