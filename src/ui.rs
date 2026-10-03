@@ -42,6 +42,7 @@ slint::slint! {
         out property <string> settings: "M4 7 H20 M4 12 H20 M4 17 H20 M9 5 V9 M15 10 V14 M7 15 V19";
         out property <string> back: "M15 5 L8 12 L15 19";
         out property <string> forward: "M9 5 L16 12 L9 19";
+        out property <string> bars: "M5 10 H8 V19 H5 Z M10.5 5 H13.5 V19 H10.5 Z M16 13 H19 V19 H16 Z";
         out property <string> queue: "M4 6 H20 M4 11 H20 M4 16 H11 M15 14 V20 L20 17 Z";
     }
 
@@ -167,6 +168,9 @@ slint::slint! {
         in property <length> cover-size: 40px;
         // Right-click menu; off for rows that aren't Spotify items (devices).
         in property <bool> menu: true;
+        // The user's own playlists ("Add to playlist") and whether this row's page is one of them.
+        in property <[Row]> targets;
+        in property <bool> editable;
         callback action(string);
         // Fired whenever this (possibly recycled) row instance shows a row without a loaded cover.
         callback need-cover();
@@ -193,6 +197,17 @@ slint::slint! {
                     background: data.uri == "liked" ? @linear-gradient(135deg, #450af5 0%, #c4efd9 100%) : Theme.raised;
                     Image { source: data.cover; width: parent.width; height: parent.height; image-fit: cover; }
                     if data.uri == "liked" : Icon { width: parent.width * 0.5; height: self.width; shape: Icons.heart; filled: true; tint: Theme.text; }
+                    // Tracks: a play arrow on hover, equalizer bars while playing (like Spotify's row number).
+                    if data.uri.starts-with("spotify:track:") && (root.has-hover || root.playing) : Rectangle {
+                        background: #00000099;
+                        Icon {
+                            width: parent.width * 0.5;
+                            height: self.width;
+                            shape: root.playing && !root.has-hover ? Icons.bars : Icons.play;
+                            filled: true;
+                            tint: root.playing ? Theme.accent : Theme.text;
+                        }
+                    }
                 }
                 VerticalLayout {
                     alignment: center;
@@ -210,6 +225,12 @@ slint::slint! {
                 if is-track : MenuItem { title: "Go to artist"; activated => { root.action("artist"); } }
                 if is-track : MenuItem { title: "Go to album"; activated => { root.action("album"); } }
                 if is-track : MenuItem { title: "Save to Liked Songs"; activated => { root.action("like"); } }
+                if is-track : MenuItem { title: "Add to queue"; activated => { root.action("queue"); } }
+                if is-track && root.targets.length > 0 : Menu {
+                    title: "Add to playlist";
+                    for t in root.targets : MenuItem { title: t.title; activated => { root.action("add:" + t.uri); } }
+                }
+                if is-track && root.editable : MenuItem { title: "Remove from this playlist"; activated => { root.action("remove"); } }
                 if !is-track : MenuItem { title: "Open"; activated => { root.action("open"); } }
                 MenuSeparator {}
                 MenuItem { title: "Copy link"; activated => { root.action("copy"); } }
@@ -281,6 +302,7 @@ slint::slint! {
         in property <string> status: "Starting...";
         // Big heading of the main panel and the back/forward arrows next to it.
         in property <string> page-title: "Home";
+        in property <string> page-kind;
         in property <bool> can-back;
         in property <bool> can-forward;
         callback go-back();
@@ -314,6 +336,18 @@ slint::slint! {
         callback transfer(string);
         callback start-radio();
         callback show-queue();
+        callback go-to-playing();
+        in property <[Row]> targets;
+        in property <bool> editable;
+        // Track list scroll position, so Rust can reveal the playing row.
+        in-out property <length> list-y;
+        in-out property <length> list-height;
+        public function reveal(index: int) {
+            // RowItem height in the track list: 40px cover + 16px padding. Puts the row about a third
+            // down, but never scrolls past the end of the list.
+            let end = max(0px, root.tracks.length * 56px - root.list-height);
+            root.list-y = -min(end, max(0px, index * 56px - root.list-height / 3));
+        }
         // Dark shade of the playing cover's average color; tints the top of the main panel.
         in property <color> now-tint: Theme.panel;
         // Row menu: action is radio/artist/album/like/open/copy, uri is the row's.
@@ -486,8 +520,13 @@ slint::slint! {
                                 clicked => { settings-popup.show(); }
                             }
                         }
-                        if !root.show-lyrics : Text { text: root.page-title; font-size: 28px; font-weight: 700; color: Theme.text; overflow: elide; }
+                        if !root.show-lyrics : VerticalLayout {
+                            spacing: 2px;
+                            if root.page-kind != "" : Text { text: root.page-kind; font-size: 12px; font-weight: 600; color: Theme.text; }
+                            Text { text: root.page-title; font-size: 32px; font-weight: 800; color: Theme.text; overflow: elide; }
+                        }
                         Text { text: root.status; font-size: 12px; color: Theme.subdued; overflow: elide; }
+                        Rectangle { height: 1px; background: #ffffff1a; }
                         if root.show-lyrics : LyricsView {
                             vertical-stretch: 1;
                             lines: root.lyric-lines;
@@ -496,11 +535,16 @@ slint::slint! {
                         }
                         if !root.show-lyrics : ListView {
                             vertical-stretch: 1;
+                            content-y <=> root.list-y;
+                            init => { root.list-height = self.visible-height; }
+                            changed visible-height => { root.list-height = self.visible-height; }
                             for row[i] in tracks: RowItem {
                                 data: row;
                                 playing: row.uri == root.current-track;
                                 // "Show more tracks" and similar app rows have no menu.
                                 menu: !row.uri.starts-with("slimspot:");
+                                targets: root.targets;
+                                editable: root.editable;
                                 clicked => { root.play-uri(row.uri); }
                                 action(a) => { root.row-action(a, row.uri); }
                                 need-cover => { root.need-cover(0, i, row.uri, row.cover-url); }
@@ -602,7 +646,10 @@ slint::slint! {
                     VerticalLayout {
                         alignment: center;
                         spacing: 2px;
-                        Text { text: now.title; overflow: elide; font-size: 14px; color: Theme.text; }
+                        Text {
+                            text: now.title; overflow: elide; font-size: 14px; color: Theme.text;
+                            TouchArea { mouse-cursor: pointer; clicked => { root.go-to-playing(); } }
+                        }
                         Text { text: now.artist; overflow: elide; font-size: 12px; color: Theme.subdued; }
                     }
                     // Not a toggle: the heart shows only what Spotify reported, even if a click fails.
@@ -771,8 +818,9 @@ pub fn clear_lyrics(ui: &slint::Weak<App>, note: &str) {
     });
 }
 
-pub fn set_page_header(ui: &slint::Weak<App>, title: String, can_back: bool, can_forward: bool) {
+pub fn set_page_header(ui: &slint::Weak<App>, kind: &'static str, title: String, can_back: bool, can_forward: bool) {
     let _ = ui.upgrade_in_event_loop(move |app| {
+        app.set_page_kind(kind.into());
         app.set_page_title(title.into());
         app.set_can_back(can_back);
         app.set_can_forward(can_forward);

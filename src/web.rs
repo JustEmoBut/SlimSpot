@@ -22,6 +22,8 @@ const WEB_SCOPES: &[&str] = &[
     "user-follow-read",
     "user-read-playback-state",
     "user-modify-playback-state",
+    "playlist-modify-private",
+    "playlist-modify-public",
 ];
 const WEB_TOKEN_FILE: &str = "web_refresh_token";
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(60);
@@ -149,6 +151,8 @@ impl WebApi {
                 .to_bytes();
             match status.as_u16() {
                 200..=299 if body.is_empty() => return Ok(serde_json::Value::Null),
+                // Some writes answer 200 with a non-JSON body (POST /me/player/queue, verified 2026-10-03).
+                200..=299 if method != http::Method::GET => return Ok(serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null)),
                 200..=299 => return serde_json::from_slice(&body).map_err(|e| format!("Response parse failed: {e}")),
                 429 => match retry_after.filter(|d| *d <= MAX_RETRY_AFTER) {
                     Some(wait) if attempt < RATE_LIMIT_RETRIES => tokio::time::sleep(wait).await,
@@ -201,6 +205,24 @@ impl WebApi {
     pub async fn queue(&mut self, session: &Session) -> Result<Vec<Item>, String> {
         let json = self.get_json(session, &format!("{API}/me/player/queue")).await?;
         Ok(json["queue"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(track_row).collect())
+    }
+
+    /// Plays `uri` after the current track on the active device.
+    pub async fn add_to_queue(&mut self, session: &Session, uri: &str) -> Result<(), String> {
+        self.send(session, http::Method::POST, &format!("{API}/me/player/queue?uri={uri}"), None).await.map(|_| ())
+    }
+
+    pub async fn add_to_playlist(&mut self, session: &Session, playlist: &str, uri: &str) -> Result<(), String> {
+        let id = playlist.strip_prefix("spotify:playlist:").ok_or("Not a playlist")?;
+        let body = serde_json::json!({ "uris": [uri] });
+        self.send(session, http::Method::POST, &format!("{API}/playlists/{id}/items"), Some(body)).await.map(|_| ())
+    }
+
+    /// Removes every occurrence of `uri` from the playlist.
+    pub async fn remove_from_playlist(&mut self, session: &Session, playlist: &str, uri: &str) -> Result<(), String> {
+        let id = playlist.strip_prefix("spotify:playlist:").ok_or("Not a playlist")?;
+        let body = serde_json::json!({ "items": [{ "uri": uri }] });
+        self.send(session, http::Method::DELETE, &format!("{API}/playlists/{id}/items"), Some(body)).await.map(|_| ())
     }
 
     /// Albums saved to the library (`/me/albums` items wrap the album).
@@ -381,6 +403,8 @@ fn playlist_row(p: &serde_json::Value) -> Option<Item> {
         artist: owner.into(),
         uri: uri.into(),
         cover_url: smallest_image(&p["images"]).into(),
+        // A playlist has no artist; this holds the owner, so own (editable) playlists can be told apart.
+        artist_uri: p["owner"]["uri"].as_str().unwrap_or_default().into(),
         ..Default::default()
     })
 }
