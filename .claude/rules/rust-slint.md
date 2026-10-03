@@ -9,7 +9,7 @@ paths:
 ## Verifying library behaviour
 - Read the pinned crate's source in `~/.cargo/registry/src/*/<crate>-<version>/` before coding against it; librespot and Slint internals have repeatedly differed from what names suggest.
 - Before coding against a Web API endpoint, fetch a real response through the app's own `WebApi` (temporary debug code that is removed afterwards), so rotated refresh tokens are saved. Never probe with a separate client that discards tokens.
-- Runtime diagnosis: the release binary has no console (`windows_subsystem = "windows"`). Use a debug build launched with stderr redirected, plus temporary `eprintln!("TEMP ...")`; remove every `TEMP` line and confirm with a case-sensitive search before finishing.
+- Runtime diagnosis: the fast/release binaries have no console (`windows_subsystem = "windows"`). Use a debug build launched with stderr redirected, plus temporary `eprintln!("TEMP ...")`; remove every `TEMP` line and confirm with a case-sensitive search before finishing.
 
 ## Slint
 - `slint::Image` is `!Send`: backend code works with `web::Item` and converts to `ui::Row` on the UI thread (`set_rows`).
