@@ -1,9 +1,10 @@
 # Builds SlimSpot and installs it for the current user (no admin rights needed).
 #   .\install.ps1               build, copy, Start menu shortcut; autostart on first install
 #   .\install.ps1 -NoAutostart  same, but never turn autostart on
+#   .\install.ps1 -Release      full LTO build (~4 min per change instead of ~40 s; same RAM, 0.5 MB smaller exe)
 #   .\install.ps1 -Uninstall    remove the copy, shortcut and autostart entry (keeps %APPDATA%\SlimSpot)
 # Re-run after pulling changes to update the installed copy.
-param([switch]$NoAutostart, [switch]$Uninstall)
+param([switch]$NoAutostart, [switch]$Uninstall, [switch]$Release)
 $ErrorActionPreference = 'Stop'
 
 $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\SlimSpot'
@@ -33,10 +34,12 @@ if ($Uninstall) {
 
 Push-Location $PSScriptRoot
 try {
-    Write-Host 'Building release...'
-    cargo build --release
+    # The `fast` profile (Cargo.toml) skips LTO: measured 2026-10-04, same idle RAM as release.
+    $BuildProfile = if ($Release) { 'release' } else { 'fast' }
+    Write-Host "Building ($BuildProfile)..."
+    cargo build --profile $BuildProfile
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
-    $Built = Join-Path $PSScriptRoot 'target\release\slimspot.exe'
+    $Built = Join-Path $PSScriptRoot "target\$BuildProfile\slimspot.exe"
 } finally {
     Pop-Location
 }
