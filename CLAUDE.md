@@ -43,6 +43,8 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - **Icons**: `assets/icon.svg` is the source; `icon-64.png`/`icon-256.png` are rendered from it (headless Edge, 64 downscaled from 256) and embedded with `include_bytes!`, so no runtime SVG renderer.
 - **Keyboard**: shortcuts live in one root `FocusScope`; Esc returns focus to it from the search box.
 - **Lyrics**: fetched per track change, not cached on disk; shown in place of the track list (`Ctrl+Y`). Fixed line height + elide so the sung line is centered arithmetically; highlighted on the 500 ms position tick.
+- **Radio**: `spclient().get_context("spotify:station:track:<id>")` is resolved once and its 50 tracks are shown and played as a track list. Spotify reshuffles a station on every resolve, so loading the station context into Spirc would play a different order than the list shown.
+- **Track metadata** (radio, artist popular tracks) comes from librespot `Track::get`, fetched concurrently in `player::track_items`. Radio raised private RAM to ~25 MB (vs ~17 MB) on 2026-10-03, cause unconfirmed; batching the requests is the noted fix if it matters.
 - **Exe icon without a build-dependency crate**: `build.rs` calls `rc.exe` directly. `assets/icon.ico` holds PNG-compressed 16–256 px entries generated from `icon-256.png`.
 - **Autostart**: the registry `Run` value is the source of truth (the checkbox reads it back after every change). `install.ps1` turns it on only for a first install, so turning it off in the app survives updates.
 - **`--tray` start**: the window is shown once so its HWND exists for the media keys, then hidden as soon as they attach (Slint creates the native window only on first show).
