@@ -164,6 +164,9 @@ slint::slint! {
         // Playing rows show their title in green, like Spotify.
         in property <bool> playing;
         in property <length> cover-size: 40px;
+        // Right-click menu; off for rows that aren't Spotify items (devices).
+        in property <bool> menu: true;
+        callback action(string);
         // Fired whenever this (possibly recycled) row instance shows a row without a loaded cover.
         callback need-cover();
         init => { if (data.cover-url != "" && data.cover.width == 0) { need-cover() } }
@@ -196,6 +199,19 @@ slint::slint! {
                     Text { text: data.title; overflow: elide; font-size: 14px; color: root.playing ? Theme.accent : Theme.text; }
                     Text { text: data.artist; overflow: elide; font-size: 12px; color: Theme.subdued; }
                 }
+            }
+        }
+        // Takes right-clicks only; left-clicks still reach the row.
+        if root.menu : ContextMenuArea {
+            property <bool> is-track: data.uri.starts-with("spotify:track:");
+            Menu {
+                if is-track : MenuItem { title: "Start radio"; activated => { root.action("radio"); } }
+                if is-track : MenuItem { title: "Go to artist"; activated => { root.action("artist"); } }
+                if is-track : MenuItem { title: "Go to album"; activated => { root.action("album"); } }
+                if is-track : MenuItem { title: "Save to Liked Songs"; activated => { root.action("like"); } }
+                if !is-track : MenuItem { title: "Open"; activated => { root.action("open"); } }
+                MenuSeparator {}
+                MenuItem { title: "Copy link"; activated => { root.action("copy"); } }
             }
         }
     }
@@ -296,6 +312,8 @@ slint::slint! {
         callback load-devices();
         callback transfer(string);
         callback start-radio();
+        // Row menu: action is radio/artist/album/like/open/copy, uri is the row's.
+        callback row-action(string, string);
         // Mirrors the Windows Run registry value (see autostart.rs).
         in-out property <bool> start-with-windows;
         callback set-autostart(bool);
@@ -395,6 +413,7 @@ slint::slint! {
                                 cover-size: 48px;
                                 selected: row.uri == root.current-list;
                                 clicked => { root.open-list(row.uri); }
+                                action(a) => { root.row-action(a, row.uri); }
                                 need-cover => { root.need-cover(1, i, row.uri, row.cover-url); }
                             }
                         }
@@ -469,6 +488,7 @@ slint::slint! {
                                 data: row;
                                 playing: row.uri == root.current-track;
                                 clicked => { root.play-uri(row.uri); }
+                                action(a) => { root.row-action(a, row.uri); }
                                 need-cover => { root.need-cover(0, i, row.uri, row.cover-url); }
                             }
                         }
@@ -537,6 +557,7 @@ slint::slint! {
                             for d in root.devices : RowItem {
                                 data: d;
                                 cover-size: 32px;
+                                menu: false;
                                 playing: d.artist.ends-with("playing here");
                                 clicked => { root.transfer(d.uri); devices-popup.close(); }
                             }

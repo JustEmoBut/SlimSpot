@@ -60,8 +60,10 @@ pub enum Command {
     LoadDevices,
     /// Move playback to this Spotify Connect device id.
     Transfer(String),
-    /// Start a radio from the playing track.
-    Radio,
+    /// Start a radio from this track, or from the playing one.
+    Radio(Option<String>),
+    /// Row menu entry: radio/artist/album/like/open/copy on the row with this URI.
+    RowAction { action: String, uri: String },
     Back,
     Forward,
 }
@@ -181,10 +183,12 @@ fn resume(
 
 /// The Web API's top-tracks endpoint returns 403 for Development Mode apps, so popular tracks
 /// come from librespot's own metadata (the protocol the official client uses) instead.
-async fn artist_top_tracks(session: &Session, artist_uri: &str) -> Result<Vec<Item>, String> {
+/// The artist's name and popular tracks.
+async fn artist_top_tracks(session: &Session, artist_uri: &str) -> Result<(String, Vec<Item>), String> {
     let id = SpotifyUri::from_uri(artist_uri).map_err(|e| e.to_string())?;
     let artist = Artist::get(session, &id).await.map_err(|e| format!("Artist lookup failed: {e}"))?;
-    Ok(track_items(session, artist.top_tracks.for_country(&session.country()).to_vec()).await)
+    let rows = track_items(session, artist.top_tracks.for_country(&session.country()).to_vec()).await;
+    Ok((artist.name, rows))
 }
 
 /// Titles, artists and covers for track URIs via librespot metadata, fetched concurrently and
@@ -214,6 +218,8 @@ fn track_item(uri: &SpotifyUri, track: Track) -> Item {
             .min_by_key(|c| c.width)
             .map(|c| format!("https://i.scdn.co/image/{}", c.id))
             .unwrap_or_default(),
+        artist_uri: track.artists.first().and_then(|a| a.id.to_uri().ok()).unwrap_or_default(),
+        album_uri: track.album.id.to_uri().unwrap_or_default(),
     }
 }
 
@@ -291,6 +297,10 @@ fn load_request(shown: Option<&Shown>, track: &str, s: &Settings, seek_to: u32, 
 
 /// Now-playing data straight from librespot, so tracks started from the phone show up too.
 fn now_playing(item: &AudioItem) -> Item {
+    let artist_uri = match &item.unique_fields {
+        UniqueFields::Track { artists, .. } => artists.first().and_then(|a| a.id.to_uri().ok()).unwrap_or_default(),
+        _ => String::new(),
+    };
     let artist = match &item.unique_fields {
         UniqueFields::Track { artists, .. } => artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "),
         UniqueFields::Local { artists, .. } => artists.clone().unwrap_or_default(),
@@ -301,6 +311,9 @@ fn now_playing(item: &AudioItem) -> Item {
         artist,
         uri: item.uri.clone(),
         cover_url: item.covers.iter().min_by_key(|c| c.width).map(|c| c.url.clone()).unwrap_or_default(),
+        artist_uri,
+        // AudioItem names the album but carries no album id.
+        album_uri: String::new(),
     }
 }
 
@@ -335,6 +348,17 @@ fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<S
     set_rows(ui, page.rows.clone(), App::set_tracks);
     set_page_header(ui, page.title.clone(), nav.can_back(), nav.can_forward());
     set_status(ui, format!("{} items", page.rows.len()));
+}
+
+/// The item behind a URI on screen: the current page, the sidebar, or what is playing.
+fn find_item<'a>(nav: &'a History<Page>, library: &'a [Item], now: Option<&'a Item>, uri: &str) -> Option<&'a Item> {
+    nav.current()
+        .map(|p| p.rows.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .chain(library)
+        .chain(now)
+        .find(|i| i.uri == uri)
 }
 
 fn push_settings(ui: &slint::Weak<App>, s: &Settings) {
@@ -387,6 +411,8 @@ fn spirc_result(ui: &slint::Weak<App>, r: Result<(), librespot::core::Error>) {
 
 pub async fn run(
     ui: slint::Weak<App>,
+    // Our own queue: row menu actions re-enter it as the commands they stand for.
+    tx: mpsc::UnboundedSender<Command>,
     mut rx: mpsc::UnboundedReceiver<Command>,
     cover_rx: mpsc::UnboundedReceiver<CoverRequest>,
 ) {
@@ -484,29 +510,28 @@ pub async fn run(
                         continue;
                     };
                     set_status(&ui, "Loading...");
+                    // Album and artist pages bring their own name; lists are named by the clicked row.
                     let result = if uri.starts_with("spotify:album:") {
                         w.album_tracks(&session, &uri).await
                     } else if uri.starts_with("spotify:artist:") {
                         match artist_top_tracks(&session, &uri).await {
-                            Ok(mut top) => w.artist_albums(&session, &uri).await.map(|albums| {
+                            Ok((name, mut top)) => w.artist_albums(&session, &uri).await.map(|albums| {
                                 top.extend(albums);
-                                top
+                                (name, top)
                             }),
                             Err(e) => Err(e),
                         }
                     } else {
-                        w.list_tracks(&session, &uri).await
+                        w.list_tracks(&session, &uri).await.map(|rows| (String::new(), rows))
                     };
                     match result {
-                        Ok(rows) => {
-                            set_status(&ui, format!("{} items", rows.len()));
-                            // The clicked row (sidebar or the page it was on) knows the page's name.
-                            let title = library
-                                .iter()
-                                .chain(nav.current().map(|p| p.rows.as_slice()).unwrap_or_default())
-                                .find(|i| i.uri == uri)
-                                .map(|i| i.title.clone())
-                                .unwrap_or_default();
+                        Ok((name, rows)) => {
+                            // Otherwise the clicked row (sidebar or the page it was on) knows the name.
+                            let title = if name.is_empty() {
+                                find_item(&nav, &library, None, &uri).map(|i| i.title.clone()).unwrap_or_default()
+                            } else {
+                                name
+                            };
                             let context = if uri == LIKED_SONGS { format!("spotify:user:{}:collection", session.username()) } else { uri.clone() };
                             // Only sidebar entries get highlighted.
                             let sidebar = uri == LIKED_SONGS || uri.starts_with("spotify:playlist:");
@@ -581,8 +606,8 @@ pub async fn run(
                         Err(e) => set_status(&ui, e),
                     }
                 }
-                Command::Radio => {
-                    let Some(seed) = now_uri.clone() else {
+                Command::Radio(seed) => {
+                    let Some(seed) = seed.or_else(|| now_uri.clone()) else {
                         set_status(&ui, "Play a track first to start its radio");
                         continue;
                     };
@@ -591,7 +616,7 @@ pub async fn run(
                         Ok(rows) => {
                             let uris: Vec<String> = rows.iter().map(|r| r.uri.clone()).collect();
                             set_status(&ui, format!("Radio: {} tracks", rows.len()));
-                            let seed_title = now_item.as_ref().map(|i| i.title.clone()).unwrap_or_default();
+                            let seed_title = find_item(&nav, &library, now_item.as_ref(), &seed).map(|i| i.title.clone()).unwrap_or_default();
                             open_page(&ui, &mut nav, &mut shown, Page {
                                 title: format!("{seed_title} Radio"),
                                 rows,
@@ -605,6 +630,52 @@ pub async fn run(
                             spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
                         }
                         Err(e) => set_status(&ui, e),
+                    }
+                }
+                Command::RowAction { action, uri } => {
+                    let item = find_item(&nav, &library, now_item.as_ref(), &uri).cloned().unwrap_or_default();
+                    let follow_up = match action.as_str() {
+                        "radio" => Some(Command::Radio(Some(uri.clone()))),
+                        "open" => Some(Command::OpenList(uri.clone())),
+                        "artist" if !item.artist_uri.is_empty() => Some(Command::OpenList(item.artist_uri)),
+                        "album" if !item.album_uri.is_empty() => Some(Command::OpenList(item.album_uri)),
+                        "artist" | "album" => {
+                            set_status(&ui, format!("No {action} known for this track"));
+                            None
+                        }
+                        "like" => {
+                            if let Some(w) = web.as_mut() {
+                                match w.set_saved(&session, &uri, true).await {
+                                    Ok(()) => {
+                                        set_status(&ui, format!("Added \"{}\" to Liked Songs", item.title));
+                                        if now_uri.as_deref() == Some(uri.as_str()) {
+                                            liked = true;
+                                            let _ = ui.upgrade_in_event_loop(|app| app.set_liked(true));
+                                        }
+                                    }
+                                    Err(e) => set_status(&ui, e),
+                                }
+                            }
+                            None
+                        }
+                        "copy" => {
+                            #[cfg(windows)]
+                            match crate::clipboard::web_link(&uri) {
+                                Some(link) => match crate::clipboard::set_text(&link) {
+                                    Ok(()) => set_status(&ui, format!("Copied {link}")),
+                                    Err(e) => set_status(&ui, e),
+                                },
+                                None => set_status(&ui, "This has no Spotify link"),
+                            }
+                            None
+                        }
+                        other => {
+                            log::warn!("unknown row action {other}");
+                            None
+                        }
+                    };
+                    if let Some(cmd) = follow_up {
+                        let _ = tx.send(cmd);
                     }
                 }
                 Command::Back => {

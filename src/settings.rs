@@ -100,7 +100,7 @@ impl LastSession {
         let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
         let uri = v["uri"].as_str().filter(|u| u.starts_with("spotify:track:"))?.to_string();
         Some(LastSession {
-            item: Item { title: s("title"), artist: s("artist"), uri, cover_url: s("cover_url") },
+            item: Item { title: s("title"), artist: s("artist"), uri, cover_url: s("cover_url"), ..Default::default() },
             position_ms: v["position_ms"].as_u64().unwrap_or(0) as u32,
             duration_ms: v["duration_ms"].as_u64().unwrap_or(0) as u32,
             context: v["context"].as_str().map(String::from),
@@ -178,7 +178,7 @@ mod tests {
 
         assert_eq!(defaults.last, None);
         let last = LastSession {
-            item: Item { title: "T".into(), artist: "A".into(), uri: "spotify:track:x".into(), cover_url: "c".into() },
+            item: Item { title: "T".into(), artist: "A".into(), uri: "spotify:track:x".into(), cover_url: "c".into(), ..Default::default() },
             position_ms: 61_000,
             duration_ms: 200_000,
             context: Some("spotify:album:y".into()),

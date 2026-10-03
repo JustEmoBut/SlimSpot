@@ -2,6 +2,8 @@
 
 #[cfg(windows)]
 mod autostart;
+#[cfg(windows)]
+mod clipboard;
 mod covers;
 #[cfg(windows)]
 mod instance;
@@ -125,7 +127,11 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_transfer(send_str(Command::Transfer));
     app.on_toggle_like(send(|| Command::ToggleLike));
     app.on_load_devices(send(|| Command::LoadDevices));
-    app.on_start_radio(send(|| Command::Radio));
+    app.on_start_radio(send(|| Command::Radio(None)));
+    let action_tx = tx.clone();
+    app.on_row_action(move |action, uri| {
+        let _ = action_tx.send(Command::RowAction { action: action.into(), uri: uri.into() });
+    });
     app.on_go_back(send(|| Command::Back));
     app.on_go_forward(send(|| Command::Forward));
     app.on_toggle(send(|| Command::Toggle));
@@ -229,10 +235,11 @@ fn main() -> Result<(), slint::PlatformError> {
         let _ = cover_tx.send(CoverRequest { kind, index: index as usize, uri: uri.into(), url: url.into() });
     });
 
+    let backend_tx = tx.clone();
     let weak = app.as_weak();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        rt.block_on(player::run(weak, rx, cover_rx));
+        rt.block_on(player::run(weak, backend_tx, rx, cover_rx));
     });
 
     // Shown even when starting in the tray: the media keys need the native window, which

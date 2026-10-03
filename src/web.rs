@@ -48,6 +48,9 @@ pub struct Item {
     pub artist: String,
     pub uri: String,
     pub cover_url: String,
+    /// First artist and the album of a track (for the row menu); empty when unknown.
+    pub artist_uri: String,
+    pub album_uri: String,
 }
 
 pub struct WebApi {
@@ -229,8 +232,8 @@ impl WebApi {
         self.send(session, http::Method::PUT, &format!("{API}/me/player"), Some(body)).await.map(|_| ())
     }
 
-    /// Album tracks carry no images, so they all get the album's cover.
-    pub async fn album_tracks(&mut self, session: &Session, album_uri: &str) -> Result<Vec<Item>, String> {
+    /// The album's name and tracks. Album tracks carry no images, so they all get the album's cover.
+    pub async fn album_tracks(&mut self, session: &Session, album_uri: &str) -> Result<(String, Vec<Item>), String> {
         let id = album_uri.strip_prefix("spotify:album:").ok_or("Not an album URI")?;
         let album = self.get_json(session, &format!("{API}/albums/{id}")).await?;
         let cover = smallest_image(&album["images"]).to_string();
@@ -238,11 +241,12 @@ impl WebApi {
         if let Some(next) = album["tracks"]["next"].as_str() {
             items.extend(self.all_items(session, next.to_string()).await?);
         }
-        Ok(items
+        let rows = items
             .iter()
             .filter_map(track_row)
-            .map(|t| Item { cover_url: cover.clone(), ..t })
-            .collect())
+            .map(|t| Item { cover_url: cover.clone(), album_uri: album_uri.to_string(), ..t })
+            .collect();
+        Ok((album["name"].as_str().unwrap_or_default().to_string(), rows))
     }
 
     /// The artist's albums and singles, newest first as Spotify orders them, up to ARTIST_ALBUM_PAGES pages.
@@ -315,6 +319,8 @@ fn track_row(t: &serde_json::Value) -> Option<Item> {
         artist,
         uri: uri.into(),
         cover_url: smallest_image(&t["album"]["images"]).into(),
+        artist_uri: t["artists"][0]["uri"].as_str().unwrap_or_default().into(),
+        album_uri: t["album"]["uri"].as_str().unwrap_or_default().into(),
     })
 }
 
@@ -324,6 +330,7 @@ fn artist_row(a: &serde_json::Value) -> Option<Item> {
         artist: "Artist".into(),
         uri: a["uri"].as_str().filter(|u| u.starts_with("spotify:artist:"))?.into(),
         cover_url: smallest_image(&a["images"]).into(),
+        ..Default::default()
     })
 }
 
@@ -338,6 +345,7 @@ fn album_row(a: &serde_json::Value) -> Option<Item> {
         artist: format!("{kind} · {artists}"),
         uri: a["uri"].as_str().filter(|u| u.starts_with("spotify:album:"))?.into(),
         cover_url: smallest_image(&a["images"]).into(),
+        ..Default::default()
     })
 }
 
@@ -348,7 +356,7 @@ fn device_row(d: &serde_json::Value) -> Option<Item> {
         artist: format!("{}{active}", d["type"].as_str().unwrap_or("Device")),
         // Restricted devices can't be controlled through the Web API.
         uri: d["id"].as_str().filter(|_| d["is_restricted"].as_bool() != Some(true))?.into(),
-        cover_url: String::new(),
+        ..Default::default()
     })
 }
 
@@ -360,6 +368,7 @@ fn playlist_row(p: &serde_json::Value) -> Option<Item> {
         artist: owner.into(),
         uri: uri.into(),
         cover_url: smallest_image(&p["images"]).into(),
+        ..Default::default()
     })
 }
 
