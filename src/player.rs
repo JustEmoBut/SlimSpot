@@ -26,8 +26,9 @@ use librespot_oauth::OAuthClientBuilder;
 use tokio::sync::mpsc;
 
 use crate::covers::{self, CoverRequest};
+use crate::nav::History;
 use crate::settings::{self, LastSession, Quality, Repeat, Settings};
-use crate::ui::{App, Row, clear_lyrics, set_current, set_lyrics, set_playing, set_position, set_rows, set_status};
+use crate::ui::{App, Row, clear_lyrics, set_current, set_lyrics, set_page_header, set_playing, set_position, set_rows, set_status};
 use crate::web::{Item, LIKED_SONGS, WebApi};
 
 // Spotify desktop client id; same as librespot's internal KEYMASTER_CLIENT_ID.
@@ -61,6 +62,8 @@ pub enum Command {
     Transfer(String),
     /// Start a radio from the playing track.
     Radio,
+    Back,
+    Forward,
 }
 
 pub fn cache_dir() -> PathBuf {
@@ -260,6 +263,7 @@ pub fn parse_track(input: &str) -> Option<SpotifyUri> {
 }
 
 /// What the track list on screen came from; decides how a click is handed to Spirc.
+#[derive(Clone)]
 enum Shown {
     /// A playlist or Liked Songs: played as a real Spotify context, so the phone sees the playlist.
     Context(String),
@@ -306,6 +310,31 @@ fn repeat_from(context: bool, track: bool) -> Repeat {
         (true, false) => Repeat::All,
         _ => Repeat::Off,
     }
+}
+
+/// One screen of the main panel, kept whole in the back/forward history.
+struct Page {
+    title: String,
+    rows: Vec<Item>,
+    shown: Shown,
+    /// Sidebar entry to highlight (playlists and Liked Songs only), or "".
+    list: String,
+}
+
+/// Opens `page` as a new history entry and shows it.
+fn open_page(ui: &slint::Weak<App>, nav: &mut History<Page>, shown: &mut Option<Shown>, page: Page) {
+    nav.push(page);
+    show_current(ui, nav, shown);
+}
+
+/// Puts the history's current page on screen (after open, back or forward).
+fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<Shown>) {
+    let Some(page) = nav.current() else { return };
+    *shown = Some(page.shown.clone());
+    set_current(ui, page.list.clone(), App::set_current_list);
+    set_rows(ui, page.rows.clone(), App::set_tracks);
+    set_page_header(ui, page.title.clone(), nav.can_back(), nav.can_forward());
+    set_status(ui, format!("{} items", page.rows.len()));
 }
 
 fn push_settings(ui: &slint::Weak<App>, s: &Settings) {
@@ -399,6 +428,8 @@ pub async fn run(
         }
     };
     tokio::spawn(covers::worker(session.clone(), ui.clone(), cover_rx));
+    // Sidebar rows, kept to title the pages they open.
+    let mut library: Vec<Item> = Vec::new();
     if let Some(w) = web.as_mut() {
         set_status(&ui, "Loading playlists...");
         let mut lists = vec![Item { title: "Liked Songs".into(), uri: LIKED_SONGS.into(), ..Default::default() }];
@@ -415,12 +446,14 @@ pub async fn run(
             Ok(a) => lists.extend(a),
             Err(e) => set_status(&ui, format!("Followed artists failed: {e}")),
         }
+        library = lists.clone();
         set_rows(&ui, lists, App::set_lists);
     }
     set_status(&ui, format!("Logged in as {}. Visible in Spotify Connect as \"{DEVICE_NAME}\".", session.username()));
 
     let mut playing = false;
     let mut shown: Option<Shown> = None;
+    let mut nav: History<Page> = History::default();
     // Current track and last reported position, so a quality change can resume where it was.
     let mut now_uri: Option<String> = None;
     let mut now_item: Option<Item> = None;
@@ -467,15 +500,18 @@ pub async fn run(
                     match result {
                         Ok(rows) => {
                             set_status(&ui, format!("{} items", rows.len()));
-                            shown = Some(Shown::Context(if uri == LIKED_SONGS {
-                                format!("spotify:user:{}:collection", session.username())
-                            } else {
-                                uri.clone()
-                            }));
+                            // The clicked row (sidebar or the page it was on) knows the page's name.
+                            let title = library
+                                .iter()
+                                .chain(nav.current().map(|p| p.rows.as_slice()).unwrap_or_default())
+                                .find(|i| i.uri == uri)
+                                .map(|i| i.title.clone())
+                                .unwrap_or_default();
+                            let context = if uri == LIKED_SONGS { format!("spotify:user:{}:collection", session.username()) } else { uri.clone() };
                             // Only sidebar entries get highlighted.
                             let sidebar = uri == LIKED_SONGS || uri.starts_with("spotify:playlist:");
-                            set_current(&ui, if sidebar { uri } else { String::new() }, App::set_current_list);
-                            set_rows(&ui, rows, App::set_tracks);
+                            let list = if sidebar { uri } else { String::new() };
+                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Context(context), list });
                         }
                         Err(e) => set_status(&ui, e),
                     }
@@ -509,11 +545,9 @@ pub async fn run(
                         Ok(rows) => {
                             set_status(&ui, format!("{} results", rows.len()));
                             // Only the track rows form the play queue; album/artist rows open pages.
-                            shown = Some(Shown::Tracks(
-                                rows.iter().filter(|r| r.uri.starts_with("spotify:track:")).map(|r| r.uri.clone()).collect(),
-                            ));
-                            set_current(&ui, String::new(), App::set_current_list);
-                            set_rows(&ui, rows, App::set_tracks);
+                            let tracks = rows.iter().filter(|r| r.uri.starts_with("spotify:track:")).map(|r| r.uri.clone()).collect();
+                            let title = format!("Search: {}", q.trim());
+                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Tracks(tracks), list: String::new() });
                         }
                         Err(e) => set_status(&ui, e),
                     }
@@ -557,16 +591,30 @@ pub async fn run(
                         Ok(rows) => {
                             let uris: Vec<String> = rows.iter().map(|r| r.uri.clone()).collect();
                             set_status(&ui, format!("Radio: {} tracks", rows.len()));
-                            shown = Some(Shown::Tracks(uris.clone()));
+                            let seed_title = now_item.as_ref().map(|i| i.title.clone()).unwrap_or_default();
+                            open_page(&ui, &mut nav, &mut shown, Page {
+                                title: format!("{seed_title} Radio"),
+                                rows,
+                                shown: Shown::Tracks(uris.clone()),
+                                list: String::new(),
+                            });
                             playing_context = None;
                             pending_resume = None;
-                            set_current(&ui, String::new(), App::set_current_list);
-                            set_rows(&ui, rows, App::set_tracks);
                             let first = uris[0].clone();
                             let request = load_request(shown.as_ref(), &first, &settings, 0, true);
                             spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
                         }
                         Err(e) => set_status(&ui, e),
+                    }
+                }
+                Command::Back => {
+                    if nav.back().is_some() {
+                        show_current(&ui, &nav, &mut shown);
+                    }
+                }
+                Command::Forward => {
+                    if nav.forward().is_some() {
+                        show_current(&ui, &nav, &mut shown);
                     }
                 }
                 Command::Transfer(device_id) => {

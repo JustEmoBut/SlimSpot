@@ -40,6 +40,8 @@ slint::slint! {
         out property <string> muted: "M4 9.5 H7.5 L12 5.5 V18.5 L7.5 14.5 H4 Z M15.5 9.5 L20.5 14.5 M20.5 9.5 L15.5 14.5";
         out property <string> search: "M17 10.5 C17 14.1 14.1 17 10.5 17 C6.9 17 4 14.1 4 10.5 C4 6.9 6.9 4 10.5 4 C14.1 4 17 6.9 17 10.5 Z M15.5 15.5 L20 20";
         out property <string> settings: "M4 7 H20 M4 12 H20 M4 17 H20 M9 5 V9 M15 10 V14 M7 15 V19";
+        out property <string> back: "M15 5 L8 12 L15 19";
+        out property <string> forward: "M9 5 L16 12 L9 19";
     }
 
     component Icon inherits Path {
@@ -203,7 +205,9 @@ slint::slint! {
         in property <[string]> lines;
         in property <int> current: -1;
         in property <string> note;
-        property <length> line-height: 46px;
+        // Two text lines per slot: long lines wrap instead of being cut, and every slot keeps the
+        // same height so the sung line can still be centered arithmetically.
+        property <length> line-height: 64px;
         // Keep the sung line in the middle; the user can still scroll in between line changes.
         changed current => {
             if (current >= 0) {
@@ -222,8 +226,9 @@ slint::slint! {
                 text: line;
                 height: line-height;
                 vertical-alignment: center;
+                wrap: word-wrap;
                 overflow: elide;
-                font-size: 24px;
+                font-size: 22px;
                 font-weight: 700;
                 // Sung and current lines are white, upcoming ones dimmed.
                 color: current < 0 || i <= current ? Theme.text : #ffffff66;
@@ -257,6 +262,12 @@ slint::slint! {
         min-width: 760px;
         min-height: 480px;
         in property <string> status: "Starting...";
+        // Big heading of the main panel and the back/forward arrows next to it.
+        in property <string> page-title: "Home";
+        in property <bool> can-back;
+        in property <bool> can-forward;
+        callback go-back();
+        callback go-forward();
         in property <bool> playing: false;
         in property <[Row]> lists;
         in property <[Row]> tracks;
@@ -348,6 +359,8 @@ slint::slint! {
                     if (event.text == "y") { root.show-lyrics = !root.show-lyrics; return accept; }
                     if (event.text == "e") { root.start-radio(); return accept; }
                 }
+                if (event.modifiers.alt && event.text == Key.LeftArrow) { root.go-back(); return accept; }
+                if (event.modifiers.alt && event.text == Key.RightArrow) { root.go-forward(); return accept; }
                 if (event.text == " ") { root.toggle(); return accept; }
                 if (event.text == Key.Escape) { self.focus(); return accept; }
                 reject
@@ -397,6 +410,8 @@ slint::slint! {
                         HorizontalLayout {
                             spacing: 8px;
                             height: 44px;
+                            IconButton { y: (parent.height - self.height) / 2; shape: Icons.back; dot: false; enabled: root.can-back; clicked => { root.go-back(); } }
+                            IconButton { y: (parent.height - self.height) / 2; shape: Icons.forward; dot: false; enabled: root.can-forward; clicked => { root.go-forward(); } }
                             // Search pill
                             Rectangle {
                                 max-width: 420px;
@@ -410,9 +425,11 @@ slint::slint! {
                                     spacing: 10px;
                                     Icon { width: 20px; height: 20px; y: (parent.height - 20px) / 2; shape: Icons.search; tint: Theme.subdued; }
                                     Rectangle {
+                                        // Full height + centered text: otherwise the caret is drawn at the top.
                                         query := TextInput {
-                                            y: (parent.height - self.height) / 2;
                                             width: parent.width;
+                                            height: parent.height;
+                                            vertical-alignment: center;
                                             single-line: true;
                                             font-size: 14px;
                                             color: Theme.text;
@@ -420,6 +437,8 @@ slint::slint! {
                                         }
                                         if query.text == "" : Text {
                                             x: 0;
+                                            width: parent.width;
+                                            height: parent.height;
                                             text: "What do you want to play? Search or paste a link";
                                             font-size: 14px;
                                             color: Theme.muted;
@@ -436,6 +455,7 @@ slint::slint! {
                                 clicked => { settings-popup.show(); }
                             }
                         }
+                        if !root.show-lyrics : Text { text: root.page-title; font-size: 28px; font-weight: 700; color: Theme.text; overflow: elide; }
                         Text { text: root.status; font-size: 12px; color: Theme.subdued; overflow: elide; }
                         if root.show-lyrics : LyricsView {
                             vertical-stretch: 1;
@@ -712,6 +732,14 @@ pub fn clear_lyrics(ui: &slint::Weak<App>, note: &str) {
         app.set_lyric_times(ModelRc::default());
         app.set_lyric_index(-1);
         app.set_lyrics_note(note.into());
+    });
+}
+
+pub fn set_page_header(ui: &slint::Weak<App>, title: String, can_back: bool, can_forward: bool) {
+    let _ = ui.upgrade_in_event_loop(move |app| {
+        app.set_page_title(title.into());
+        app.set_can_back(can_back);
+        app.set_can_forward(can_forward);
     });
 }
 

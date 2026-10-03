@@ -7,6 +7,7 @@ mod covers;
 mod instance;
 mod logger;
 mod lyrics;
+mod nav;
 #[cfg(windows)]
 mod media_keys;
 mod player;
@@ -125,6 +126,8 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_toggle_like(send(|| Command::ToggleLike));
     app.on_load_devices(send(|| Command::LoadDevices));
     app.on_start_radio(send(|| Command::Radio));
+    app.on_go_back(send(|| Command::Back));
+    app.on_go_forward(send(|| Command::Forward));
     app.on_toggle(send(|| Command::Toggle));
     app.on_prev(send(|| Command::Prev));
     app.on_next(send(|| Command::Next));
