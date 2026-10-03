@@ -389,10 +389,10 @@ slint::slint! {
     export component App inherits Window {
         title: "SlimSpot";
         default-font-family: "Poppins";
-        icon: root.app-icon;
+        // Embedded here rather than set from Rust: winit gets the icon only when its image cache key
+        // changes, and a pixel-buffer image has none, so an icon from Rust never reached the title bar.
+        icon: @image-url("../assets/icon-64.png");
         background: Theme.base;
-        // Decoded from assets/icon-64.png at startup (no runtime SVG renderer).
-        in property <image> app-icon;
         callback quit();
         preferred-width: 1040px;
         preferred-height: 680px;

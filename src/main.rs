@@ -41,7 +41,7 @@ const RESTORE_POLL: Duration = Duration::from_millis(100);
 // If the backend hasn't finished quitting by then (e.g. still logging in), quit anyway.
 const QUIT_GRACE: Duration = Duration::from_secs(3);
 
-/// Window/tray icon, decoded from the PNG rendered off assets/icon.svg (no runtime SVG renderer).
+/// Tray icon, decoded from the PNG rendered off assets/icon.svg (no runtime SVG renderer).
 fn app_icon() -> slint::Image {
     let Ok(img) = image::load_from_memory(include_bytes!("../assets/icon-64.png")) else {
         return slint::Image::default();
@@ -60,7 +60,6 @@ fn main() -> Result<(), slint::PlatformError> {
     let app = App::new()?;
     let (tx, rx) = mpsc::unbounded_channel();
     let icon = app_icon();
-    app.set_app_icon(icon.clone());
     // Launched by the Windows Run entry: stay in the tray.
     #[cfg(windows)]
     let start_in_tray = std::env::args().any(|a| a == autostart::TRAY_ARG);
