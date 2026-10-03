@@ -1,0 +1,5 @@
+# Normalize line endings in the repo to LF; Windows checkouts keep LF too (rustfmt/cargo don't care).
+* text=auto eol=lf
+*.svg text eol=lf
+*.png binary
+*.ico binary

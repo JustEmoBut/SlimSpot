@@ -1,6 +1,8 @@
 #![windows_subsystem = "windows"]
 
 mod covers;
+#[cfg(windows)]
+mod instance;
 mod logger;
 #[cfg(windows)]
 mod media_keys;
@@ -16,7 +18,7 @@ use tokio::sync::mpsc;
 
 use crate::covers::CoverRequest;
 use crate::player::Command;
-use crate::ui::App;
+use crate::ui::{App, Tray};
 
 const POSITION_TICK: Duration = Duration::from_millis(500);
 // Polls for the native window handle after startup; gives up after ~5 s.
@@ -26,11 +28,64 @@ const MEDIA_KEYS_RETRY: Duration = Duration::from_millis(100);
 const MEDIA_KEYS_MAX_TRIES: u32 = 50;
 // ponytail: polling because winit's minimize/restore events need Slint's unstable winit API.
 const RESTORE_POLL: Duration = Duration::from_millis(100);
+// If the backend hasn't finished quitting by then (e.g. still logging in), quit anyway.
+const QUIT_GRACE: Duration = Duration::from_secs(3);
+
+/// Window/tray icon, decoded from the PNG rendered off assets/icon.svg (no runtime SVG renderer).
+fn app_icon() -> slint::Image {
+    let Ok(img) = image::load_from_memory(include_bytes!("../assets/icon-64.png")) else {
+        return slint::Image::default();
+    };
+    let rgba = img.to_rgba8();
+    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(rgba.as_raw(), rgba.width(), rgba.height()))
+}
 
 fn main() -> Result<(), slint::PlatformError> {
     logger::init(&player::cache_dir());
+    #[cfg(windows)]
+    let instance = match instance::acquire() {
+        instance::Instance::Secondary => return Ok(()),
+        primary => primary,
+    };
     let app = App::new()?;
     let (tx, rx) = mpsc::unbounded_channel();
+    let icon = app_icon();
+    app.set_app_icon(icon.clone());
+
+    // Closing the window hides it to the tray; playback continues. Quit from the tray or Ctrl+Q.
+    app.window().on_close_requested(|| slint::CloseRequestResponse::HideWindow);
+    let quit = {
+        let tx = tx.clone();
+        move || {
+            let _ = tx.send(Command::Quit);
+            slint::Timer::single_shot(QUIT_GRACE, || {
+                let _ = slint::quit_event_loop();
+            });
+        }
+    };
+    app.on_quit(quit.clone());
+    let tray = Tray::new()?;
+    tray.set_tray_icon(icon);
+    let show = {
+        let weak = app.as_weak();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                #[cfg(windows)]
+                instance::bring_to_front(&app);
+                #[cfg(not(windows))]
+                let _ = app.show();
+            }
+        }
+    };
+    tray.on_show_window(show.clone());
+    tray.on_quit(quit);
+    #[cfg(windows)]
+    {
+        let weak = app.as_weak();
+        instance.listen(move || {
+            let _ = weak.upgrade_in_event_loop(|app| instance::bring_to_front(&app));
+        });
+    }
 
     let send = |cmd: fn() -> Command| {
         let tx = tx.clone();
@@ -50,6 +105,20 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_toggle(send(|| Command::Toggle));
     app.on_prev(send(|| Command::Prev));
     app.on_next(send(|| Command::Next));
+    tray.on_toggle(send(|| Command::Toggle));
+    tray.on_prev(send(|| Command::Prev));
+    tray.on_next(send(|| Command::Next));
+    // The tray menu says Play or Pause to match the window.
+    let tray_weak = tray.as_weak();
+    let ui_for_tray = app.as_weak();
+    let tray_sync = slint::Timer::default();
+    tray_sync.start(slint::TimerMode::Repeated, POSITION_TICK, move || {
+        if let (Some(t), Some(a)) = (tray_weak.upgrade(), ui_for_tray.upgrade()) {
+            if t.get_playing() != a.get_playing() {
+                t.set_playing(a.get_playing());
+            }
+        }
+    });
     app.on_toggle_shuffle(send(|| Command::ToggleShuffle));
     app.on_cycle_repeat(send(|| Command::CycleRepeat));
     let seek_tx = tx.clone();
@@ -122,5 +191,7 @@ fn main() -> Result<(), slint::PlatformError> {
         rt.block_on(player::run(weak, rx, cover_rx));
     });
 
-    app.run()
+    app.show()?;
+    // Not `app.run()`: that ends when the last window closes, but a hidden window must keep playing.
+    slint::run_event_loop_until_quit()
 }

@@ -26,7 +26,7 @@ use librespot_oauth::OAuthClientBuilder;
 use tokio::sync::mpsc;
 
 use crate::covers::{self, CoverRequest};
-use crate::settings::{self, Quality, Repeat, Settings};
+use crate::settings::{self, LastSession, Quality, Repeat, Settings};
 use crate::ui::{App, Row, set_current, set_playing, set_position, set_rows, set_status};
 use crate::web::{Item, LIKED_SONGS, WebApi};
 
@@ -53,6 +53,8 @@ pub enum Command {
     CycleRepeat,
     Quality(Quality),
     Normalize(bool),
+    /// Save the session, disconnect the Connect device and end the UI event loop.
+    Quit,
 }
 
 pub fn cache_dir() -> PathBuf {
@@ -284,6 +286,28 @@ fn save_settings(ui: &slint::Weak<App>, s: &Settings) {
     }
 }
 
+/// Remembers the current track and position. ponytail: saved on track change, pause and quit;
+/// a crash mid-song resumes from the song's start, a periodic save would fix that.
+fn save_last(
+    ui: &slint::Weak<App>,
+    settings: &mut Settings,
+    item: Option<&Item>,
+    position: (u32, Instant),
+    playing: bool,
+    duration_ms: u32,
+    context: &Option<String>,
+) {
+    let Some(item) = item else { return };
+    let elapsed = if playing { position.1.elapsed().as_millis() as u32 } else { 0 };
+    settings.last = Some(LastSession {
+        item: item.clone(),
+        position_ms: (position.0 + elapsed).min(duration_ms),
+        duration_ms,
+        context: context.clone(),
+    });
+    save_settings(ui, settings);
+}
+
 fn spirc_result(ui: &slint::Weak<App>, r: Result<(), librespot::core::Error>) {
     if let Err(e) = r {
         set_status(ui, format!("Playback command failed: {e}"));
@@ -348,7 +372,22 @@ pub async fn run(
     let mut shown: Option<Shown> = None;
     // Current track and last reported position, so a quality change can resume where it was.
     let mut now_uri: Option<String> = None;
+    let mut now_item: Option<Item> = None;
+    let mut duration_ms = 0u32;
     let mut position = (0u32, Instant::now());
+    // Context of the last track started from this window, saved with the session.
+    let mut playing_context: Option<String> = None;
+    // Last session from the previous run: shown paused, loaded on the first Play. Loading it
+    // eagerly would make this the active device and pause whatever the phone is playing.
+    let mut pending_resume = settings.last.clone();
+    if let Some(last) = &pending_resume {
+        let (item, at, total) = (last.item.clone(), last.position_ms as f32, last.duration_ms as f32);
+        let _ = ui.upgrade_in_event_loop(move |app| {
+            app.set_now(Row::from(item));
+            app.set_duration(total);
+            app.set_position(at);
+        });
+    }
     loop {
         tokio::select! {
             Some(cmd) = rx.recv() => match cmd {
@@ -390,12 +429,19 @@ pub async fn run(
                 }
                 Command::PlayUri(uri) => {
                     set_status(&ui, "Loading...");
+                    pending_resume = None;
+                    playing_context = match &shown {
+                        Some(Shown::Context(c)) => Some(c.clone()),
+                        _ => None,
+                    };
                     let request = load_request(shown.as_ref(), &uri, &settings, 0, true);
                     spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
                 }
                 Command::Submit(s) if parse_track(&s).is_some() => {
                     let uri = parse_track(&s).expect("checked above").to_uri().unwrap_or_default();
                     set_status(&ui, "Loading...");
+                    pending_resume = None;
+                    playing_context = None;
                     let request = load_request(None, &uri, &settings, 0, true);
                     spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
                 }
@@ -419,7 +465,23 @@ pub async fn run(
                         Err(e) => set_status(&ui, e),
                     }
                 }
-                Command::Toggle => spirc_result(&ui, if playing { spirc.pause() } else { spirc.play() }),
+                Command::Toggle => match pending_resume.take() {
+                    Some(last) => {
+                        playing_context = last.context.clone();
+                        let shown = last.context.map(Shown::Context);
+                        let request = load_request(shown.as_ref(), &last.item.uri, &settings, last.position_ms, true);
+                        spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
+                    }
+                    None => spirc_result(&ui, if playing { spirc.pause() } else { spirc.play() }),
+                },
+                Command::Quit => {
+                    save_last(&ui, &mut settings, now_item.as_ref(), position, playing, duration_ms, &playing_context);
+                    let _ = spirc.shutdown();
+                    let _ = slint::invoke_from_event_loop(|| {
+                        let _ = slint::quit_event_loop();
+                    });
+                    break;
+                }
                 Command::Next => spirc_result(&ui, spirc.next()),
                 Command::Prev => spirc_result(&ui, spirc.prev()),
                 Command::Seek(ms) => spirc_result(&ui, spirc.set_position_ms(ms)),
@@ -477,6 +539,11 @@ pub async fn run(
                     PlayerEvent::TrackChanged { audio_item } => {
                         let item = now_playing(&audio_item);
                         now_uri = Some(item.uri.clone());
+                        now_item = Some(item.clone());
+                        pending_resume = None;
+                        duration_ms = audio_item.duration_ms;
+                        position = (0, Instant::now());
+                        save_last(&ui, &mut settings, now_item.as_ref(), position, false, duration_ms, &playing_context);
                         let duration = audio_item.duration_ms as f32;
                         set_current(&ui, item.uri.clone(), App::set_current_track);
                         let _ = ui.upgrade_in_event_loop(move |app| {
@@ -521,6 +588,7 @@ pub async fn run(
                         playing = false;
                         position = (position_ms, Instant::now());
                         set_position(&ui, position_ms);
+                        save_last(&ui, &mut settings, now_item.as_ref(), position, false, duration_ms, &playing_context);
                     }
                     PlayerEvent::Stopped { .. } => playing = false,
                     PlayerEvent::Unavailable { .. } => { set_status(&ui, "Track unavailable"); continue }

@@ -18,14 +18,15 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 ## Architecture (`src/`)
 | Module | Responsibility |
 |---|---|
-| `main.rs` | Wires Slint callbacks to `player::Command`, UI timers (seek interpolation, minimize-restore repaint, media-key setup retry) |
+| `main.rs` | Wires Slint callbacks to `player::Command`, tray, UI timers (seek interpolation, minimize-restore repaint, media-key setup retry) |
 | `ui.rs` | `slint::slint!` markup + helpers that push state to the UI thread |
 | `player.rs` | Backend tokio thread: login, Spotify Connect device (Spirc), command/event loop, reconnect |
 | `web.rs` | Spotify Web API (separate OAuth grant): search, playlists, Liked Songs, albums, artist albums |
 | `covers.rs` | Thumbnails for instantiated rows only, 64 px, max 300 decoded |
-| `settings.rs` | `settings.json`: volume, shuffle, repeat, quality, normalize |
+| `settings.rs` | `settings.json`: volume, shuffle, repeat, quality, normalize, last session |
 | `media_keys.rs` | Windows SystemMediaTransportControls (windows-only) |
 | `logger.rs` | File logger for warn/error, including librespot's |
+| `instance.rs` | Single instance via a named event; a second launch wakes the running window (windows-only) |
 
 ## Confirmed decisions
 - **Spirc owns playback state** (queue, shuffle, repeat, track advance). Local actions become Spirc calls; there is no local queue. Playlists/albums/artists/Liked Songs play as Spotify contexts; search results as a track list.
@@ -33,6 +34,10 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - **Quality/normalisation are per-Player**: changing them restarts the Connect device and resumes at the same position.
 - **Volume**: slider drags set the local mixer only; Spirc (and thus Spotify) gets one update on release. Per-step Spirc updates hit 429 and stalled the loop.
 - Spotify Connect device name: `SlimSpot`, type Computer.
+- **Close hides to the tray**, playback continues; real quit is tray "Quit" or `Ctrl+Q` (saves the session, shuts Spirc down so no stale device lingers). The event loop runs via `run_event_loop_until_quit`, not `app.run()`.
+- **Last session is shown paused and loaded on the first Play**, never at startup: loading would make SlimSpot the active device and pause the phone. Saved on track change, pause and quit (`settings.json` → `last`).
+- **Icons**: `assets/icon.svg` is the source; `icon-64.png`/`icon-256.png` are rendered from it (headless Edge, 64 downscaled from 256) and embedded with `include_bytes!`, so no runtime SVG renderer.
+- **Keyboard**: shortcuts live in one root `FocusScope`; Esc returns focus to it from the search box.
 
 ## Known external constraints (verified against the live API, 2026-10-03)
 - Development Mode Web API: `search` and `/artists/{id}/albums` reject `limit > 10`; playlists/saved tracks accept 50.

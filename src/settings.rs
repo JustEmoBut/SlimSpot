@@ -1,8 +1,11 @@
-//! Player preferences that survive restarts: volume, shuffle, repeat, quality, normalisation.
+//! Player preferences that survive restarts: volume, shuffle, repeat, quality, normalisation,
+//! and the last track (so a restart can pick up where it stopped).
 
 use std::path::{Path, PathBuf};
 
 use librespot::playback::config::Bitrate;
+
+use crate::web::Item;
 
 const SETTINGS_FILE: &str = "settings.json";
 
@@ -70,6 +73,41 @@ impl Quality {
     }
 }
 
+/// What was playing when the app last saved, shown paused at startup.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LastSession {
+    pub item: Item,
+    pub position_ms: u32,
+    pub duration_ms: u32,
+    /// Playlist/album/artist/collection URI it was played from; `None` for search results or links.
+    pub context: Option<String>,
+}
+
+impl LastSession {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "uri": self.item.uri,
+            "title": self.item.title,
+            "artist": self.item.artist,
+            "cover_url": self.item.cover_url,
+            "position_ms": self.position_ms,
+            "duration_ms": self.duration_ms,
+            "context": self.context,
+        })
+    }
+
+    fn from_json(v: &serde_json::Value) -> Option<Self> {
+        let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+        let uri = v["uri"].as_str().filter(|u| u.starts_with("spotify:track:"))?.to_string();
+        Some(LastSession {
+            item: Item { title: s("title"), artist: s("artist"), uri, cover_url: s("cover_url") },
+            position_ms: v["position_ms"].as_u64().unwrap_or(0) as u32,
+            duration_ms: v["duration_ms"].as_u64().unwrap_or(0) as u32,
+            context: v["context"].as_str().map(String::from),
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// 0..=100, as shown on the slider.
@@ -79,6 +117,7 @@ pub struct Settings {
     pub quality: Quality,
     /// Spotify's loudness normalisation (librespot "auto": album gain in albums, track gain otherwise).
     pub normalize: bool,
+    pub last: Option<LastSession>,
     path: PathBuf,
 }
 
@@ -96,6 +135,7 @@ impl Settings {
             repeat: Repeat::from_ui(json["repeat"].as_i64().unwrap_or(0)),
             quality: json["quality"].as_i64().map_or(Quality::default(), Quality::from_ui),
             normalize: json["normalize"].as_bool().unwrap_or(false),
+            last: LastSession::from_json(&json["last"]),
             path,
         }
     }
@@ -107,6 +147,7 @@ impl Settings {
             "repeat": self.repeat.as_ui(),
             "quality": self.quality.as_ui(),
             "normalize": self.normalize,
+            "last": self.last.as_ref().map(LastSession::to_json),
         });
         std::fs::write(&self.path, json.to_string()).map_err(|e| format!("Saving settings failed: {e}"))
     }
@@ -135,7 +176,14 @@ mod tests {
         assert_eq!((defaults.volume, defaults.shuffle, defaults.repeat), (100.0, false, Repeat::Off));
         assert_eq!((defaults.quality, defaults.normalize), (Quality::High, false));
 
-        let s = Settings { volume: 42.0, shuffle: true, repeat: Repeat::One, quality: Quality::Low, normalize: true, ..defaults };
+        assert_eq!(defaults.last, None);
+        let last = LastSession {
+            item: Item { title: "T".into(), artist: "A".into(), uri: "spotify:track:x".into(), cover_url: "c".into() },
+            position_ms: 61_000,
+            duration_ms: 200_000,
+            context: Some("spotify:album:y".into()),
+        };
+        let s = Settings { volume: 42.0, shuffle: true, repeat: Repeat::One, quality: Quality::Low, normalize: true, last: Some(last), ..defaults };
         s.save().unwrap();
         assert_eq!(Settings::load(&dir), s);
 

@@ -41,6 +41,10 @@ slint::slint! {
 
     export component App inherits Window {
         title: "SlimSpot";
+        icon: root.app-icon;
+        // Decoded from assets/icon-64.png at startup (no runtime SVG renderer).
+        in property <image> app-icon;
+        callback quit();
         preferred-width: 820px;
         preferred-height: 560px;
         in property <string> status: "Starting...";
@@ -98,6 +102,25 @@ slint::slint! {
         }
 
         Rectangle { width: 100%; height: 100%; background: repaint-flip ? #00000001 : #00000002; }
+        // Keyboard shortcuts. Keys a focused text field uses (Space, arrows) reach this scope only
+        // when the field doesn't handle them; Esc hands focus back here from the search box.
+        keys := FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if (event.modifiers.control) {
+                    if (event.text == Key.RightArrow) { root.next(); return accept; }
+                    if (event.text == Key.LeftArrow) { root.prev(); return accept; }
+                    if (event.text == Key.UpArrow) { root.volume = min(100, root.volume + 5); root.set-volume(root.volume, true); return accept; }
+                    if (event.text == Key.DownArrow) { root.volume = max(0, root.volume - 5); root.set-volume(root.volume, true); return accept; }
+                    if (event.text == "f" || event.text == "l") { query.focus(); return accept; }
+                    if (event.text == "s") { root.toggle-shuffle(); return accept; }
+                    if (event.text == "r") { root.cycle-repeat(); return accept; }
+                    if (event.text == "q") { root.quit(); return accept; }
+                }
+                if (event.text == " ") { root.toggle(); return accept; }
+                if (event.text == Key.Escape) { self.focus(); return accept; }
+                reject
+            }
         VerticalLayout {
             HorizontalLayout {
                 padding: 12px;
@@ -219,6 +242,29 @@ slint::slint! {
                     }
                 }
             }
+        }
+        }
+    }
+
+    // Tray icon: closing the window hides it here and playback continues.
+    export component Tray inherits SystemTrayIcon {
+        in property <bool> playing;
+        in property <image> tray-icon;
+        icon: root.tray-icon;
+        callback show-window();
+        callback toggle();
+        callback next();
+        callback prev();
+        callback quit();
+        tooltip: "SlimSpot";
+        clicked => { root.show-window(); }
+        Menu {
+            MenuItem { title: "Show SlimSpot"; activated => { root.show-window(); } }
+            MenuItem { title: root.playing ? "Pause" : "Play"; activated => { root.toggle(); } }
+            MenuItem { title: "Next"; activated => { root.next(); } }
+            MenuItem { title: "Previous"; activated => { root.prev(); } }
+            MenuSeparator {}
+            MenuItem { title: "Quit"; activated => { root.quit(); } }
         }
     }
 }
