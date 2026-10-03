@@ -134,6 +134,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_show_queue(send(|| Command::Queue));
     app.on_go_to_playing(send(|| Command::GoToPlaying));
     app.on_go_home(send(|| Command::Home));
+    app.on_check_liked_more(send(|| Command::CheckLikedMore));
     app.on_play_page(send(|| Command::PlayPage));
     {
         let tx = tx.clone();

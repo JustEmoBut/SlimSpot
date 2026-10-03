@@ -5,7 +5,7 @@ use slint::{Model, ModelRc, VecModel};
 use crate::web::Item;
 
 slint::slint! {
-    import { CheckBox, ListView, Palette } from "std-widgets.slint";
+    import { ListView, Palette } from "std-widgets.slint";
     // Poppins (SIL OFL, assets/fonts/OFL.txt), embedded in the exe: ~160 KB per weight.
     import "../assets/fonts/Poppins-Regular.ttf";
     import "../assets/fonts/Poppins-SemiBold.ttf";
@@ -299,6 +299,74 @@ slint::slint! {
         }
     }
 
+    // On/off switch for settings (replaces std-widgets' CheckBox, which follows the Fluent look).
+    component Switch inherits TouchArea {
+        in property <string> label;
+        in-out property <bool> on;
+        callback toggled(bool);
+        height: 34px;
+        mouse-cursor: pointer;
+        clicked => {
+            root.on = !root.on;
+            root.toggled(root.on);
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            Text { text: root.label; vertical-alignment: center; horizontal-stretch: 1; font-size: 13px; color: Theme.text; }
+            Rectangle {
+                width: 38px;
+                height: 22px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 11px;
+                background: root.on ? Theme.accent : Theme.track;
+                animate background { duration: 150ms; }
+                Rectangle {
+                    x: root.on ? parent.width - self.width - 3px : 3px;
+                    y: 3px;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 8px;
+                    background: Theme.text;
+                    animate x { duration: 150ms; easing: ease-out; }
+                }
+            }
+        }
+    }
+
+    // Small heading with an icon, used inside popups.
+    component SectionTitle inherits HorizontalLayout {
+        in property <string> text;
+        in property <string> shape;
+        spacing: 8px;
+        height: 24px;
+        Icon { width: 16px; height: 16px; y: (parent.height - self.height) / 2; shape: root.shape; tint: Theme.accent2; }
+        Text { text: root.text; vertical-alignment: center; font-size: 12px; font-weight: 600; color: Theme.subdued; }
+    }
+
+    // One Spotify Connect device in the devices popup.
+    component DeviceEntry inherits TouchArea {
+        in property <Row> data;
+        in property <bool> active;
+        height: 48px;
+        mouse-cursor: pointer;
+        Rectangle {
+            border-radius: 8px;
+            background: root.has-hover ? Theme.hover : transparent;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 12px;
+                Icon { width: 22px; height: 22px; y: (parent.height - self.height) / 2; shape: Icons.devices; tint: root.active ? Theme.accent2 : Theme.subdued; }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 1px;
+                    Text { text: data.title; overflow: elide; font-size: 13px; font-weight: 600; color: root.active ? Theme.accent2 : Theme.text; }
+                    Text { text: data.artist; overflow: elide; font-size: 11px; color: Theme.subdued; }
+                }
+            }
+        }
+    }
+
     // One entry of the row menu.
     component MenuEntry inherits TouchArea {
         in property <string> label;
@@ -485,6 +553,17 @@ slint::slint! {
         // Track list scroll position, so Rust can reveal the playing row.
         in-out property <length> list-y;
         in-out property <length> list-height;
+        // Rows checked for liked marks; scrolling near that point asks for the next batch.
+        in-out property <int> liked-checked;
+        callback check-liked-more();
+        changed list-y => {
+            if (root.liked-checked < root.tracks.length && (-root.list-y + root.list-height) / 56px > root.liked-checked - 20) {
+                // Moved ahead at once (by the backend's batch size) so further scrolling doesn't queue
+                // the same batch again; the backend sets the real value when the batch is done.
+                root.liked-checked += 200;
+                root.check-liked-more();
+            }
+        }
         public function reveal(index: int) {
             // RowItem height in the track list: 40px cover + 16px padding. Puts the row about a third
             // down, but never scrolls past the end of the list.
@@ -532,7 +611,7 @@ slint::slint! {
         in-out property <bool> repaint-flip;
         // Mirrors title/artist/playing state to the OS media overlay.
         callback now-playing-changed();
-        // The std widgets left (CheckBox) follow the dark palette.
+        // The std widgets left (ListView scrollbars) follow the dark palette.
         init => { Palette.color-scheme = ColorScheme.dark; }
 
         pure function fmt(ms: float) -> string {
@@ -898,20 +977,22 @@ slint::slint! {
                 x: root.width - 420px;
                 y: 64px;
                 width: 400px;
-                height: 280px;
                 close-policy: close-on-click-outside;
                 Rectangle {
                     background: Theme.raised;
-                    border-radius: 8px;
-                    drop-shadow-blur: 16px;
-                    drop-shadow-color: #00000099;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    drop-shadow-blur: 24px;
+                    drop-shadow-color: rgba(0, 0, 0, 0.6);
                     VerticalLayout {
                         padding: 16px;
-                        spacing: 12px;
+                        spacing: 10px;
                         alignment: start;
-                        Text { text: "Audio quality"; font-size: 13px; font-weight: 700; color: Theme.text; }
+                        Text { text: "Settings"; font-size: 16px; font-weight: 600; color: Theme.text; }
+                        SectionTitle { text: "AUDIO QUALITY"; shape: Icons.volume; }
                         HorizontalLayout {
-                            spacing: 8px;
+                            spacing: 6px;
                             alignment: start;
                             for label[i] in ["96 kbps", "160 kbps", "320 kbps"] : Chip {
                                 label: label;
@@ -919,12 +1000,9 @@ slint::slint! {
                                 clicked => { root.quality = i; root.set-quality(i); }
                             }
                         }
-                        CheckBox {
-                            text: "Normalize volume";
-                            checked <=> root.normalize;
-                            toggled => { root.set-normalize(self.checked); }
-                        }
-                        Text { text: "Sleep timer"; font-size: 13px; font-weight: 700; color: Theme.text; }
+                        Switch { label: "Normalize volume"; on <=> root.normalize; toggled(v) => { root.set-normalize(v); } }
+                        Rectangle { height: 1px; background: Theme.border; }
+                        SectionTitle { text: "SLEEP TIMER"; shape: Icons.pause; }
                         HorizontalLayout {
                             spacing: 6px;
                             alignment: start;
@@ -934,29 +1012,30 @@ slint::slint! {
                                 clicked => { root.sleep-minutes = choice.m; root.set-sleep(choice.m); }
                             }
                         }
-                        CheckBox {
-                            text: "Start with Windows";
-                            checked <=> root.start-with-windows;
-                            toggled => { root.set-autostart(self.checked); }
-                        }
+                        Rectangle { height: 1px; background: Theme.border; }
+                        SectionTitle { text: "STARTUP"; shape: Icons.home; }
+                        Switch { label: "Start with Windows"; on <=> root.start-with-windows; toggled(v) => { root.set-autostart(v); } }
                     }
                 }
             }
             devices-popup := PopupWindow {
                 x: root.width - 340px;
-                y: root.height - 88px - 290px;
+                y: root.height - 96px - 300px;
                 width: 320px;
-                height: 280px;
+                height: 290px;
                 close-policy: close-on-click-outside;
                 Rectangle {
                     background: Theme.raised;
-                    border-radius: 8px;
-                    drop-shadow-blur: 16px;
-                    drop-shadow-color: #00000099;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    drop-shadow-blur: 24px;
+                    drop-shadow-color: rgba(0, 0, 0, 0.6);
                     VerticalLayout {
-                        padding: 12px;
+                        padding: 14px;
                         spacing: 8px;
-                        Text { text: "Connect to a device"; font-size: 15px; font-weight: 700; color: Theme.text; }
+                        Text { text: "Connect to a device"; font-size: 16px; font-weight: 600; color: Theme.text; }
+                        SectionTitle { text: "SPOTIFY CONNECT"; shape: Icons.devices; }
                         if root.devices.length == 0 : Text {
                             text: "Looking for devices... (open Spotify on the other device if it's missing)";
                             wrap: word-wrap;
@@ -964,11 +1043,9 @@ slint::slint! {
                             color: Theme.subdued;
                         }
                         ListView {
-                            for d in root.devices : RowItem {
+                            for d in root.devices : DeviceEntry {
                                 data: d;
-                                cover-size: 32px;
-                                menu: false;
-                                playing: d.artist.ends-with("playing here");
+                                active: d.artist.ends-with("playing here");
                                 clicked => { root.transfer(d.uri); devices-popup.close(); }
                             }
                         }

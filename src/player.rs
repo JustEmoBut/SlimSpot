@@ -38,6 +38,9 @@ const OAUTH_SCOPES: &[&str] = &["streaming"];
 const DEVICE_NAME: &str = "SlimSpot";
 // Last row of a full search page; clicking it appends the next page of tracks.
 const MORE_URI: &str = "slimspot:more";
+// A track asked for this recently is retried after a reconnect: Spotify sometimes closes the
+// session just as a track loads (audio key timeout, then "end of stream"; seen in the log 2026-10-04).
+const RETRY_LOAD_WINDOW: Duration = Duration::from_secs(30);
 // Pauses between reconnect attempts after the Connect device drops; the last one repeats.
 const RECONNECT_BACKOFF: [Duration; 4] =
     [Duration::from_secs(2), Duration::from_secs(5), Duration::from_secs(15), Duration::from_secs(30)];
@@ -83,6 +86,8 @@ pub enum Command {
     CreatePlaylist,
     /// Rename the playlist on screen.
     RenamePlaylist(String),
+    /// The track list scrolled close to the last row with a liked mark: check the next batch.
+    CheckLikedMore,
 }
 
 pub fn cache_dir() -> PathBuf {
@@ -383,6 +388,8 @@ struct Page {
     kind: &'static str,
     /// Header cover (playlists and albums), or "".
     cover_url: String,
+    /// Rows already checked for liked marks (`mark_liked` continues from here).
+    liked_upto: usize,
 }
 
 fn more_row() -> Item {
@@ -414,7 +421,9 @@ fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<S
     let numbered = matches!(page.kind, "Playlist" | "Album" | "Radio" | "Up next");
     let playable = page.rows.iter().any(|r| r.uri.starts_with("spotify:track:"));
     let cover = page.cover_url.clone();
+    let liked_upto = page.liked_upto as i32;
     let _ = ui.upgrade_in_event_loop(move |app| {
+        app.set_liked_checked(liked_upto);
         if app.get_page_cover_url() != cover.as_str() {
             app.set_page_cover(Default::default());
             app.set_page_cover_url(cover.into());
@@ -460,15 +469,21 @@ fn about(ms: u64) -> String {
     }
 }
 
-/// Tracks at most this deep get their liked mark (10 requests of 40); deeper rows stay plain.
-// ponytail: fixed cap; check more on scroll if big playlists need marks all the way down.
-const LIKED_CHECK_MAX: usize = 400;
+/// Rows checked for liked marks per batch (5 requests of 40); the next batch is asked for by the
+/// UI when the list scrolls near the end of the checked rows.
+const LIKED_CHECK_BATCH: usize = 200;
 
-/// Marks the current page's liked tracks, after the page is already on screen.
+/// Marks liked tracks in the current page's next batch of unchecked rows.
 async fn mark_liked(ui: &slint::Weak<App>, web: &mut WebApi, session: &Session, nav: &mut History<Page>) {
     let Some(page) = nav.current_mut() else { return };
+    let (from, to) = (page.liked_upto, (page.liked_upto + LIKED_CHECK_BATCH).min(page.rows.len()));
+    if from >= to {
+        return;
+    }
+    page.liked_upto = to;
+    set_liked_checked(ui, to);
     let uris: Vec<String> =
-        page.rows.iter().filter(|r| r.uri.starts_with("spotify:track:")).take(LIKED_CHECK_MAX).map(|r| r.uri.clone()).collect();
+        page.rows[from..to].iter().filter(|r| r.uri.starts_with("spotify:track:")).map(|r| r.uri.clone()).collect();
     let flags = if page.list == LIKED_SONGS {
         vec![true; uris.len()]
     } else {
@@ -478,10 +493,14 @@ async fn mark_liked(ui: &slint::Weak<App>, web: &mut WebApi, session: &Session, 
         }
     };
     let liked: std::collections::HashSet<String> = uris.into_iter().zip(flags).filter(|(_, l)| *l).map(|(u, _)| u).collect();
-    for row in &mut page.rows {
+    for row in &mut page.rows[from..to] {
         row.liked = liked.contains(&row.uri);
     }
     set_liked_rows(ui, liked.into_iter().collect(), true);
+}
+
+fn set_liked_checked(ui: &slint::Weak<App>, rows: usize) {
+    let _ = ui.upgrade_in_event_loop(move |app| app.set_liked_checked(rows as i32));
 }
 
 /// The item behind a URI on screen: the current page, the sidebar, or what is playing.
@@ -597,6 +616,11 @@ pub async fn run(
     // Sleep timer: pause at this instant, or when the playing track ends.
     let mut sleep_at: Option<tokio::time::Instant> = None;
     let mut sleep_after_track = false;
+    // When this window last asked Spirc to load something.
+    let mut last_load: Option<Instant> = None;
+    // Paused by a Paused event (the device is active and `play` works). After a reconnect it isn't,
+    // and Spirc ignores `play` while inactive, so Play loads the track again instead.
+    let mut paused_here = false;
     if let Some(w) = web.as_mut() {
         set_status(&ui, "Loading playlists...");
         let mut lists = vec![Item { title: "Liked Songs".into(), uri: LIKED_SONGS.into(), ..Default::default() }];
@@ -699,7 +723,7 @@ pub async fn run(
                             let sidebar = uri == LIKED_SONGS || uri.starts_with("spotify:playlist:");
                             let list = if sidebar { uri } else { String::new() };
                             let reveal_row = reveal.take().filter(|_| playing_context.as_ref() == Some(&context));
-                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Context(context), list, more: None, editable, kind, cover_url });
+                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Context(context), list, more: None, editable, kind, cover_url, liked_upto: 0 });
                             if let Some(track) = reveal_row {
                                 reveal_track(&ui, &nav, &track);
                             }
@@ -743,7 +767,7 @@ pub async fn run(
                     match w.queue(&session).await {
                         Ok(rows) => {
                             let uris = rows.iter().map(|r| r.uri.clone()).collect();
-                            open_page(&ui, &mut nav, &mut shown, Page { title: "Queue".into(), rows, shown: Shown::Tracks(uris), list: String::new(), more: None, editable: false, kind: "Up next", cover_url: String::new() });
+                            open_page(&ui, &mut nav, &mut shown, Page { title: "Queue".into(), rows, shown: Shown::Tracks(uris), list: String::new(), more: None, editable: false, kind: "Up next", cover_url: String::new(), liked_upto: 0 });
                             mark_liked(&ui, w, &session, &mut nav).await;
                         }
                         Err(e) => set_status(&ui, e),
@@ -769,6 +793,7 @@ pub async fn run(
                         _ => None,
                     };
                     let request = load_request(shown.as_ref(), &uri, &settings, 0, true);
+                    last_load = Some(Instant::now());
                     spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
                 }
                 Command::Submit(s) if parse_track(&s).is_some() => {
@@ -777,6 +802,7 @@ pub async fn run(
                     pending_resume = None;
                     playing_context = None;
                     let request = load_request(None, &uri, &settings, 0, true);
+                    last_load = Some(Instant::now());
                     spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
                 }
                 Command::Submit(q) if q.trim().is_empty() => {}
@@ -795,7 +821,7 @@ pub async fn run(
                                 rows.push(more_row());
                             }
                             let title = format!("Search: {}", q.trim());
-                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Tracks(tracks), list: String::new(), more, editable: false, kind: "Search", cover_url: String::new() });
+                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Tracks(tracks), list: String::new(), more, editable: false, kind: "Search", cover_url: String::new(), liked_upto: 0 });
                             mark_liked(&ui, w, &session, &mut nav).await;
                         }
                         Err(e) => set_status(&ui, e),
@@ -806,9 +832,17 @@ pub async fn run(
                         playing_context = last.context.clone();
                         let shown = last.context.map(Shown::Context);
                         let request = load_request(shown.as_ref(), &last.item.uri, &settings, last.position_ms, true);
+                        last_load = Some(Instant::now());
                         spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
                     }
-                    None => spirc_result(&ui, if playing { spirc.pause() } else { spirc.play() }),
+                    None if playing || paused_here => spirc_result(&ui, if playing { spirc.pause() } else { spirc.play() }),
+                    None => {
+                        let Some(uri) = now_uri.clone() else { continue };
+                        let context = playing_context.clone().map(Shown::Context);
+                        let request = load_request(context.as_ref(), &uri, &settings, position.0, true);
+                        last_load = Some(Instant::now());
+                        spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
+                    }
                 },
                 Command::ToggleLike => {
                     let (Some(w), Some(uri)) = (web.as_mut(), now_uri.clone()) else { continue };
@@ -851,6 +885,7 @@ pub async fn run(
                                 editable: false,
                                 kind: "Radio",
                                 cover_url: String::new(),
+                                liked_upto: 0,
                             });
                             if let Some(w) = web.as_mut() {
                                 mark_liked(&ui, w, &session, &mut nav).await;
@@ -859,6 +894,7 @@ pub async fn run(
                             pending_resume = None;
                             let first = uris[0].clone();
                             let request = load_request(shown.as_ref(), &first, &settings, 0, true);
+                            last_load = Some(Instant::now());
                             spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
                         }
                         Err(e) => set_status(&ui, e),
@@ -936,6 +972,10 @@ pub async fn run(
                                         library.retain(|i| i.uri != uri);
                                         own_lists.retain(|i| i.uri != uri);
                                         refresh_library(&ui, &library, &own_lists);
+                                        // Its page would show a playlist that no longer exists.
+                                        if nav.current().is_some_and(|p| p.list == uri) {
+                                            let _ = tx.send(Command::Home);
+                                        }
                                         set_status(&ui, format!("Removed \"{}\" from Your Library", item.title));
                                     }
                                     Err(e) => set_status(&ui, e),
@@ -977,6 +1017,7 @@ pub async fn run(
                                 editable: false,
                                 kind: "Home",
                                 cover_url: String::new(),
+                                liked_upto: 0,
                             });
                             mark_liked(&ui, w, &session, &mut nav).await;
                         }
@@ -1049,6 +1090,11 @@ pub async fn run(
                             set_page_header(&ui, nav.current().map(|p| p.kind).unwrap_or(""), name, nav.can_back(), nav.can_forward());
                         }
                         Err(e) => set_status(&ui, e),
+                    }
+                }
+                Command::CheckLikedMore => {
+                    if let Some(w) = web.as_mut() {
+                        mark_liked(&ui, w, &session, &mut nav).await;
                     }
                 }
                 Command::GoToPlaying => {
@@ -1139,13 +1185,15 @@ pub async fn run(
                 let reason = if session_invalid { "connection to Spotify lost" } else { "Connect loop stopped (see slimspot.log)" };
                 log::warn!("Spotify Connect ended unexpectedly: {reason}");
                 set_status(&ui, format!("Spotify Connect stopped: {reason}. Reconnecting..."));
-                let was_playing = playing;
+                let was_playing = playing || last_load.is_some_and(|t| t.elapsed() < RETRY_LOAD_WINDOW);
                 generation += 1;
                 (session, spirc, events, mixer) = reconnect(&ui, &cache, &settings, &ended_tx, generation).await;
                 playing = false;
+                paused_here = false;
                 set_playing(&ui, false);
                 set_status(&ui, "Reconnected");
-                resume(&ui, &spirc, shown.as_ref(), &settings, now_uri.as_deref(), position, was_playing);
+                let context = playing_context.clone().map(Shown::Context);
+                resume(&ui, &spirc, context.as_ref().or(shown.as_ref()), &settings, now_uri.as_deref(), position, was_playing);
             },
             _ = async { tokio::time::sleep_until(sleep_at.expect("guarded")).await }, if sleep_at.is_some() => {
                 sleep_at = None;
@@ -1227,11 +1275,15 @@ pub async fn run(
                     }
                     PlayerEvent::Paused { position_ms, .. } => {
                         playing = false;
+                        paused_here = true;
                         position = (position_ms, Instant::now());
                         set_position(&ui, position_ms);
                         save_last(&ui, &mut settings, now_item.as_ref(), position, false, duration_ms, &playing_context);
                     }
-                    PlayerEvent::Stopped { .. } => playing = false,
+                    PlayerEvent::Stopped { .. } => {
+                        playing = false;
+                        paused_here = false;
+                    }
                     PlayerEvent::Unavailable { .. } => { set_status(&ui, "Track unavailable"); continue }
                     _ => continue,
                 }
