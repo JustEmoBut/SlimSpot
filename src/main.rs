@@ -4,6 +4,7 @@ mod covers;
 #[cfg(windows)]
 mod instance;
 mod logger;
+mod lyrics;
 #[cfg(windows)]
 mod media_keys;
 mod player;
@@ -13,7 +14,7 @@ mod web;
 
 use std::time::Duration;
 
-use slint::ComponentHandle;
+use slint::{ComponentHandle, Model};
 use tokio::sync::mpsc;
 
 use crate::covers::CoverRequest;
@@ -177,6 +178,14 @@ fn main() -> Result<(), slint::PlatformError> {
         if app.get_playing() && !app.get_seeking() {
             let next = app.get_position() + POSITION_TICK.as_millis() as f32;
             app.set_position(next.min(app.get_duration()));
+        }
+        // Highlight the sung line; at a 500 ms tick a line lights up at most half a second late.
+        if app.get_show_lyrics() {
+            let times: Vec<u32> = app.get_lyric_times().iter().map(|t| t as u32).collect();
+            let index = lyrics::current_line(&times, app.get_position() as u32).map_or(-1, |i| i as i32);
+            if index != app.get_lyric_index() {
+                app.set_lyric_index(index);
+            }
         }
     });
 

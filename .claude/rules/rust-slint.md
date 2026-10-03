@@ -17,6 +17,8 @@ paths:
 - Software renderer + Windows: after minimize/restore only damaged regions repaint into a cleared buffer. Keep the `repaint-flip` workaround.
 - `row` is a reserved property name (GridLayout); don't name component properties `row`.
 - `alignment: center` on a layout shrinks a `Slider` to its handle; give it `horizontal-stretch: 1` instead.
+- Inside `slint::slint!`, hex colors that start with a digit followed by `e` (e.g. `#5eead4`) fail to tokenize as Rust ("expected at least one digit in exponent"); write them as `rgb(...)`.
+- `ListView.viewport-y` is deprecated in 1.18; use `content-y`.
 
 ## librespot
 - `Spirc::new` needs a fresh, unconnected `Session`; it connects it itself.

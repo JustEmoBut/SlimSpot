@@ -5,7 +5,7 @@ use slint::{ModelRc, VecModel};
 use crate::web::Item;
 
 slint::slint! {
-    import { Button, CheckBox, ComboBox, LineEdit, ListView, Slider } from "std-widgets.slint";
+    import { Button, CheckBox, ComboBox, LineEdit, ListView, Palette, Slider } from "std-widgets.slint";
     export struct Row { title: string, artist: string, uri: string, cover-url: string, cover: image }
 
     component RowItem inherits TouchArea {
@@ -35,6 +35,38 @@ slint::slint! {
                     Text { text: data.title; overflow: elide; }
                     Text { text: data.artist; overflow: elide; font-size: 11px; opacity: 0.7; }
                 }
+            }
+        }
+    }
+
+    // One line per row at a fixed height, so the current line can be centered by arithmetic.
+    component LyricsView inherits Rectangle {
+        in property <[string]> lines;
+        in property <int> current: -1;
+        in property <string> note;
+        property <length> line-height: 36px;
+        // Keep the sung line in the middle; the user can still scroll in between line changes.
+        changed current => {
+            if (current >= 0) {
+                lv.content-y = min(0px, -(current * line-height) + lv.visible-height / 2 - line-height / 2);
+            }
+        }
+        if lines.length == 0 : Text {
+            text: note;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            opacity: 0.7;
+        }
+        lv := ListView {
+            for line[i] in lines : Text {
+                text: line;
+                height: line-height;
+                vertical-alignment: center;
+                overflow: elide;
+                font-size: i == current ? 18px : 15px;
+                font-weight: i == current ? 700 : 400;
+                color: i == current ? rgb(94, 234, 212) : Palette.foreground;
+                opacity: current < 0 || i <= current ? 1 : 0.55;
             }
         }
     }
@@ -69,6 +101,13 @@ slint::slint! {
         callback set-quality(int);
         callback set-normalize(bool);
         callback cycle-repeat();
+        // Lyrics pane replaces the track list while `show-lyrics` is on.
+        in-out property <bool> show-lyrics;
+        in property <[string]> lyric-lines;
+        // Start time per line in ms; empty when the lyrics aren't synced.
+        in property <[int]> lyric-times;
+        in property <int> lyric-index: -1;
+        in property <string> lyrics-note: "No track playing";
         // kind: 0 = track list, 1 = sidebar, 2 = now playing.
         callback need-cover(int, int, string, string);
 
@@ -116,6 +155,7 @@ slint::slint! {
                     if (event.text == "s") { root.toggle-shuffle(); return accept; }
                     if (event.text == "r") { root.cycle-repeat(); return accept; }
                     if (event.text == "q") { root.quit(); return accept; }
+                    if (event.text == "y") { root.show-lyrics = !root.show-lyrics; return accept; }
                 }
                 if (event.text == " ") { root.toggle(); return accept; }
                 if (event.text == Key.Escape) { self.focus(); return accept; }
@@ -161,7 +201,13 @@ slint::slint! {
                             toggled => { root.set-normalize(self.checked); }
                         }
                     }
-                    ListView {
+                    if root.show-lyrics : LyricsView {
+                        vertical-stretch: 1;
+                        lines: root.lyric-lines;
+                        current: root.lyric-index;
+                        note: root.lyrics-note;
+                    }
+                    if !root.show-lyrics : ListView {
                         vertical-stretch: 1;
                         for row[i] in tracks: RowItem {
                             data: row;
@@ -207,6 +253,11 @@ slint::slint! {
                         Button { text: "Prev"; clicked => { root.prev(); } }
                         Button { text: playing ? "Pause" : "Play"; clicked => { root.toggle(); } }
                         Button { text: "Next"; clicked => { root.next(); } }
+                        Button {
+                            text: "Lyrics";
+                            checkable: true;
+                            checked <=> root.show-lyrics;
+                        }
                         Button {
                             text: root.repeat == 2 ? "Repeat: One" : root.repeat == 1 ? "Repeat: All" : "Repeat: Off";
                             checkable: true;
@@ -302,6 +353,38 @@ pub fn set_rows(ui: &slint::Weak<App>, items: Vec<Item>, setter: fn(&App, ModelR
     let _ = ui.upgrade_in_event_loop(move |app| {
         let rows: Vec<Row> = items.into_iter().map(Row::from).collect();
         setter(&app, ModelRc::new(VecModel::from(rows)));
+    });
+}
+
+/// Shows lyrics for `uri` unless another track has started meanwhile.
+pub fn set_lyrics(ui: &slint::Weak<App>, uri: String, result: Result<Option<crate::lyrics::Lyrics>, String>) {
+    let _ = ui.upgrade_in_event_loop(move |app| {
+        if app.get_now().uri != uri.as_str() {
+            return;
+        }
+        let (lines, times, note) = match result {
+            Ok(Some(l)) => {
+                let times = l.times_ms.unwrap_or_default().into_iter().map(|t| t as i32).collect::<Vec<_>>();
+                (l.lines, times, String::new())
+            }
+            Ok(None) => (Vec::new(), Vec::new(), "No lyrics for this track".into()),
+            Err(e) => (Vec::new(), Vec::new(), e),
+        };
+        let lines: Vec<slint::SharedString> = lines.into_iter().map(Into::into).collect();
+        app.set_lyric_lines(ModelRc::new(VecModel::from(lines)));
+        app.set_lyric_times(ModelRc::new(VecModel::from(times)));
+        app.set_lyric_index(-1);
+        app.set_lyrics_note(note.into());
+    });
+}
+
+pub fn clear_lyrics(ui: &slint::Weak<App>, note: &str) {
+    let note = note.to_string();
+    let _ = ui.upgrade_in_event_loop(move |app| {
+        app.set_lyric_lines(ModelRc::default());
+        app.set_lyric_times(ModelRc::default());
+        app.set_lyric_index(-1);
+        app.set_lyrics_note(note.into());
     });
 }
 

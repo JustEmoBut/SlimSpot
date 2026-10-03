@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 
 use crate::covers::{self, CoverRequest};
 use crate::settings::{self, LastSession, Quality, Repeat, Settings};
-use crate::ui::{App, Row, set_current, set_playing, set_position, set_rows, set_status};
+use crate::ui::{App, Row, clear_lyrics, set_current, set_lyrics, set_playing, set_position, set_rows, set_status};
 use crate::web::{Item, LIKED_SONGS, WebApi};
 
 // Spotify desktop client id; same as librespot's internal KEYMASTER_CLIENT_ID.
@@ -544,6 +544,13 @@ pub async fn run(
                         duration_ms = audio_item.duration_ms;
                         position = (0, Instant::now());
                         save_last(&ui, &mut settings, now_item.as_ref(), position, false, duration_ms, &playing_context);
+                        // Fetched off the event loop; set_lyrics drops it if the track changed meanwhile.
+                        clear_lyrics(&ui, "Loading lyrics...");
+                        let (lyrics_session, lyrics_ui, lyrics_uri) = (session.clone(), ui.clone(), item.uri.clone());
+                        tokio::spawn(async move {
+                            let result = crate::lyrics::fetch(&lyrics_session, &lyrics_uri).await;
+                            set_lyrics(&lyrics_ui, lyrics_uri, result);
+                        });
                         let duration = audio_item.duration_ms as f32;
                         set_current(&ui, item.uri.clone(), App::set_current_track);
                         let _ = ui.upgrade_in_event_loop(move |app| {

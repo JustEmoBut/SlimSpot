@@ -27,6 +27,7 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 | `media_keys.rs` | Windows SystemMediaTransportControls (windows-only) |
 | `logger.rs` | File logger for warn/error, including librespot's |
 | `instance.rs` | Single instance via a named event; a second launch wakes the running window (windows-only) |
+| `lyrics.rs` | Lyrics via librespot `spclient().get_lyrics` (Spotify's color-lyrics, no Web API), parsing and current-line lookup |
 
 ## Confirmed decisions
 - **Spirc owns playback state** (queue, shuffle, repeat, track advance). Local actions become Spirc calls; there is no local queue. Playlists/albums/artists/Liked Songs play as Spotify contexts; search results as a track list.
@@ -38,6 +39,7 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - **Last session is shown paused and loaded on the first Play**, never at startup: loading would make SlimSpot the active device and pause the phone. Saved on track change, pause and quit (`settings.json` → `last`).
 - **Icons**: `assets/icon.svg` is the source; `icon-64.png`/`icon-256.png` are rendered from it (headless Edge, 64 downscaled from 256) and embedded with `include_bytes!`, so no runtime SVG renderer.
 - **Keyboard**: shortcuts live in one root `FocusScope`; Esc returns focus to it from the search box.
+- **Lyrics**: fetched per track change, not cached on disk; shown in place of the track list (`Ctrl+Y`). Fixed line height + elide so the sung line is centered arithmetically; highlighted on the 500 ms position tick.
 
 ## Known external constraints (verified against the live API, 2026-10-03)
 - Development Mode Web API: `search` and `/artists/{id}/albums` reject `limit > 10`; playlists/saved tracks accept 50.
