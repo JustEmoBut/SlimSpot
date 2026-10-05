@@ -71,6 +71,8 @@ pub enum Command {
     Normalize(bool),
     /// Settings → Theme: remember the palette.
     Theme(i32),
+    /// Settings → Spotify app: the user's own Web API Client ID ("" = shared default).
+    WebClientId(String),
     /// Save the session, disconnect the Connect device and end the UI event loop.
     Quit,
     ToggleLike,
@@ -847,7 +849,9 @@ pub async fn run(
     };
     // Web API is optional: playback by link still works if it fails.
     let browser_ui = ui.clone();
-    let mut web = match WebApi::login(&dir, move || set_status(&browser_ui, "Opening browser for Web API login...")).await {
+    let client_id_text = settings.web_client_id.clone();
+    let _ = ui.upgrade_in_event_loop(move |app| app.set_web_client_id(client_id_text.into()));
+    let mut web = match WebApi::login(&dir, &settings.web_client_id, move || set_status(&browser_ui, "Opening browser for Web API login...")).await {
         Ok(w) => Some(w),
         Err(e) => {
             set_status(&ui, format!("{e} — search/library disabled, links still work."));
@@ -1717,6 +1721,28 @@ pub async fn run(
                 Command::CycleRepeat => {
                     let next = settings.repeat.next();
                     spirc_result(&ui, spirc.repeat(next == Repeat::All).and_then(|()| spirc.repeat_track(next == Repeat::One)));
+                }
+                Command::WebClientId(id) => {
+                    let id = id.trim().to_string();
+                    if !id.is_empty() && !crate::web::is_client_id(&id) {
+                        set_status(&ui, "That isn't a Client ID (32 letters and digits from developer.spotify.com)");
+                        continue;
+                    }
+                    if id == settings.web_client_id {
+                        continue;
+                    }
+                    settings.web_client_id = id.clone();
+                    save_settings(&ui, &settings);
+                    // Like Spotifast: removing the personal id also drops that app's grant, so the next
+                    // start doesn't fall back to it through the saved token.
+                    if id.is_empty() {
+                        if let Err(e) = std::fs::remove_file(dir.join(crate::web::WEB_TOKEN_FILE)) {
+                            if e.kind() != std::io::ErrorKind::NotFound {
+                                log::warn!("removing the web token failed: {e}");
+                            }
+                        }
+                    }
+                    set_status(&ui, "Client ID saved. Restart SlimSpot to sign in with it (the browser asks once).");
                 }
                 Command::Theme(palette) => {
                     settings.theme = palette;

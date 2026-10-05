@@ -7,9 +7,10 @@ use librespot::core::session::Session;
 use librespot_oauth::{OAuthClient, OAuthClientBuilder, OAuthToken};
 
 // The desktop client id is rejected/rate-limited on api.spotify.com (keymaster 403, login5 429),
-// so the Web API uses a separate app: your own via SLIMSPOT_WEB_CLIENT_ID (its redirect URI must
-// be WEB_REDIRECT_URI), else the one the saved token was granted to, else the public app shared
-// by ncspot / spotify-player / Spotifast.
+// so the Web API uses a separate app: SLIMSPOT_WEB_CLIENT_ID, else the Client ID entered in
+// Settings (settings.json `web_client_id`; its redirect URI must be WEB_REDIRECT_URI), else the
+// one the saved token was granted to, else the public app shared by ncspot / spotify-player /
+// Spotifast (like Spotifast's optional personal id "alongside shared coverage").
 const DEFAULT_WEB_CLIENT_ID: &str = "d420a117a32841c2b3474932e49fb54b";
 const WEB_CLIENT_ID_ENV: &str = "SLIMSPOT_WEB_CLIENT_ID";
 const WEB_REDIRECT_URI: &str = "http://127.0.0.1:8989/login";
@@ -27,7 +28,7 @@ const WEB_SCOPES: &[&str] = &[
     "user-read-recently-played",
     "ugc-image-upload",
 ];
-const WEB_TOKEN_FILE: &str = "web_refresh_token";
+pub const WEB_TOKEN_FILE: &str = "web_refresh_token";
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(60);
 // Same limits Spotifast uses for Web API 429s.
 const RATE_LIMIT_RETRIES: u32 = 3;
@@ -76,11 +77,12 @@ pub struct WebApi {
 impl WebApi {
     /// Reuses the saved refresh token when it was granted to the same app with the same scopes;
     /// otherwise calls `on_browser` and opens a browser login.
-    pub async fn login(dir: &Path, on_browser: impl FnOnce()) -> Result<Self, String> {
+    /// `configured` is the Client ID from Settings ("" when none).
+    pub async fn login(dir: &Path, configured: &str, on_browser: impl FnOnce()) -> Result<Self, String> {
         let token_path = dir.join(WEB_TOKEN_FILE);
         let saved = std::fs::read_to_string(&token_path).unwrap_or_default();
         let saved = saved.split_once('\n');
-        let client_id = pick_client_id(std::env::var(WEB_CLIENT_ID_ENV).ok(), saved.map(|(key, _)| key));
+        let client_id = pick_client_id(std::env::var(WEB_CLIENT_ID_ENV).ok(), configured, saved.map(|(key, _)| key));
         let client = OAuthClientBuilder::new(&client_id, WEB_REDIRECT_URI, WEB_SCOPES.to_vec())
             .open_in_browser()
             .build()
@@ -501,8 +503,9 @@ fn keep_refresh_token(mut token: OAuthToken, previous: &str) -> OAuthToken {
 
 /// Env var wins; otherwise stick with the app the saved token belongs to, so launching without
 /// the env var (e.g. from a shortcut started before `setx`) doesn't force a new browser login.
-fn pick_client_id(env: Option<String>, saved_key: Option<&str>) -> String {
+fn pick_client_id(env: Option<String>, configured: &str, saved_key: Option<&str>) -> String {
     env.filter(|id| !id.trim().is_empty())
+        .or_else(|| Some(configured.trim().to_string()).filter(|id| !id.is_empty()))
         .or_else(|| saved_key.and_then(|k| k.split(' ').next()).filter(|id| !id.is_empty()).map(String::from))
         .unwrap_or_else(|| DEFAULT_WEB_CLIENT_ID.into())
 }
@@ -549,6 +552,11 @@ fn album_row(a: &serde_json::Value) -> Option<Item> {
         cover_url: smallest_image(&a["images"]).into(),
         ..Default::default()
     })
+}
+
+/// A Spotify app Client ID: 32 hex characters (as shown in the developer dashboard).
+pub fn is_client_id(id: &str) -> bool {
+    id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Standard base64 with padding (RFC 4648), for the cover upload body.
@@ -715,10 +723,11 @@ mod tests {
     #[test]
     fn client_id_prefers_env_then_saved_then_default() {
         let saved = Some("mine user-read-private,user-library-read");
-        assert_eq!(pick_client_id(Some("env".into()), saved), "env");
-        assert_eq!(pick_client_id(None, saved), "mine");
-        assert_eq!(pick_client_id(Some("  ".into()), saved), "mine");
-        assert_eq!(pick_client_id(None, None), DEFAULT_WEB_CLIENT_ID);
+        assert_eq!(pick_client_id(Some("env".into()), "set", saved), "env");
+        assert_eq!(pick_client_id(None, "set", saved), "set");
+        assert_eq!(pick_client_id(None, "", saved), "mine");
+        assert_eq!(pick_client_id(Some("  ".into()), " ", saved), "mine");
+        assert_eq!(pick_client_id(None, "", None), DEFAULT_WEB_CLIENT_ID);
     }
 
     #[test]

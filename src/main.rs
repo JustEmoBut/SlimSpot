@@ -144,6 +144,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_play_page(send(|| Command::PlayPage));
     app.on_add_search(send_str(Command::AddSearch));
     app.on_save_radio(send(|| Command::SaveRadio));
+    app.on_set_web_client_id(send_str(Command::WebClientId));
     {
         let (weak, tx) = (app.as_weak(), tx.clone());
         app.on_set_theme(move |palette| {

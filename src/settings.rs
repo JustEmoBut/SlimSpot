@@ -122,6 +122,8 @@ pub struct Settings {
     pub opened: std::collections::HashMap<String, u64>,
     /// Color palette index (`Theme.palette` in the markup).
     pub theme: i32,
+    /// Web API Client ID of the user's own Spotify app, "" for the shared default (see web.rs).
+    pub web_client_id: String,
     path: PathBuf,
 }
 
@@ -145,6 +147,7 @@ impl Settings {
                 .map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_u64()?))).collect())
                 .unwrap_or_default(),
             theme: json["theme"].as_i64().map_or(0, |t| t as i32),
+            web_client_id: json["web_client_id"].as_str().unwrap_or_default().to_string(),
             path,
         }
     }
@@ -159,6 +162,7 @@ impl Settings {
             "last": self.last.as_ref().map(LastSession::to_json),
             "opened": self.opened,
             "theme": self.theme,
+            "web_client_id": self.web_client_id,
         });
         std::fs::write(&self.path, json.to_string()).map_err(|e| format!("Saving settings failed: {e}"))
     }

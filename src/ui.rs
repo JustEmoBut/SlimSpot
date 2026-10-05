@@ -620,6 +620,9 @@ slint::slint! {
         callback save-radio();
         // Settings → Theme: Rust saves it and recolors the title bar.
         callback set-theme(int);
+        // Settings → Spotify app Client ID (settings.json `web_client_id`).
+        in-out property <string> web-client-id;
+        callback set-web-client-id(string);
         // Search page tab (0 = All, Songs, Albums, Artists, Playlists); -1 on other pages.
         in property <int> search-tab: -1;
         callback choose-search-tab(int);
@@ -1468,6 +1471,36 @@ slint::slint! {
                             }
                         }
                         Rectangle { height: 1px; background: Theme.border; }
+                        // Optional own Spotify app for the Web API (like Spotifast's personal Client ID).
+                        SectionTitle { text: "SPOTIFY APP"; shape: Icons.link; }
+                        Text {
+                            text: "Optional: your own app's Client ID from developer.spotify.com (redirect URI http://127.0.0.1:8989/login). Empty uses the shared app.";
+                            wrap: word-wrap;
+                            font-size: 11px;
+                            color: Theme.subdued;
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 30px;
+                                border-radius: 6px;
+                                background: Theme.field;
+                                client-id-input := TextInput {
+                                    x: 8px;
+                                    width: parent.width - 16px;
+                                    height: parent.height;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                    font-size: 12px;
+                                    color: Theme.text;
+                                    text <=> root.web-client-id;
+                                    accepted => { root.set-web-client-id(self.text); }
+                                }
+                                if client-id-input.text == "" : Text { x: 8px; height: parent.height; vertical-alignment: center; text: "Client ID"; font-size: 12px; color: Theme.muted; }
+                            }
+                            Chip { label: "Save"; pad: 14px; clicked => { root.set-web-client-id(root.web-client-id); } }
+                        }
                         SectionTitle { text: "STARTUP"; shape: Icons.home; }
                         Switch { label: "Start with Windows"; on <=> root.start-with-windows; toggled(v) => { root.set-autostart(v); } }
                     }
