@@ -341,7 +341,21 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     let (cover_tx, cover_rx) = mpsc::unbounded_channel();
+    let tiles_ui = app.as_weak();
     app.on_need_cover(move |kind, index, uri, url| {
+        // Home tiles (kinds 6/7) show library entries whose sidebar cover is usually loaded already:
+        // copying it skips a second download and decode (~2.9 MB private at startup, 2026-10-05).
+        if kind >= 6 {
+            if let Some(app) = tiles_ui.upgrade() {
+                let sidebar = app.get_lists().iter().find(|r| r.uri == uri && r.cover.size().width > 0);
+                let tiles = if kind == 6 { app.get_quick_top() } else { app.get_quick_bottom() };
+                if let (Some(found), Some(mut tile)) = (sidebar, tiles.row_data(index as usize)) {
+                    tile.cover = found.cover;
+                    tiles.set_row_data(index as usize, tile);
+                    return;
+                }
+            }
+        }
         let _ = cover_tx.send(CoverRequest { kind, index: index as usize, uri: uri.into(), url: url.into() });
     });
 
