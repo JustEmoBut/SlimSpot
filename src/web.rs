@@ -12,7 +12,7 @@ use librespot_oauth::{OAuthClient, OAuthClientBuilder, OAuthToken};
 // one the saved token was granted to, else the public app shared by ncspot / spotify-player /
 // Spotifast (like Spotifast's optional personal id "alongside shared coverage").
 const DEFAULT_WEB_CLIENT_ID: &str = "d420a117a32841c2b3474932e49fb54b";
-const WEB_CLIENT_ID_ENV: &str = "SLIMSPOT_WEB_CLIENT_ID";
+pub const WEB_CLIENT_ID_ENV: &str = "SLIMSPOT_WEB_CLIENT_ID";
 const WEB_REDIRECT_URI: &str = "http://127.0.0.1:8989/login";
 const WEB_SCOPES: &[&str] = &[
     "user-read-private",
@@ -72,6 +72,8 @@ pub struct WebApi {
     token_path: PathBuf,
     /// First line of the token file; a saved token is only reused when client id and scopes match.
     grant_key: String,
+    /// A personal Client ID Spotify rejected ("invalid_client") at this login; the shared app is used.
+    pub gone_client: Option<String>,
 }
 
 impl WebApi {
@@ -82,14 +84,30 @@ impl WebApi {
         let token_path = dir.join(WEB_TOKEN_FILE);
         let saved = std::fs::read_to_string(&token_path).unwrap_or_default();
         let saved = saved.split_once('\n');
-        let client_id = pick_client_id(std::env::var(WEB_CLIENT_ID_ENV).ok(), configured, saved.map(|(key, _)| key));
-        let client = OAuthClientBuilder::new(&client_id, WEB_REDIRECT_URI, WEB_SCOPES.to_vec())
-            .open_in_browser()
-            .build()
-            .map_err(|e| format!("Web OAuth setup failed: {e}"))?;
-        let grant_key = format!("{client_id} {}", WEB_SCOPES.join(","));
+        let mut client_id = pick_client_id(std::env::var(WEB_CLIENT_ID_ENV).ok(), configured, saved.map(|(key, _)| key));
+        let build = |id: &str| {
+            OAuthClientBuilder::new(id, WEB_REDIRECT_URI, WEB_SCOPES.to_vec())
+                .open_in_browser()
+                .build()
+                .map_err(|e| format!("Web OAuth setup failed: {e}"))
+        };
+        let mut client = build(&client_id)?;
+        let mut grant_key = format!("{client_id} {}", WEB_SCOPES.join(","));
+        let mut gone_client = None;
         let refreshed = match saved {
-            Some((key, rt)) if key == grant_key => refresh(&client, rt.trim()).await.ok(),
+            Some((key, rt)) if key == grant_key => match refresh(&client, rt.trim()).await {
+                Ok(t) => Some(t),
+                // The personal app was deleted on developer.spotify.com (seen 2026-10-05): like
+                // Spotifast, carry on with the shared app instead of a browser login that can't work.
+                Err(e) if e.contains("invalid_client") && client_id != DEFAULT_WEB_CLIENT_ID => {
+                    log::warn!("web client {client_id} rejected ({e}); using the shared app");
+                    gone_client = Some(std::mem::replace(&mut client_id, DEFAULT_WEB_CLIENT_ID.to_string()));
+                    client = build(&client_id)?;
+                    grant_key = format!("{client_id} {}", WEB_SCOPES.join(","));
+                    None
+                }
+                Err(_) => None,
+            },
             _ => None,
         };
         let token = match refreshed {
@@ -102,7 +120,7 @@ impl WebApi {
                     .map_err(|e| format!("Web login failed: {e}"))?
             }
         };
-        let api = Self { client, token, token_path, grant_key };
+        let api = Self { client, token, token_path, grant_key, gone_client };
         api.save()?;
         Ok(api)
     }
@@ -179,7 +197,7 @@ impl WebApi {
                 200..=299 => return serde_json::from_slice(&body).map_err(|e| format!("Response parse failed: {e}")),
                 429 => match retry_after.filter(|d| *d <= MAX_RETRY_AFTER) {
                     Some(wait) if attempt < RATE_LIMIT_RETRIES => tokio::time::sleep(wait).await,
-                    _ => return Err(format!("Spotify rate limit (retry after {retry_after:?}); the shared web app may be busy — set {WEB_CLIENT_ID_ENV}")),
+                    _ => return Err(rate_limit_message(retry_after, self.grant_key.starts_with(DEFAULT_WEB_CLIENT_ID))),
                 },
                 // Spotify-owned/editorial playlists are often closed to third-party apps.
                 403 | 404 => return Err(format!("Spotify doesn't expose this to third-party apps (HTTP {status})")),
@@ -503,6 +521,23 @@ fn keep_refresh_token(mut token: OAuthToken, previous: &str) -> OAuthToken {
 
 /// Env var wins; otherwise stick with the app the saved token belongs to, so launching without
 /// the env var (e.g. from a shortcut started before `setx`) doesn't force a new browser login.
+/// Long Retry-After values (hours) are Spotify's quota penalty for the app, not a busy moment:
+/// say how long, and only blame the shared app when it is the one in use.
+fn rate_limit_message(retry_after: Option<Duration>, shared_app: bool) -> String {
+    let wait = match retry_after.map(|d| d.as_secs()) {
+        Some(s) if s >= 3600 => format!("about {} h", s.div_ceil(3600)),
+        Some(s) if s >= 60 => format!("about {} min", s.div_ceil(60)),
+        Some(s) => format!("{s} s"),
+        None => "a while".into(),
+    };
+    let app = if shared_app {
+        "the shared app's quota is used up; set your own Client ID in Settings → Spotify app"
+    } else {
+        "your Spotify app's quota is used up"
+    };
+    format!("Spotify rate limit: {app}. Search and library work again in {wait}; playback still works.")
+}
+
 fn pick_client_id(env: Option<String>, configured: &str, saved_key: Option<&str>) -> String {
     env.filter(|id| !id.trim().is_empty())
         .or_else(|| Some(configured.trim().to_string()).filter(|id| !id.is_empty()))
@@ -718,6 +753,14 @@ mod tests {
         };
         assert_eq!(keep_refresh_token(token(""), "old").refresh_token, "old");
         assert_eq!(keep_refresh_token(token("new"), "old").refresh_token, "new");
+    }
+
+    #[test]
+    fn rate_limit_message_names_the_app_and_wait() {
+        let own = rate_limit_message(Some(Duration::from_secs(65_470)), false);
+        assert!(own.contains("your Spotify app") && own.contains("about 19 h"), "{own}");
+        let shared = rate_limit_message(Some(Duration::from_secs(90)), true);
+        assert!(shared.contains("shared app") && shared.contains("about 2 min"), "{shared}");
     }
 
     #[test]

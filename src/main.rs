@@ -21,6 +21,7 @@ mod skin;
 #[cfg(windows)]
 mod taskbar;
 mod ui;
+mod update;
 mod web;
 
 use std::time::Duration;
@@ -48,6 +49,9 @@ const MEDIA_KEYS_MAX_TRIES: u32 = 50;
 const RESTORE_POLL: Duration = Duration::from_millis(100);
 // If the backend hasn't finished quitting by then (e.g. still logging in), quit anyway.
 const QUIT_GRACE: Duration = Duration::from_secs(3);
+// The old instance saves and disconnects within QUIT_GRACE; a little more for the process to end.
+#[cfg(windows)]
+const UPDATE_WAIT: Duration = Duration::from_secs(10);
 // Winamp scrolls its song title about four characters a second.
 const MARQUEE_TICK: Duration = Duration::from_millis(250);
 /// Characters that fit the main window's title area (154 px of 5 px cells).
@@ -67,11 +71,15 @@ fn app_icon() -> slint::Image {
 
 fn main() -> Result<(), slint::PlatformError> {
     logger::init(&player::cache_dir());
+    // Started by an update: let the old instance quit before taking the single-instance guard.
+    #[cfg(windows)]
+    update::wait_for_previous(UPDATE_WAIT);
     #[cfg(windows)]
     let instance = match instance::acquire() {
         instance::Instance::Secondary => return Ok(()),
         primary => primary,
     };
+    update::remove_old();
     // Read once here: the renderer must be chosen before the first window exists.
     let startup = settings::Settings::load(&player::cache_dir());
     select_renderer(startup.gpu);
@@ -157,6 +165,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_add_search(send_str(Command::AddSearch));
     app.on_save_radio(send(|| Command::SaveRadio));
     app.on_set_web_client_id(send_str(Command::WebClientId));
+    app.on_install_update(send_str(Command::InstallUpdate));
     {
         let (weak, tx) = (app.as_weak(), tx.clone());
         app.on_set_theme(move |palette| {

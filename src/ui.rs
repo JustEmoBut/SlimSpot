@@ -679,6 +679,10 @@ slint::slint! {
         // Settings → GPU renderer (applies on restart).
         in-out property <bool> gpu;
         callback set-gpu(bool);
+        // Set when GitHub has a newer release.
+        in property <string> update-version;
+        in property <string> update-url;
+        callback install-update(string);
         // Winamp skin mode: the window becomes the skin's main (+ EQ + playlist) windows, stacked.
         in-out property <bool> skin-mode;
         in property <WaSkin> skin;
@@ -1563,6 +1567,14 @@ slint::slint! {
                                 }
                             }
                             Rectangle { horizontal-stretch: 1; }
+                            // A newer GitHub release (update.rs); one click downloads, swaps the exe and restarts.
+                            if root.update-version != "" : Chip {
+                                y: (parent.height - self.height) / 2;
+                                label: "Update to v" + root.update-version;
+                                chosen: true;
+                                pad: 14px;
+                                clicked => { root.install-update(root.update-url); }
+                            }
                             settings-button := IconButton {
                                 y: (parent.height - self.height) / 2;
                                 shape: Icons.settings;

@@ -79,6 +79,8 @@ pub enum Command {
     Skin { path: String, mode: bool },
     /// Winamp EQ window: the sink already uses it (`eq::set`); this remembers it.
     Eq(crate::eq::EqState),
+    /// "Update to vX": download this release zip, swap the exe and restart.
+    InstallUpdate(String),
     /// Save the session, disconnect the Connect device and end the UI event loop.
     Quit,
     ToggleLike,
@@ -860,6 +862,22 @@ pub async fn run(
         Ok(s) => s,
         Err(e) => return set_status(&ui, e),
     };
+    // Before the Web API login, which can wait for a browser consent indefinitely.
+    {
+        let (session, ui) = (session.clone(), ui.clone());
+        tokio::spawn(async move {
+            match crate::update::check(&session).await {
+                Ok(Some(release)) => {
+                    let _ = ui.upgrade_in_event_loop(move |app| {
+                        app.set_update_version(release.version.into());
+                        app.set_update_url(release.zip_url.into());
+                    });
+                }
+                Ok(None) => {}
+                Err(e) => log::warn!("{e}"),
+            }
+        });
+    }
     // Web API is optional: playback by link still works if it fails.
     let browser_ui = ui.clone();
     let client_id_text = settings.web_client_id.clone();
@@ -871,6 +889,19 @@ pub async fn run(
             None
         }
     };
+    if let Some(gone) = web.as_mut().and_then(|w| w.gone_client.take()) {
+        // A deleted personal app: forget it, so the next start doesn't try it again.
+        if settings.web_client_id == gone {
+            settings.web_client_id.clear();
+            save_settings(&ui, &settings);
+            let _ = ui.upgrade_in_event_loop(|app| app.set_web_client_id("".into()));
+        }
+        let env_note = match std::env::var(crate::web::WEB_CLIENT_ID_ENV) {
+            Ok(v) if v.trim() == gone => format!(" Remove the {} environment variable, it still names that app.", crate::web::WEB_CLIENT_ID_ENV),
+            _ => String::new(),
+        };
+        set_status(&ui, format!("Your Spotify app's Client ID no longer exists; using the shared app.{env_note}"));
+    }
     tokio::spawn(covers::worker(session.clone(), ui.clone(), cover_rx));
     // Sidebar rows, kept to title the pages they open.
     let mut library: Vec<Item> = Vec::new();
@@ -1769,6 +1800,25 @@ pub async fn run(
                 Command::Skin { path, mode } => {
                     (settings.skin, settings.skin_mode) = (path, mode);
                     save_settings(&ui, &settings);
+                }
+                Command::InstallUpdate(url) => {
+                    set_status(&ui, "Downloading the update...");
+                    let (session, ui) = (session.clone(), ui.clone());
+                    tokio::spawn(async move {
+                        let release = crate::update::Release { version: String::new(), zip_url: url };
+                        let started = match crate::update::install(&session, &release).await {
+                            Ok(exe) => crate::update::relaunch(&exe),
+                            Err(e) => Err(e),
+                        };
+                        match started {
+                            // The new exe waits for this one to quit (--wait-pid).
+                            Ok(()) => drop(ui.upgrade_in_event_loop(|app| app.invoke_quit())),
+                            Err(e) => {
+                                log::warn!("update: {e}");
+                                set_status(&ui, e);
+                            }
+                        }
+                    });
                 }
                 Command::Eq(state) => {
                     crate::eq::set(state);

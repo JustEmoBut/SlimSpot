@@ -10,7 +10,7 @@ const CENTRAL_SIG: u32 = 0x0201_4b50;
 const LOCAL_SIG: u32 = 0x0403_4b50;
 const EOCD_SEARCH: usize = 22 + u16::MAX as usize;
 /// Skins are a few hundred KB; anything bigger inside one isn't a sprite sheet.
-const MAX_ENTRY: usize = 8 << 20;
+const MAX_SKIN_ENTRY: usize = 8 << 20;
 const DEFLATE: u16 = 8;
 
 /// SlimSpot's own skin (examples/default_skin.rs), under the classic file names. It is shown when
@@ -37,8 +37,9 @@ fn u32_at(b: &[u8], i: usize) -> Option<u32> {
 }
 
 /// Entries by lowercased file name (folders dropped: some skins nest everything one level down).
-fn unzip(zip: &[u8]) -> Result<HashMap<String, Vec<u8>>, String> {
-    let bad = || "Not a Winamp skin (.wsz is a zip file)".to_string();
+/// Also reads the update zip (update.rs); entries over `max_entry` bytes are skipped.
+pub fn unzip(zip: &[u8], max_entry: usize) -> Result<HashMap<String, Vec<u8>>, String> {
+    let bad = || "Not a zip file (a .wsz skin is one)".to_string();
     let start = zip.len().saturating_sub(EOCD_SEARCH);
     let eocd = (start..zip.len().saturating_sub(21)).rev().find(|&i| u32_at(zip, i) == Some(EOCD_SIG)).ok_or_else(bad)?;
     let count = u16_at(zip, eocd + 10).ok_or_else(bad)? as usize;
@@ -63,7 +64,7 @@ fn unzip(zip: &[u8]) -> Result<HashMap<String, Vec<u8>>, String> {
         let raw = zip.get(data_at..data_at + size).ok_or_else(bad)?;
         let data = match method {
             0 => raw.to_vec(),
-            DEFLATE => match miniz_oxide::inflate::decompress_to_vec_with_limit(raw, MAX_ENTRY) {
+            DEFLATE => match miniz_oxide::inflate::decompress_to_vec_with_limit(raw, max_entry) {
                 Ok(d) => d,
                 Err(e) => {
                     log::warn!("skin entry {name}: inflate failed: {e:?}");
@@ -106,7 +107,7 @@ fn color(hex: Option<&String>, fallback: u32) -> slint::Color {
 pub fn load(path: &str) -> Result<WaSkin, String> {
     let mut files = match path {
         "" => HashMap::new(),
-        _ => unzip(&std::fs::read(path).map_err(|e| format!("Can't read the skin: {e}"))?)?,
+        _ => unzip(&std::fs::read(path).map_err(|e| format!("Can't read the skin: {e}"))?, MAX_SKIN_ENTRY)?,
     };
     // nums_ex.bmp replaces numbers.bmp in newer skins and carries its own minus sign.
     let nums_ex = files.contains_key("nums_ex.bmp");
@@ -217,11 +218,11 @@ mod tests {
 
     #[test]
     fn unzips_nested_names_case_insensitively() {
-        let files = unzip(&stored_zip("Skin/PLEDIT.TXT", b"[Text]\r\nNormal=#00FF00\r\n")).unwrap();
+        let files = unzip(&stored_zip("Skin/PLEDIT.TXT", b"[Text]\r\nNormal=#00FF00\r\n"), MAX_SKIN_ENTRY).unwrap();
         let colors = pledit_colors(&String::from_utf8_lossy(&files["pledit.txt"]));
         assert_eq!(colors["normal"], "#00FF00");
         assert_eq!(color(colors.get("normal"), 0), slint::Color::from_rgb_u8(0, 255, 0));
-        assert!(unzip(b"not a zip").is_err());
+        assert!(unzip(b"not a zip", MAX_SKIN_ENTRY).is_err());
     }
 
     #[test]
