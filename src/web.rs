@@ -40,7 +40,6 @@ pub const SEARCH_LIMIT: u32 = 10;
 pub const SEARCH_TYPES: [&str; 4] = ["track", "album", "artist", "playlist"];
 const ARTIST_ALBUMS_LIMIT: u32 = 10;
 // Artist albums are paged 10 at a time; stop after this many pages.
-const ARTIST_ALBUM_PAGES: usize = 5;
 // Search shows a few artists and albums above the tracks; tracks still get SEARCH_LIMIT.
 const SEARCH_ARTISTS: usize = 3;
 const SEARCH_ALBUMS: usize = 6;
@@ -431,25 +430,37 @@ impl WebApi {
             .filter_map(track_row)
             .map(|t| Item { cover_url: cover.clone(), album_uri: album_uri.to_string(), ..t })
             .collect();
-        // release_date is "YYYY", "YYYY-MM" or "YYYY-MM-DD" depending on its precision.
-        let year = album["release_date"].as_str().unwrap_or_default().get(..4).unwrap_or_default();
+        // release_date is "YYYY", "YYYY-MM" or "YYYY-MM-DD" depending on its precision; shown as is.
+        let date = album["release_date"].as_str().unwrap_or_default();
         let label = album["label"].as_str().unwrap_or_default();
-        let info = [year, label].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+        let copyright = album["copyrights"][0]["text"].as_str().unwrap_or_default();
+        let info = [date, label, copyright].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
         Ok((album["name"].as_str().unwrap_or_default().to_string(), info, rows))
     }
 
-    /// The artist's albums and singles, newest first as Spotify orders them, up to ARTIST_ALBUM_PAGES pages.
-    pub async fn artist_albums(&mut self, session: &Session, artist_uri: &str) -> Result<Vec<Item>, String> {
+    /// One page of an artist's releases in one group (`album`, `single`, `compilation`,
+    /// `appears_on`), newest first as Spotify orders them, and whether more follow.
+    pub async fn artist_group(&mut self, session: &Session, artist_uri: &str, group: &str, offset: u32) -> Result<(Vec<Item>, bool), String> {
         let id = artist_uri.strip_prefix("spotify:artist:").ok_or("Not an artist URI")?;
-        let mut rows = Vec::new();
-        let mut next = Some(format!("{API}/artists/{id}/albums?include_groups=album,single&limit={ARTIST_ALBUMS_LIMIT}"));
-        for _ in 0..ARTIST_ALBUM_PAGES {
-            let Some(url) = next.take() else { break };
-            let page = self.get_json(session, &url).await?;
-            rows.extend(page["items"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(album_row));
-            next = page["next"].as_str().map(String::from);
-        }
-        Ok(rows)
+        let url = format!("{API}/artists/{id}/albums?include_groups={group}&limit={ARTIST_ALBUMS_LIMIT}&offset={offset}");
+        let page = self.get_json(session, &url).await?;
+        let rows = page["items"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(album_row).collect();
+        Ok((rows, page["next"].is_string()))
+    }
+
+    /// The artist's newest album or single with its release date ("YYYY-MM-DD" or shorter).
+    pub async fn newest_release(&mut self, session: &Session, artist_uri: &str) -> Result<Option<(Item, String)>, String> {
+        let id = artist_uri.strip_prefix("spotify:artist:").ok_or("Not an artist URI")?;
+        let url = format!("{API}/artists/{id}/albums?include_groups=album,single&limit={ARTIST_ALBUMS_LIMIT}");
+        let page = self.get_json(session, &url).await?;
+        // Grouped by type, so the newest single can follow older albums: take the latest date.
+        Ok(page["items"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|a| Some((album_row(a)?, a["release_date"].as_str()?.to_string())))
+            .max_by(|a, b| a.1.cmp(&b.1)))
     }
 
     pub async fn playlists(&mut self, session: &Session) -> Result<Vec<Item>, String> {
@@ -554,7 +565,7 @@ fn base64(data: &[u8]) -> String {
 }
 
 /// Drops HTML tags and decodes the entities Spotify uses in descriptions.
-fn plain_text(html: &str) -> String {
+pub fn plain_text(html: &str) -> String {
     let mut text = String::with_capacity(html.len());
     let mut in_tag = false;
     for c in html.chars() {

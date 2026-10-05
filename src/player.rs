@@ -38,6 +38,13 @@ const OAUTH_SCOPES: &[&str] = &["streaming"];
 const DEVICE_NAME: &str = "SlimSpot";
 // Last row of a full search page; clicking it appends the next page of tracks.
 const MORE_URI: &str = "slimspot:more";
+// Home tiles: Spotify shows 8 (two rows of four).
+const QUICK_TILES: usize = 8;
+// "New release": followed artists checked per run (one request each) and how recent counts.
+const NEW_RELEASE_ARTISTS: usize = 10;
+const NEW_RELEASE_DAYS: i64 = 60;
+// The now-playing panel shows the start of the artist's biography.
+const NOW_ABOUT_CHARS: usize = 400;
 // Spotify took a few seconds to serve an uploaded cover (2026-10-05); poll for up to ~30 s.
 const COVER_POLL_INTERVAL: Duration = Duration::from_secs(3);
 const COVER_POLL_TRIES: u32 = 10;
@@ -435,8 +442,11 @@ struct Page {
     /// Search query (or show URI), result type ("episode" for shows) and next offset while
     /// "Show more" is offered.
     more: Option<(String, &'static str, u32)>,
-    /// Search pages: the query and the chosen tab (0 = All, then SEARCH_TYPES).
+    /// Tabbed pages: the search query or artist URI and the chosen tab (search: 0 = All, then
+    /// SEARCH_TYPES; artist: ARTIST_TABS).
     search: Option<(String, i32)>,
+    /// Artist "About" tab: the biography, shown in place of the list.
+    about: String,
     /// One of the user's own playlists: rows can be removed.
     editable: bool,
     /// Small label above the title ("Playlist", "Album", ...).
@@ -486,6 +496,7 @@ async fn search_page(w: &mut WebApi, session: &Session, query: &str, tab: i32) -
         list: String::new(),
         more,
         search: Some((query.to_string(), tab)),
+        about: String::new(),
         editable: false,
         kind: "Search",
         info: String::new(),
@@ -493,6 +504,106 @@ async fn search_page(w: &mut WebApi, session: &Session, query: &str, tab: i32) -
         cover_url: String::new(),
         liked_upto: 0,
     })
+}
+
+/// Artist page tabs; 1..=4 are Web API album groups.
+const ARTIST_TABS: [&str; 6] = ["Popular", "Albums", "Singles", "Compilations", "Appears On", "About"];
+const ARTIST_GROUPS: [&str; 4] = ["album", "single", "compilation", "appears_on"];
+// Development-mode limit for /artists/{id}/albums (see CLAUDE.md).
+const ARTIST_GROUP_LIMIT: u32 = 10;
+
+/// Another tab of the open artist page; keeps its title, follow state and context.
+async fn artist_tab(w: &mut WebApi, session: &Session, page: &Page, tab: i32) -> Result<Page, String> {
+    let Some((uri, _)) = page.search.clone() else { return Err("Not an artist page".into()) };
+    let mut about = String::new();
+    let mut more = None;
+    let rows = match tab {
+        0 => artist_top_tracks(session, &uri).await?.1,
+        5 => {
+            about = artist_bio(session, &uri).await;
+            if about.is_empty() {
+                about = "Spotify has no biography for this artist.".into();
+            }
+            Vec::new()
+        }
+        t => {
+            let group = ARTIST_GROUPS[(t - 1).clamp(0, 3) as usize];
+            let (mut rows, has_next) = w.artist_group(session, &uri, group, 0).await?;
+            if has_next {
+                more = Some((uri.clone(), group, ARTIST_GROUP_LIMIT));
+                rows.push(more_row());
+            }
+            rows
+        }
+    };
+    Ok(Page {
+        title: page.title.clone(),
+        rows,
+        shown: page.shown.clone(),
+        list: String::new(),
+        more,
+        search: Some((uri, tab)),
+        about,
+        editable: false,
+        kind: "Artist",
+        info: String::new(),
+        saved: page.saved,
+        cover_url: String::new(),
+        liked_upto: 0,
+    })
+}
+
+/// The artist's biography as plain text, "" if Spotify has none or the lookup fails.
+async fn artist_bio(session: &Session, artist_uri: &str) -> String {
+    let Ok(id) = SpotifyUri::from_uri(artist_uri) else { return String::new() };
+    match Artist::get(session, &id).await {
+        Ok(a) => a.biographies.first().map(|b| crate::web::plain_text(&b.text)).unwrap_or_default(),
+        Err(e) => {
+            log::warn!("artist lookup for {artist_uri} failed: {e}");
+            String::new()
+        }
+    }
+}
+
+/// "Writers: A, B" lines from Spotify's track credits (spclient, not the Web API; verified 2026-10-05).
+async fn track_credits(session: &Session, track_uri: &str) -> Result<String, String> {
+    let id = track_uri.strip_prefix("spotify:track:").ok_or("Credits need a Spotify track")?;
+    let body = session
+        .spclient()
+        .request_as_json(&http::Method::GET, &format!("/track-credits-view/v0/experimental/{id}/credits"), None, None)
+        .await
+        .map_err(|e| format!("Credits unavailable: {e}"))?;
+    let json: serde_json::Value = serde_json::from_slice(&body).map_err(|e| format!("Credits unreadable: {e}"))?;
+    Ok(credit_lines(&json))
+}
+
+fn credit_lines(json: &serde_json::Value) -> String {
+    json["roleCredits"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|role| {
+            let names: Vec<&str> = role["artists"].as_array()?.iter().filter_map(|a| a["name"].as_str()).collect();
+            (!names.is_empty()).then(|| format!("{}: {}", role["roleTitle"].as_str().unwrap_or("?"), names.join(", ")))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Days since 1970-01-01 for "YYYY-MM-DD" (civil-from-days inverse); partial dates count from
+/// the start of their year/month.
+fn days_from_date(date: &str) -> Option<i64> {
+    let mut parts = date.split('-').map(|p| p.parse::<i64>().ok());
+    let y = parts.next()??;
+    let m = parts.next().flatten().unwrap_or(1);
+    let d = parts.next().flatten().unwrap_or(1);
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
 }
 
 fn more_row() -> Item {
@@ -528,6 +639,12 @@ fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<S
     let info = page.info.clone();
     let saved = page.saved;
     let search_tab = page.search.as_ref().map_or(-1, |s| s.1);
+    let tabs: Vec<slint::SharedString> = match page.kind {
+        "Artist" => ARTIST_TABS.iter().map(|t| (*t).into()).collect(),
+        "Search" => ["All", "Songs", "Albums", "Artists", "Playlists"].iter().map(|t| (*t).into()).collect(),
+        _ => Vec::new(),
+    };
+    let about = page.about.clone();
     let page_uri = match &page.shown {
         Shown::Context(uri) => uri.clone(),
         Shown::Tracks(_) => String::new(),
@@ -536,6 +653,8 @@ fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<S
         app.set_page_info(info.into());
         app.set_page_saved(saved);
         app.set_search_tab(search_tab);
+        app.set_page_tabs(slint::ModelRc::new(slint::VecModel::from(tabs)));
+        app.set_page_about(about.into());
         app.set_page_uri(page_uri.into());
         app.set_liked_checked(liked_upto);
         if app.get_page_cover_url() != cover.as_str() {
@@ -742,6 +861,12 @@ pub async fn run(
     let mut own_lists: Vec<Item> = Vec::new();
     // Last "Add songs" results, so a click can add the full row.
     let mut add_results: Vec<Item> = Vec::new();
+    // Artist page tab to switch to once it has opened ("More by" opens Albums).
+    let mut open_tab: Option<i32> = None;
+    // Home's "New release" tile, looked up once per run (None = not yet).
+    let mut new_release: Option<Option<Item>> = None;
+    // Artist whose biography the now-playing panel shows.
+    let mut about_artist = String::new();
     // Set by GoToPlaying: scroll to this track once its page has loaded.
     let mut reveal: Option<String> = None;
     // Sleep timer: pause at this instant, or when the playing track ends.
@@ -842,13 +967,7 @@ pub async fn run(
                             (Err(e), _) | (_, Err(e)) => Err(e),
                         }
                     } else if uri.starts_with("spotify:artist:") {
-                        match artist_top_tracks(&session, &uri).await {
-                            Ok((name, mut top)) => w.artist_albums(&session, &uri).await.map(|albums| {
-                                top.extend(albums);
-                                (name, String::new(), top)
-                            }),
-                            Err(e) => Err(e),
-                        }
+                        artist_top_tracks(&session, &uri).await.map(|(name, top)| (name, String::new(), top))
                     } else {
                         match w.list_tracks(&session, &uri).await {
                             Ok(rows) => Ok((String::new(), String::new(), rows)),
@@ -891,13 +1010,18 @@ pub async fn run(
                             } else {
                                 Shown::Context(context.clone())
                             };
+                            // Artist pages have tabs (Popular, Albums, ...); they open on Popular.
+                            let search = (kind == "Artist").then(|| (uri.clone(), 0));
                             let list = if sidebar { uri } else { String::new() };
                             let reveal_row = reveal.take().filter(|_| playing_context.as_ref() == Some(&context));
-                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: page_shown, list, more, search: None, editable, kind, info, saved, cover_url, liked_upto: 0 });
+                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: page_shown, list, more, search, about: String::new(), editable, kind, info, saved, cover_url, liked_upto: 0 });
                             if let Some(track) = reveal_row {
                                 reveal_track(&ui, &nav, &track);
                             }
                             mark_liked(&ui, w, &session, &mut nav).await;
+                            if let Some(tab) = open_tab.take() {
+                                let _ = tx.send(Command::SearchTab(tab));
+                            }
                         }
                         Err(e) => set_status(&ui, e),
                     }
@@ -906,12 +1030,15 @@ pub async fn run(
                     let (Some(w), Some(page)) = (web.as_mut(), nav.current_mut()) else { continue };
                     let Some((query, kind, offset)) = page.more.take() else { continue };
                     set_status(&ui, "Loading more...");
-                    let next_page = if kind == "episode" {
+                    let artist_page = page.kind == "Artist";
+                    let next_page = if artist_page {
+                        w.artist_group(&session, &query, kind, offset).await
+                    } else if kind == "episode" {
                         w.show_episodes(&session, &query, offset).await
                     } else {
                         w.search_type(&session, &query, kind, offset).await
                     };
-                    let step = if kind == "episode" { PAGE_LIMIT } else { SEARCH_LIMIT };
+                    let step = if kind == "episode" { PAGE_LIMIT } else if artist_page { ARTIST_GROUP_LIMIT } else { SEARCH_LIMIT };
                     match next_page {
                         Ok((found, has_next)) => {
                             page.rows.pop(); // the "Show more" row
@@ -943,7 +1070,7 @@ pub async fn run(
                     match w.queue(&session).await {
                         Ok(rows) => {
                             let uris = rows.iter().map(|r| r.uri.clone()).collect();
-                            open_page(&ui, &mut nav, &mut shown, Page { title: "Queue".into(), rows, shown: Shown::Tracks(uris), list: String::new(), more: None, search: None, editable: false, kind: "Up next", info: String::new(), saved: false, cover_url: String::new(), liked_upto: 0 });
+                            open_page(&ui, &mut nav, &mut shown, Page { title: "Queue".into(), rows, shown: Shown::Tracks(uris), list: String::new(), more: None, search: None, about: String::new(), editable: false, kind: "Up next", info: String::new(), saved: false, cover_url: String::new(), liked_upto: 0 });
                             mark_liked(&ui, w, &session, &mut nav).await;
                         }
                         Err(e) => set_status(&ui, e),
@@ -999,8 +1126,12 @@ pub async fn run(
                 Command::SearchTab(tab) => {
                     let query = nav.current().and_then(|p| p.search.clone()).map(|(q, _)| q);
                     let (Some(w), Some(query)) = (web.as_mut(), query) else { continue };
-                    set_status(&ui, "Searching...");
-                    match search_page(w, &session, &query, tab).await {
+                    set_status(&ui, "Loading...");
+                    let result = match nav.current() {
+                        Some(page) if page.kind == "Artist" => artist_tab(w, &session, page, tab).await,
+                        _ => search_page(w, &session, &query, tab).await,
+                    };
+                    match result {
                         // A tab switch replaces the search page instead of adding history.
                         Ok(page) => {
                             if let Some(current) = nav.current_mut() {
@@ -1069,7 +1200,7 @@ pub async fn run(
                                 rows,
                                 shown: Shown::Tracks(uris.clone()),
                                 list: String::new(),
-                                more: None, search: None,
+                                more: None, search: None, about: String::new(),
                                 editable: false,
                                 kind: "Radio",
                                 info: String::new(),
@@ -1205,6 +1336,36 @@ pub async fn run(
                             }
                             None
                         }
+                        "credits" => {
+                            set_status(&ui, "Loading credits...");
+                            match track_credits(&session, &uri).await {
+                                Ok(lines) => {
+                                    let (title, lines) = (item.title.clone(), if lines.is_empty() { "Spotify lists no credits for this song.".to_string() } else { lines });
+                                    set_status(&ui, page_summary(&nav));
+                                    let _ = ui.upgrade_in_event_loop(move |app| {
+                                        app.set_credits_title(title.into());
+                                        app.set_credits_text(lines.into());
+                                        app.invoke_show_credits();
+                                    });
+                                }
+                                Err(e) => set_status(&ui, e),
+                            }
+                            None
+                        }
+                        // Album page "More by": the album's (first) artist, on the Albums tab.
+                        "more-by" => {
+                            let artist = nav.current().and_then(|p| p.rows.first()).map(|r| r.artist_uri.clone()).filter(|a| !a.is_empty());
+                            match artist {
+                                Some(artist) => {
+                                    open_tab = Some(1);
+                                    Some(Command::OpenList(artist))
+                                }
+                                None => {
+                                    set_status(&ui, "No artist known for this album");
+                                    None
+                                }
+                            }
+                        }
                         "copy" => {
                             #[cfg(windows)]
                             match crate::clipboard::web_link(&uri) {
@@ -1235,7 +1396,7 @@ pub async fn run(
                                 rows,
                                 shown: Shown::Tracks(uris),
                                 list: String::new(),
-                                more: None, search: None,
+                                more: None, search: None, about: String::new(),
                                 editable: false,
                                 kind: "Home",
                                 info: String::new(),
@@ -1247,6 +1408,34 @@ pub async fn run(
                         }
                         Err(e) => set_status(&ui, e),
                     }
+                    // Spotify's "New release from <artist>": once per run, newest release of the
+                    // most recently opened followed artists, if it is recent.
+                    if new_release.is_none() {
+                        let mut artists: Vec<&Item> = library.iter().filter(|i| i.uri.starts_with("spotify:artist:")).collect();
+                        artists.sort_by_key(|i| std::cmp::Reverse(settings.opened.get(&i.uri).copied().unwrap_or(0)));
+                        let artists: Vec<Item> = artists.into_iter().take(NEW_RELEASE_ARTISTS).cloned().collect();
+                        let today = (unix_now() / 86_400) as i64;
+                        let mut newest: Option<(Item, String)> = None;
+                        for artist in &artists {
+                            if let Ok(Some((album, date))) = w.newest_release(&session, &artist.uri).await {
+                                let recent = days_from_date(&date).is_some_and(|d| today - d <= NEW_RELEASE_DAYS);
+                                if recent && newest.as_ref().is_none_or(|n| date > n.1) {
+                                    newest = Some((Item { artist: format!("New release · {}", artist.title), ..album }, date));
+                                }
+                            }
+                        }
+                        new_release = Some(newest.map(|n| n.0));
+                    }
+                    let mut tiles: Vec<Item> = new_release.clone().flatten().into_iter().collect();
+                    let mut recent: Vec<&Item> = library.iter().filter(|i| settings.opened.contains_key(&i.uri)).collect();
+                    recent.sort_by_key(|i| std::cmp::Reverse(settings.opened[&i.uri]));
+                    tiles.extend(recent.into_iter().chain(library.iter()).filter(|i| i.uri != YOUR_EPISODES).cloned());
+                    let mut seen = std::collections::HashSet::new();
+                    tiles.retain(|i| seen.insert(i.uri.clone()));
+                    tiles.truncate(QUICK_TILES);
+                    let bottom = tiles.split_off(tiles.len().min(QUICK_TILES / 2));
+                    set_rows(&ui, tiles, App::set_quick_top);
+                    set_rows(&ui, bottom, App::set_quick_bottom);
                 }
                 Command::PlayPage => {
                     let first = nav.current().and_then(|p| p.rows.iter().find(|r| is_playable(&r.uri)));
@@ -1579,6 +1768,14 @@ pub async fn run(
                         if item.cover_url.is_empty() {
                             let _ = ui.upgrade_in_event_loop(|app| app.set_now_tint(slint::Color::from_rgb_u8(16, 16, 42)));
                         }
+                        if item.artist_uri != about_artist {
+                            about_artist = item.artist_uri.clone();
+                            let (about_session, about_ui, artist) = (session.clone(), ui.clone(), item.artist_uri.clone());
+                            tokio::spawn(async move {
+                                let bio: String = artist_bio(&about_session, &artist).await.chars().take(NOW_ABOUT_CHARS).collect();
+                                let _ = about_ui.upgrade_in_event_loop(move |app| app.set_now_about(bio.into()));
+                            });
+                        }
                         now_uri = Some(item.uri.clone());
                         now_item = Some(item.clone());
                         pending_resume = None;
@@ -1699,5 +1896,23 @@ mod tests {
         assert!(ctx(load_request(Some(&found), "spotify:track:x", &s, 0, true)).contains("spotify:track:a"));
         // A pasted link that isn't in the shown search results plays on its own.
         assert!(!ctx(load_request(Some(&found), "spotify:track:zz", &s, 0, true)).contains("spotify:track:a"));
+    }
+
+    #[test]
+    fn days_from_date_matches_unix_days() {
+        assert_eq!(days_from_date("1970-01-01"), Some(0));
+        assert_eq!(days_from_date("2000-03-01"), Some(11_017));
+        assert_eq!(days_from_date("2026-10-05"), Some(20_731));
+        assert_eq!(days_from_date("2024"), days_from_date("2024-01-01"));
+        assert_eq!(days_from_date("x"), None);
+    }
+
+    #[test]
+    fn credit_lines_join_roles() {
+        let json = serde_json::json!({"roleCredits": [
+            {"roleTitle": "Writers", "artists": [{"name": "A"}, {"name": "B"}]},
+            {"roleTitle": "Empty", "artists": []}
+        ]});
+        assert_eq!(credit_lines(&json), "Writers: A, B");
     }
 }

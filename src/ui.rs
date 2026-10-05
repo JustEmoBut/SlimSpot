@@ -5,7 +5,7 @@ use slint::{Model, ModelRc, VecModel};
 use crate::web::Item;
 
 slint::slint! {
-    import { ListView, Palette } from "std-widgets.slint";
+    import { ListView, Palette, ScrollView } from "std-widgets.slint";
     // Poppins (SIL OFL, assets/fonts/OFL.txt), embedded in the exe: ~160 KB per weight.
     import "../assets/fonts/Poppins-Regular.ttf";
     import "../assets/fonts/Poppins-SemiBold.ttf";
@@ -493,6 +493,36 @@ slint::slint! {
         }
     }
 
+    // Home quick-access tile: cover and title, like Spotify's grid at the top of Home.
+    component QuickTile inherits TouchArea {
+        in property <Row> data;
+        callback need-cover();
+        init => { if (data.cover-url != "" && data.cover.width == 0) { need-cover() } }
+        changed data => { if (data.cover-url != "" && data.cover.width == 0) { need-cover() } }
+        height: 48px;
+        horizontal-stretch: 1;
+        mouse-cursor: pointer;
+        Rectangle {
+            border-radius: 6px;
+            background: root.has-hover ? Theme.hover : Theme.raised;
+            HorizontalLayout {
+                spacing: 10px;
+                padding-right: 8px;
+                Rectangle {
+                    width: 48px;
+                    background: root.data.uri == "liked" ? Theme.accent : Theme.selected;
+                    Image { source: root.data.cover; width: parent.width; height: parent.height; image-fit: cover; }
+                    if root.data.uri == "liked" : Icon { width: 22px; height: 22px; shape: Icons.heart; filled: true; tint: Theme.text; }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Text { text: root.data.title; font-size: 12px; font-weight: 600; color: Theme.text; overflow: elide; }
+                    if root.data.artist.starts-with("New release") : Text { text: root.data.artist; font-size: 11px; color: Theme.accent; overflow: elide; }
+                }
+            }
+        }
+    }
+
     export component App inherits Window {
         title: "SlimSpot";
         default-font-family: "Poppins";
@@ -592,6 +622,19 @@ slint::slint! {
         // Search page tab (0 = All, Songs, Albums, Artists, Playlists); -1 on other pages.
         in property <int> search-tab: -1;
         callback choose-search-tab(int);
+        // Tab labels of the open page (search, artist); empty elsewhere.
+        in property <[string]> page-tabs;
+        // Artist "About" tab text, shown in place of the list.
+        in property <string> page-about;
+        // Home tiles, two rows (Spotify's quick-access grid).
+        in property <[Row]> quick-top;
+        in property <[Row]> quick-bottom;
+        // Now-playing panel: start of the artist's biography.
+        in property <string> now-about;
+        // Track credits popup.
+        in property <string> credits-title;
+        in property <string> credits-text;
+        public function show-credits() { credits-popup.show(); }
         in property <bool> numbered;
         // Compact window with only the player bar.
         in-out property <bool> mini;
@@ -915,6 +958,14 @@ slint::slint! {
                                     Icon { width: 26px; height: 26px; shape: Icons.play; filled: true; tint: Theme.text; }
                                 }
                             }
+                            // Like Spotify's page shuffle: the same shuffle state as the player bar.
+                            if root.page-playable : IconButton {
+                                y: (parent.height - self.height) / 2;
+                                shape: Icons.shuffle;
+                                active: root.shuffle;
+                                size: 22px;
+                                clicked => { root.toggle-shuffle(); }
+                            }
                             // Like Spotify: an outlined "Follow" pill on artists, a round +/check on albums.
                             if root.page-kind == "Artist" : TouchArea {
                                 width: follow-text.preferred-width + 32px;
@@ -946,11 +997,12 @@ slint::slint! {
                             VerticalLayout {
                                 spacing: 2px;
                                 alignment: center;
-                                if root.page-kind != "" : Text { text: root.page-info == "" ? root.page-kind : root.page-kind + " · " + root.page-info; font-size: 12px; font-weight: 600; color: Theme.text; }
+                                if root.page-kind != "" : Text { text: root.page-info == "" ? root.page-kind : root.page-kind + " · " + root.page-info; font-size: 12px; font-weight: 600; color: Theme.text; overflow: elide; min-width: 0px; }
                                 HorizontalLayout {
                                     spacing: 8px;
                                     alignment: start;
-                                    Text { text: root.page-title; font-size: 32px; font-weight: 800; color: Theme.text; overflow: elide; }
+                                    // min-width 0: a long title elides instead of pushing the header buttons out of the panel.
+                                    Text { text: root.page-title; font-size: 32px; font-weight: 800; color: Theme.text; overflow: elide; min-width: 0px; }
                                     if root.editable : IconButton {
                                         y: (parent.height - self.height) / 2;
                                         shape: Icons.pencil;
@@ -964,6 +1016,11 @@ slint::slint! {
                                         dot: false;
                                         size: 18px;
                                         clicked => { root.row-action("radio", root.page-uri); }
+                                    }
+                                    if root.page-kind == "Album" : Chip {
+                                        y: (parent.height - self.height) / 2;
+                                        label: "More by this artist";
+                                        clicked => { root.row-action("more-by", root.page-uri); }
                                     }
                                     if root.page-kind == "Radio" : Chip {
                                         y: (parent.height - self.height) / 2;
@@ -983,7 +1040,7 @@ slint::slint! {
                         if root.search-tab >= 0 && !root.show-lyrics : HorizontalLayout {
                             spacing: 4px;
                             alignment: start;
-                            for label[i] in ["All", "Songs", "Albums", "Artists", "Playlists"] : Chip {
+                            for label[i] in root.page-tabs : Chip {
                                 label: label;
                                 chosen: root.search-tab == i;
                                 clicked => { if (root.search-tab != i) { root.choose-search-tab(i); } }
@@ -1037,7 +1094,31 @@ slint::slint! {
                             padding-top: 24px;
                             Chip { label: "Let's find something for your playlist"; chosen: true; clicked => { add-popup.show(); } }
                         }
+                        if !root.show-lyrics && root.page-about != "" : ScrollView {
+                            vertical-stretch: 1;
+                            content-height: about-text.preferred-height + 16px;
+                            about-text := Text {
+                                y: 8px;
+                                width: parent.width - 16px;
+                                text: root.page-about;
+                                wrap: word-wrap;
+                                font-size: 14px;
+                                color: Theme.subdued;
+                            }
+                        }
+                        if !root.show-lyrics && root.page-kind == "Home" && root.quick-top.length > 0 : VerticalLayout {
+                            spacing: 6px;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                for q[i] in root.quick-top : QuickTile { data: q; clicked => { root.play-uri(q.uri); } need-cover => { root.need-cover(6, i, q.uri, q.cover-url); } }
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                for q[i] in root.quick-bottom : QuickTile { data: q; clicked => { root.play-uri(q.uri); } need-cover => { root.need-cover(7, i, q.uri, q.cover-url); } }
+                            }
+                        }
                         if !root.show-lyrics : ListView {
+                            visible: root.page-about == "";
                             vertical-stretch: 1;
                             content-y <=> root.list-y;
                             init => { root.list-height = self.visible-height; }
@@ -1081,6 +1162,33 @@ slint::slint! {
                         }
                         Text { text: now.title; font-size: 22px; font-weight: 700; color: Theme.text; wrap: word-wrap; }
                         Text { text: now.artist; font-size: 14px; color: Theme.subdued; wrap: word-wrap; }
+                        // Spotify's "Lyrics preview": the sung line and the next two (Ctrl+Y opens all).
+                        if root.lyric-lines.length > 0 : Rectangle {
+                            border-radius: 8px;
+                            background: Theme.raised;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 4px;
+                                Text { text: "Lyrics preview"; font-size: 12px; font-weight: 600; color: Theme.subdued; }
+                                for k in [0, 1, 2] : Text {
+                                    text: root.lyric-lines[max(0, root.lyric-index) + k];
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    color: k == 0 && root.lyric-index >= 0 ? Theme.text : Theme.subdued;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                        if root.now-about != "" : Rectangle {
+                            border-radius: 8px;
+                            background: Theme.raised;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 4px;
+                                Text { text: "About the artist"; font-size: 12px; font-weight: 600; color: Theme.subdued; }
+                                Text { text: root.now-about + "..."; font-size: 12px; color: Theme.subdued; wrap: word-wrap; }
+                            }
+                        }
                     }
                 }
             }
@@ -1116,6 +1224,7 @@ slint::slint! {
                         if !root.menu-playlists && (is-track || root.menu-row.uri.starts-with("spotify:playlist:") || root.menu-row.uri.starts-with("spotify:album:") || root.menu-row.uri.starts-with("spotify:artist:")) : MenuEntry { label: "Start radio"; shape: Icons.radio; clicked => { root.menu-act("radio"); } }
                         if !root.menu-playlists && is-track : MenuEntry { label: "Go to artist"; shape: Icons.person; clicked => { root.menu-act("artist"); } }
                         if !root.menu-playlists && is-track : MenuEntry { label: "Go to album"; shape: Icons.disc; clicked => { root.menu-act("album"); } }
+                        if !root.menu-playlists && is-track : MenuEntry { label: "View credits"; shape: Icons.person; clicked => { root.menu-act("credits"); } }
                         if !root.menu-playlists && !is-track : MenuEntry { label: "Open"; shape: Icons.open; clicked => { root.menu-act("open"); } }
                         if !root.menu-playlists : Rectangle { height: 1px; background: Theme.border; }
                         if !root.menu-playlists : MenuEntry { label: "Copy link"; shape: Icons.link; clicked => { root.menu-act("copy"); } }
@@ -1128,6 +1237,26 @@ slint::slint! {
                             spacing: 2px;
                             for t in root.targets : MenuEntry { label: t.title; shape: Icons.plus; clicked => { root.menu-act("add:" + t.uri); } }
                         }
+                    }
+                }
+            }
+            credits-popup := PopupWindow {
+                x: (root.width - 420px) / 2;
+                y: 120px;
+                width: 420px;
+                close-policy: close-on-click-outside;
+                Rectangle {
+                    background: Theme.raised;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    drop-shadow-blur: 16px;
+                    drop-shadow-color: #00000099;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 10px;
+                        Text { text: "Credits · " + root.credits-title; font-size: 15px; font-weight: 700; color: Theme.text; overflow: elide; }
+                        Text { text: root.credits-text; font-size: 13px; color: Theme.subdued; wrap: word-wrap; }
                     }
                 }
             }

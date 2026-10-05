@@ -21,7 +21,7 @@ const BIG_COVER_PX: u32 = 300;
 const CORNER_PX: f32 = 6.0;
 
 /// kind: 0 = track list, 1 = sidebar, 2 = now-playing bar, 3 = now-playing panel, 4 = page header,
-/// 5 = "Add songs" results
+/// 5 = "Add songs" results, 6/7 = Home tiles (top/bottom row)
 /// (matches the Slint callback).
 /// Cover uploads are scaled to this square; a JPEG at JPEG_QUALITY stays far below Spotify's
 /// 256 KB (base64) limit.
@@ -166,6 +166,8 @@ fn row_model(app: &App, kind: i32) -> ModelRc<Row> {
     match kind {
         1 => app.get_lists(),
         5 => app.get_add_results(),
+        6 => app.get_quick_top(),
+        7 => app.get_quick_bottom(),
         _ => app.get_tracks(),
     }
 }
