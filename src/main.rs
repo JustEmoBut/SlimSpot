@@ -7,6 +7,7 @@ mod clipboard;
 mod covers;
 #[cfg(windows)]
 mod dialog;
+mod eq;
 #[cfg(windows)]
 mod instance;
 mod logger;
@@ -16,6 +17,7 @@ mod nav;
 mod media_keys;
 mod player;
 mod settings;
+mod skin;
 #[cfg(windows)]
 mod taskbar;
 mod ui;
@@ -46,6 +48,13 @@ const MEDIA_KEYS_MAX_TRIES: u32 = 50;
 const RESTORE_POLL: Duration = Duration::from_millis(100);
 // If the backend hasn't finished quitting by then (e.g. still logging in), quit anyway.
 const QUIT_GRACE: Duration = Duration::from_secs(3);
+// Winamp scrolls its song title about four characters a second.
+const MARQUEE_TICK: Duration = Duration::from_millis(250);
+/// Characters that fit the main window's title area (154 px of 5 px cells).
+const MARQUEE_CHARS: usize = 31;
+const MARQUEE_GAP: &str = "  ***  ";
+// Wait before re-sizing after the frame is dropped (one event-loop turn is enough; 50 ms is safe).
+const FRAME_SETTLE: Duration = Duration::from_millis(50);
 
 /// Tray icon, decoded from the PNG rendered off assets/icon.svg (no runtime SVG renderer).
 fn app_icon() -> slint::Image {
@@ -63,6 +72,9 @@ fn main() -> Result<(), slint::PlatformError> {
         instance::Instance::Secondary => return Ok(()),
         primary => primary,
     };
+    // Read once here: the renderer must be chosen before the first window exists.
+    let startup = settings::Settings::load(&player::cache_dir());
+    select_renderer(startup.gpu);
     let app = App::new()?;
     let (tx, rx) = mpsc::unbounded_channel();
     let icon = app_icon();
@@ -156,6 +168,85 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
     app.on_add_to_page(send_str(Command::AddToPage));
+    {
+        let tx = tx.clone();
+        app.on_set_gpu(move |on| {
+            let _ = tx.send(Command::Gpu(on));
+        });
+    }
+    {
+        // The sink picks EQ changes up at once; saving waits for the slider's release.
+        let (weak, tx) = (app.as_weak(), tx.clone());
+        app.on_eq_changed(move |save| {
+            let Some(app) = weak.upgrade() else { return };
+            let state = ui::get_eq(&app);
+            eq::set(state);
+            if save {
+                let _ = tx.send(Command::Eq(state));
+            }
+        });
+    }
+    let skin = SkinMode::new(&app, &tx, startup.skin.clone());
+    {
+        let skin = skin.clone();
+        app.on_skin_toggle(move || skin.toggle());
+    }
+    {
+        let skin = skin.clone();
+        app.on_skin_builtin(move || {
+            if let Some(app) = skin.ui.upgrade() {
+                app.set_skin(ui::WaSkin::default());
+            }
+            skin.enter(String::new());
+        });
+    }
+    {
+        let skin = skin.clone();
+        app.on_skin_choose(move || {
+            let skin = skin.clone();
+            // Called from a popup's click handler: open the modal dialog once the popup is gone.
+            slint::Timer::single_shot(Duration::ZERO, move || skin.choose());
+        });
+    }
+    {
+        let weak = app.as_weak();
+        app.on_skin_resize(move |w, h| {
+            if let Some(app) = weak.upgrade() {
+                app.window().set_size(slint::LogicalSize::new(w, h));
+            }
+        });
+        #[cfg(windows)]
+        {
+            let weak = app.as_weak();
+            app.on_wa_drag(move || {
+                if let Some(app) = weak.upgrade() {
+                    instance::start_move(&app);
+                }
+            });
+        }
+        let weak = app.as_weak();
+        app.on_wa_minimize(move || {
+            if let Some(app) = weak.upgrade() {
+                app.window().set_minimized(true);
+            }
+        });
+        let weak = app.as_weak();
+        app.on_wa_close(move || {
+            if let Some(app) = weak.upgrade() {
+                let _ = app.hide();
+            }
+        });
+    }
+    let marquee = slint::Timer::default();
+    {
+        let weak = app.as_weak();
+        let mut state = Marquee::default();
+        marquee.start(slint::TimerMode::Repeated, MARQUEE_TICK, move || {
+            if let Some(app) = weak.upgrade() {
+                state.tick(&app);
+            }
+        });
+    }
     {
         let tx = tx.clone();
         app.on_choose_search_tab(move |tab| {
@@ -370,6 +461,172 @@ fn main() -> Result<(), slint::PlatformError> {
     // Shown even when starting in the tray: the media keys need the native window, which
     // exists only after a first show; it is hidden again as soon as they are attached.
     app.show()?;
+    if startup.skin_mode {
+        skin.enter(startup.skin);
+    }
     // Not `app.run()`: that ends when the last window closes, but a hidden window must keep playing.
     slint::run_event_loop_until_quit()
+}
+
+/// Settings → GPU acceleration: FemtoVG (OpenGL) or the software renderer. FemtoVG is Slint's
+/// default once its feature is compiled in, so software is asked for by name too.
+fn select_renderer(gpu: bool) {
+    let name = if gpu { "femtovg" } else { "software" };
+    if let Err(e) = slint::BackendSelector::new().renderer_name(name.into()).select() {
+        log::warn!("renderer {name} unavailable ({e}), using software");
+        if let Err(e) = slint::BackendSelector::new().renderer_name("software".into()).select() {
+            log::error!("software renderer unavailable: {e}");
+        }
+    }
+}
+
+/// Entering and leaving the Winamp skin; the normal window size comes back on leaving.
+#[derive(Clone)]
+struct SkinMode {
+    ui: slint::Weak<App>,
+    tx: mpsc::UnboundedSender<Command>,
+    path: std::rc::Rc<std::cell::RefCell<String>>,
+    full_size: std::rc::Rc<std::cell::Cell<Option<slint::PhysicalSize>>>,
+}
+
+impl SkinMode {
+    fn new(app: &App, tx: &mpsc::UnboundedSender<Command>, path: String) -> Self {
+        SkinMode { ui: app.as_weak(), tx: tx.clone(), path: std::rc::Rc::new(path.into()), full_size: Default::default() }
+    }
+
+    fn toggle(&self) {
+        let Some(app) = self.ui.upgrade() else { return };
+        if app.get_skin_mode() {
+            app.set_skin_mode(false);
+            if let Some(size) = self.full_size.take() {
+                app.window().set_size(size);
+            }
+            // After Slint has applied the normal window's constraints (next event-loop turn).
+            #[cfg(windows)]
+            {
+                let weak = self.ui.clone();
+                slint::Timer::single_shot(FRAME_SETTLE, move || {
+                    if let Some(app) = weak.upgrade() {
+                        instance::enable_maximize(&app);
+                    }
+                });
+            }
+            let _ = self.tx.send(Command::Skin { path: self.path.borrow().clone(), mode: false });
+            return;
+        }
+        // An empty path is the built-in skin.
+        let path = self.path.borrow().clone();
+        self.enter(path);
+    }
+
+    #[cfg(windows)]
+    fn choose(&self) {
+        let Some(app) = self.ui.upgrade() else { return };
+        if let Some(path) = dialog::pick_skin(&app) {
+            // Reload even when the same file was picked again (it may have changed).
+            app.set_skin(ui::WaSkin::default());
+            self.enter(path.to_string_lossy().into_owned());
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn choose(&self) {}
+
+    fn enter(&self, path: String) {
+        let Some(app) = self.ui.upgrade() else { return };
+        if !app.get_skin().loaded || *self.path.borrow() != path {
+            match skin::load(&path) {
+                Ok(s) => app.set_skin(s),
+                Err(e) => {
+                    log::warn!("skin {path}: {e}");
+                    return app.set_status(e.into());
+                }
+            }
+        }
+        if app.get_mini() {
+            app.invoke_toggle_mini();
+        }
+        if !app.get_skin_mode() {
+            self.full_size.set(Some(app.window().size()));
+        }
+        app.set_skin_mode(true);
+        let scale = if app.get_wa_double() { 2.0 } else { 1.0 };
+        let height = 116.0 + if app.get_wa_eq() { 116.0 } else { 0.0 } + if app.get_wa_pl() { 232.0 } else { 0.0 };
+        let size = slint::LogicalSize::new(275.0 * scale, height * scale);
+        app.window().set_size(size);
+        // no-frame reaches the native window on the next turn of the event loop; sized before that, the
+        // old caption and borders stayed as a black margin. Size it again once they're gone.
+        let weak = self.ui.clone();
+        slint::Timer::single_shot(FRAME_SETTLE, move || {
+            if let Some(app) = weak.upgrade() {
+                app.window().set_size(size);
+            }
+        });
+        *self.path.borrow_mut() = path.clone();
+        let _ = self.tx.send(Command::Skin { path, mode: true });
+    }
+}
+
+/// Song title scrolling and the playlist's time readouts in the skin's bitmap font.
+#[derive(Default)]
+struct Marquee {
+    offset: usize,
+    text: String,
+    rows: usize,
+    total: String,
+}
+
+fn clock(ms: u64) -> String {
+    let s = ms / 1000;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// "m:ss" or "h:mm:ss" row durations, summed in seconds.
+fn total_seconds(durations: impl Iterator<Item = slint::SharedString>) -> u64 {
+    durations
+        .map(|d| d.split(':').fold(0u64, |acc, part| acc * 60 + part.trim().parse::<u64>().unwrap_or(0)))
+        .sum()
+}
+
+impl Marquee {
+    fn tick(&mut self, app: &App) {
+        if !app.get_skin_mode() || !app.window().is_visible() {
+            return;
+        }
+        let now = app.get_now();
+        let text = match now.title.as_str() {
+            "" => "SlimSpot".to_string(),
+            title if now.artist.is_empty() => format!("{title} ({})", clock(app.get_duration() as u64)),
+            title => format!("{} - {title} ({})", now.artist, clock(app.get_duration() as u64)),
+        };
+        if text != self.text {
+            (self.text, self.offset) = (text, 0);
+        }
+        let shown: String = if self.text.chars().count() <= MARQUEE_CHARS {
+            self.text.clone()
+        } else {
+            let looped: Vec<char> = format!("{}{MARQUEE_GAP}", self.text).chars().collect();
+            self.offset = (self.offset + 1) % looped.len();
+            looped.iter().cycle().skip(self.offset).take(MARQUEE_CHARS).collect()
+        };
+        app.set_wa_title(std::rc::Rc::new(slint::VecModel::from(skin::glyphs(&shown))).into());
+        let tracks = app.get_tracks();
+        if tracks.row_count() != self.rows {
+            self.rows = tracks.row_count();
+            self.total = clock(total_seconds(tracks.iter().map(|r| r.duration)) * 1000);
+        }
+        let position = clock(app.get_position() as u64);
+        app.set_wa_pl_time(std::rc::Rc::new(slint::VecModel::from(skin::glyphs(&format!("{position}/{}", self.total)))).into());
+        app.set_wa_mini_time(std::rc::Rc::new(slint::VecModel::from(skin::glyphs(&position))).into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn sums_row_durations() {
+        let rows = ["3:45", "1:02:03", "", "0:15"].map(slint::SharedString::from);
+        assert_eq!(super::total_seconds(rows.into_iter()), 225 + 3723 + 15);
+        assert_eq!(super::clock(3_723_000), "62:03");
+    }
 }

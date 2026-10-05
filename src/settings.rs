@@ -124,6 +124,13 @@ pub struct Settings {
     pub theme: i32,
     /// Web API Client ID of the user's own Spotify app, "" for the shared default (see web.rs).
     pub web_client_id: String,
+    /// GPU (FemtoVG/OpenGL) renderer instead of the software one; read at startup only.
+    pub gpu: bool,
+    /// Path of the chosen Winamp classic skin (.wsz), "" for none.
+    pub skin: String,
+    /// The skin is shown instead of the normal window.
+    pub skin_mode: bool,
+    pub eq: crate::eq::EqState,
     path: PathBuf,
 }
 
@@ -148,6 +155,10 @@ impl Settings {
                 .unwrap_or_default(),
             theme: json["theme"].as_i64().map_or(0, |t| t as i32),
             web_client_id: json["web_client_id"].as_str().unwrap_or_default().to_string(),
+            gpu: json["gpu"].as_bool().unwrap_or(false),
+            skin: json["skin"].as_str().unwrap_or_default().to_string(),
+            skin_mode: json["skin_mode"].as_bool().unwrap_or(false),
+            eq: crate::eq::EqState::from_json(&json["eq"]),
             path,
         }
     }
@@ -163,6 +174,10 @@ impl Settings {
             "opened": self.opened,
             "theme": self.theme,
             "web_client_id": self.web_client_id,
+            "gpu": self.gpu,
+            "skin": self.skin,
+            "skin_mode": self.skin_mode,
+            "eq": self.eq.to_json(),
         });
         std::fs::write(&self.path, json.to_string()).map_err(|e| format!("Saving settings failed: {e}"))
     }

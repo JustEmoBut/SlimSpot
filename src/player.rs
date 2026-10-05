@@ -73,6 +73,12 @@ pub enum Command {
     Theme(i32),
     /// Settings → Spotify app: the user's own Web API Client ID ("" = shared default).
     WebClientId(String),
+    /// Settings → GPU renderer; applies on the next start.
+    Gpu(bool),
+    /// Winamp skin: the chosen .wsz path and whether the skin is showing (remembered for the next start).
+    Skin { path: String, mode: bool },
+    /// Winamp EQ window: the sink already uses it (`eq::set`); this remembers it.
+    Eq(crate::eq::EqState),
     /// Save the session, disconnect the Connect device and end the UI event loop.
     Quit,
     ToggleLike,
@@ -166,7 +172,7 @@ async fn start_connect(
         ..Default::default()
     };
     let player = Player::new(player_config, session.clone(), mixer.get_soft_volume(), move || {
-        backend(None, AudioFormat::default())
+        Box::new(crate::eq::EqSink::new(backend(None, AudioFormat::default()))) as Box<dyn audio_backend::Sink>
     });
     let events = player.get_player_event_channel();
     let config = ConnectConfig {
@@ -825,7 +831,14 @@ pub async fn run(
         Err(e) => return set_status(&ui, format!("Cache error: {e}")),
     };
     let mut settings = Settings::load(&dir);
+    crate::eq::set(settings.eq);
     push_settings(&ui, &settings);
+    // Once only: later settings pushes (Spotify volume/shuffle events) mustn't move EQ sliders mid-drag.
+    let (gpu, eq) = (settings.gpu, settings.eq);
+    let _ = ui.upgrade_in_event_loop(move |app| {
+        app.set_gpu(gpu);
+        crate::ui::set_eq(&app, eq);
+    });
 
     set_status(&ui, "Connecting...");
     let (ended_tx, mut ended_rx) = mpsc::unbounded_channel();
@@ -1746,6 +1759,20 @@ pub async fn run(
                 }
                 Command::Theme(palette) => {
                     settings.theme = palette;
+                    save_settings(&ui, &settings);
+                }
+                Command::Gpu(on) => {
+                    settings.gpu = on;
+                    save_settings(&ui, &settings);
+                    set_status(&ui, "Renderer saved. Restart SlimSpot to switch.");
+                }
+                Command::Skin { path, mode } => {
+                    (settings.skin, settings.skin_mode) = (path, mode);
+                    save_settings(&ui, &settings);
+                }
+                Command::Eq(state) => {
+                    crate::eq::set(state);
+                    settings.eq = state;
                     save_settings(&ui, &settings);
                 }
                 Command::Quality(_) | Command::Normalize(_) => {

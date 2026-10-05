@@ -74,6 +74,52 @@ pub fn dark_title_bar(app: &crate::ui::App) {
     set(DWMWA_BORDER_COLOR, colorref(theme.get_raised()));
 }
 
+/// Moves the frameless skin window with the mouse, like a native title bar drag. Slint's
+/// WindowMoveArea goes through winit's `drag_window`, which didn't move the window here (2026-10-05):
+/// it posts the message asynchronously while Slint still holds the mouse capture.
+pub fn start_move(app: &crate::ui::App) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use slint::ComponentHandle;
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+    use windows::Win32::UI::WindowsAndMessaging::{HTCAPTION, SendMessageW, WM_NCLBUTTONDOWN};
+
+    let Ok(RawWindowHandle::Win32(h)) = app.window().window_handle().window_handle().map(|h| h.as_raw()) else { return };
+    unsafe {
+        let _ = ReleaseCapture();
+        // Runs Windows' modal move loop until the button is released.
+        SendMessageW(HWND(h.hwnd.get() as _), WM_NCLBUTTONDOWN, Some(WPARAM(HTCAPTION as usize)), Some(LPARAM(0)));
+    }
+    // The move loop eats the button release, so Slint would keep the title bar's TouchArea
+    // pressed and route every later click to it. Tell it the button is up.
+    let release = slint::platform::WindowEvent::PointerReleased {
+        position: slint::LogicalPosition::new(0.0, 0.0),
+        button: slint::platform::PointerEventButton::Left,
+    };
+    app.window().dispatch_event(release);
+    app.window().dispatch_event(slint::platform::WindowEvent::PointerExited);
+}
+
+/// Gives the maximize button back after the fixed-size skin. Slint drops it (with WS_MAXIMIZEBOX)
+/// when min size == max size, but only restores it at window creation, not when resizable again.
+pub fn enable_maximize(app: &crate::ui::App) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use slint::ComponentHandle;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_STYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
+        WS_MAXIMIZEBOX,
+    };
+
+    let Ok(RawWindowHandle::Win32(h)) = app.window().window_handle().window_handle().map(|h| h.as_raw()) else { return };
+    let hwnd = HWND(h.hwnd.get() as _);
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_MAXIMIZEBOX.0 as isize);
+        let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+    }
+}
+
 /// COLORREF is 0x00BBGGRR.
 fn colorref(c: slint::Color) -> u32 {
     u32::from(c.red()) | u32::from(c.green()) << 8 | u32::from(c.blue()) << 16
