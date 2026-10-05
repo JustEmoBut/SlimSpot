@@ -79,8 +79,6 @@ pub enum Command {
     Skin { path: String, mode: bool },
     /// Winamp EQ window: the sink already uses it (`eq::set`); this remembers it.
     Eq(crate::eq::EqState),
-    /// "Update to vX": download this release zip, swap the exe and restart.
-    InstallUpdate(String),
     /// Save the session, disconnect the Connect device and end the UI event loop.
     Quit,
     ToggleLike,
@@ -826,6 +824,9 @@ pub async fn run(
     tx: mpsc::UnboundedSender<Command>,
     mut rx: mpsc::UnboundedReceiver<Command>,
     cover_rx: mpsc::UnboundedReceiver<CoverRequest>,
+    // "Update to vX" clicks: served by the update task, not the command loop, which doesn't run
+    // while the Web API login waits for a browser consent.
+    mut update_rx: mpsc::UnboundedReceiver<()>,
 ) {
     let dir = cache_dir();
     let cache = match Cache::new(Some(dir.clone()), None, Some(dir.join("audio")), None) {
@@ -868,10 +869,26 @@ pub async fn run(
         tokio::spawn(async move {
             match crate::update::check(&session).await {
                 Ok(Some(release)) => {
-                    let _ = ui.upgrade_in_event_loop(move |app| {
-                        app.set_update_version(release.version.into());
-                        app.set_update_url(release.zip_url.into());
-                    });
+                    let version = release.version.clone();
+                    let _ = ui.upgrade_in_event_loop(move |app| app.set_update_version(version.into()));
+                    while update_rx.recv().await.is_some() {
+                        set_status(&ui, "Downloading the update...");
+                        let started = match crate::update::install(&session, &release).await {
+                            Ok(exe) => crate::update::relaunch(&exe),
+                            Err(e) => Err(e),
+                        };
+                        match started {
+                            // The new exe waits for this one to quit (--wait-pid).
+                            Ok(()) => {
+                                let _ = ui.upgrade_in_event_loop(|app| app.invoke_quit());
+                                break;
+                            }
+                            Err(e) => {
+                                log::warn!("update: {e}");
+                                set_status(&ui, e);
+                            }
+                        }
+                    }
                 }
                 Ok(None) => {}
                 Err(e) => log::warn!("{e}"),
@@ -1800,25 +1817,6 @@ pub async fn run(
                 Command::Skin { path, mode } => {
                     (settings.skin, settings.skin_mode) = (path, mode);
                     save_settings(&ui, &settings);
-                }
-                Command::InstallUpdate(url) => {
-                    set_status(&ui, "Downloading the update...");
-                    let (session, ui) = (session.clone(), ui.clone());
-                    tokio::spawn(async move {
-                        let release = crate::update::Release { version: String::new(), zip_url: url };
-                        let started = match crate::update::install(&session, &release).await {
-                            Ok(exe) => crate::update::relaunch(&exe),
-                            Err(e) => Err(e),
-                        };
-                        match started {
-                            // The new exe waits for this one to quit (--wait-pid).
-                            Ok(()) => drop(ui.upgrade_in_event_loop(|app| app.invoke_quit())),
-                            Err(e) => {
-                                log::warn!("update: {e}");
-                                set_status(&ui, e);
-                            }
-                        }
-                    });
                 }
                 Command::Eq(state) => {
                     crate::eq::set(state);

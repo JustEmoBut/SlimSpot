@@ -165,7 +165,10 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_add_search(send_str(Command::AddSearch));
     app.on_save_radio(send(|| Command::SaveRadio));
     app.on_set_web_client_id(send_str(Command::WebClientId));
-    app.on_install_update(send_str(Command::InstallUpdate));
+    let (update_tx, update_rx) = mpsc::unbounded_channel();
+    app.on_install_update(move || {
+        let _ = update_tx.send(());
+    });
     {
         let (weak, tx) = (app.as_weak(), tx.clone());
         app.on_set_theme(move |palette| {
@@ -464,7 +467,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let weak = app.as_weak();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        rt.block_on(player::run(weak, backend_tx, rx, cover_rx));
+        rt.block_on(player::run(weak, backend_tx, rx, cover_rx, update_rx));
     });
 
     // Shown even when starting in the tray: the media keys need the native window, which

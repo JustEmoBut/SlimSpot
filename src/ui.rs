@@ -681,8 +681,7 @@ slint::slint! {
         callback set-gpu(bool);
         // Set when GitHub has a newer release.
         in property <string> update-version;
-        in property <string> update-url;
-        callback install-update(string);
+        callback install-update();
         // Winamp skin mode: the window becomes the skin's main (+ EQ + playlist) windows, stacked.
         in-out property <bool> skin-mode;
         in property <WaSkin> skin;
@@ -1573,7 +1572,7 @@ slint::slint! {
                                 label: "Update to v" + root.update-version;
                                 chosen: true;
                                 pad: 14px;
-                                clicked => { root.install-update(root.update-url); }
+                                clicked => { root.install-update(); }
                             }
                             settings-button := IconButton {
                                 y: (parent.height - self.height) / 2;
