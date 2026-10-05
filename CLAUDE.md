@@ -6,7 +6,8 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 ## Goal & how it's judged
 - RAM is the deciding metric. Measure **Private bytes** of the installed build (`fast` profile; same RAM as the LTO release, measured 2026-10-04) while a track plays, sampled 3× over 10 s
   (`Get-Process slimspot`), after opening a playlist and scrolling. Working Set includes shared DLLs and is secondary.
-- Reference points: ~15–20 MB private while playing with covers. Spotifast (egui) claims 100–250 MB; a Tauri app measured 194 MB.
+- Budget: **50 MB private** while playing (owner's limit, set 2026-10-05); small per-feature growth is acceptable within it.
+- Reference points (2026-10-05, after the feature batch): ~15.7 MB private at startup idle, 22.7 MB while playing after opening and scrolling a 790-song playlist. Startup was 11.5 MB at the start of that day; search tabs/podcasts/popups added ~3.5 MB (podcast loading ~0.6 MB of it, the rest not isolated). Spotifast (egui) claims 100–250 MB; a Tauri app measured 194 MB.
 - Any new feature reports its RAM delta. No GPU renderer, no webview, no browser engine.
 
 ## Commands
@@ -72,6 +73,7 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - **Credits** ("View credits" on tracks): spclient `GET /track-credits-view/v0/experimental/<id>/credits` (JSON, verified 2026-10-05), shown as "Role: names" lines in a popup.
 - **Now-playing panel**: lyrics preview (sung line + next two, from the loaded lyrics) and the first 400 characters of the artist's biography, fetched once per artist change.
 - **Page shuffle** button next to the page play button mirrors the player's shuffle state.
+- **Home tiles** copy their cover from the sidebar row of the same entry when it is loaded (`on_need_cover` in `main.rs`); fetching and decoding them again cost ~2.9 MB private at startup.
 - **Home tiles**: up to 8 library entries (most recently opened first) in two rows above Recently played; the first can be "New release · <artist>": the newest album/single of the 10 most recently opened followed artists, if released within 60 days (`days_from_date`), looked up once per run.
 - **Removing from the library asks first** (confirm popup); for an own playlist it is Spotify's delete.
 - **Playlist editing**: "Add to playlist" offers only the user's own playlists (`web::Item.artist_uri` holds a playlist's owner URI, compared with `spotify:user:<username>`). "Remove from this playlist" shows only on such a page (`Page.editable`) and removes every occurrence of the track.
