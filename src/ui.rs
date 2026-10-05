@@ -66,6 +66,9 @@ slint::slint! {
         out property <string> trash: "M5 7 H19 M10 7 V5 H14 V7 M7 7 L8 20 H16 L17 7";
         out property <string> open: "M14 5 H19 V10 M19 5 L11 13 M17 14 V19 H5 V7 H10";
         out property <string> plus: "M12 5 V19 M5 12 H19";
+        // Show / hide a secret field (eye, and eye with a slash).
+        out property <string> eye: "M2 12 C5 6 19 6 22 12 C19 18 5 18 2 12 Z M12 9 A3 3 0 1 0 12 15 A3 3 0 1 0 12 9 Z";
+        out property <string> eye-off: "M2 12 C5 6 19 6 22 12 C19 18 5 18 2 12 Z M12 9 A3 3 0 1 0 12 15 A3 3 0 1 0 12 9 Z M4 4 L20 20";
         out property <string> pencil: "M5 19 L6 14.5 L15.5 5 L19 8.5 L9.5 18 Z M13.5 7 L17 10.5";
         out property <string> panel: "M3.5 5 H20.5 V19 H3.5 Z M14.5 5 V19";
         out property <string> mini: "M3.5 5 H20.5 V19 H3.5 Z M11 12 H18 V17 H11 Z";
@@ -622,6 +625,7 @@ slint::slint! {
         callback set-theme(int);
         // Settings → Spotify app Client ID (settings.json `web_client_id`).
         in-out property <string> web-client-id;
+        in-out property <bool> show-client-id;
         callback set-web-client-id(string);
         // Search page tab (0 = All, Songs, Albums, Artists, Playlists); -1 on other pages.
         in property <int> search-tab: -1;
@@ -1494,11 +1498,14 @@ slint::slint! {
                                     single-line: true;
                                     font-size: 12px;
                                     color: Theme.text;
+                                    // Hidden like a password field; the eye button shows it.
+                                    input-type: root.show-client-id ? InputType.text : InputType.password;
                                     text <=> root.web-client-id;
                                     accepted => { root.set-web-client-id(self.text); }
                                 }
                                 if client-id-input.text == "" : Text { x: 8px; height: parent.height; vertical-alignment: center; text: "Client ID"; font-size: 12px; color: Theme.muted; }
                             }
+                            IconButton { y: (parent.height - self.height) / 2; shape: root.show-client-id ? Icons.eye-off : Icons.eye; dot: false; size: 18px; clicked => { root.show-client-id = !root.show-client-id; } }
                             Chip { label: "Save"; pad: 14px; clicked => { root.set-web-client-id(root.web-client-id); } }
                         }
                         SectionTitle { text: "STARTUP"; shape: Icons.home; }
