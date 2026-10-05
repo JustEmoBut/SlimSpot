@@ -283,6 +283,13 @@ impl WebApi {
         Ok(plain_text(json["description"].as_str().unwrap_or_default()))
     }
 
+    /// The playlist's current (smallest) cover URL; changes once Spotify has processed an upload.
+    pub async fn playlist_cover(&mut self, session: &Session, playlist: &str) -> Result<String, String> {
+        let id = playlist.strip_prefix("spotify:playlist:").ok_or("Not a playlist")?;
+        let json = self.get_json(session, &format!("{API}/playlists/{id}?fields=images")).await?;
+        Ok(smallest_image(&json["images"]).to_string())
+    }
+
     /// Replaces the playlist's cover with a JPEG (Spotify's limit: 256 KB after base64).
     pub async fn upload_cover(&mut self, session: &Session, playlist: &str, jpeg: &[u8]) -> Result<(), String> {
         let id = playlist.strip_prefix("spotify:playlist:").ok_or("Not a playlist")?;
@@ -333,14 +340,15 @@ impl WebApi {
         Ok(items.iter().filter_map(|i| show_row(&i["show"])).collect())
     }
 
-    /// The show's name, publisher and newest episodes (first page only).
-    pub async fn show_episodes(&mut self, session: &Session, show_uri: &str) -> Result<(String, String, Vec<Item>), String> {
+    /// The show's name and newest episodes (first page only). The publisher comes from librespot
+    /// (`player::show_publisher`): this app's `/shows/{id}` has no `publisher` field (seen 2026-10-05).
+    pub async fn show_episodes(&mut self, session: &Session, show_uri: &str) -> Result<(String, Vec<Item>), String> {
         let id = show_uri.strip_prefix("spotify:show:").ok_or("Not a show URI")?;
         let show = self.get_json(session, &format!("{API}/shows/{id}")).await?;
         // ponytail: newest PAGE_LIMIT episodes only; follow `next` if older episodes are wanted.
         let page = self.get_json(session, &format!("{API}/shows/{id}/episodes?limit={PAGE_LIMIT}")).await?;
         let rows = page["items"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(episode_row).collect();
-        Ok((show["name"].as_str().unwrap_or_default().into(), show["publisher"].as_str().unwrap_or_default().into(), rows))
+        Ok((show["name"].as_str().unwrap_or_default().into(), rows))
     }
 
     /// Followed artists; this endpoint pages by cursor under `artists`, not by `items`/`next` at the top.
@@ -533,7 +541,11 @@ fn plain_text(html: &str) -> String {
 fn show_row(s: &serde_json::Value) -> Option<Item> {
     Some(Item {
         title: s["name"].as_str().unwrap_or("?").into(),
-        artist: format!("Podcast · {}", s["publisher"].as_str().unwrap_or_default()),
+        // `publisher` is missing for this app (seen 2026-10-05); show it when Spotify sends it.
+        artist: match s["publisher"].as_str() {
+            Some(p) if !p.is_empty() => format!("Podcast · {p}"),
+            _ => "Podcast".into(),
+        },
         uri: s["uri"].as_str().filter(|u| u.starts_with("spotify:show:"))?.into(),
         cover_url: smallest_image(&s["images"]).into(),
         ..Default::default()

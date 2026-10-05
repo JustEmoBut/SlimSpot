@@ -14,7 +14,7 @@ use librespot::{
         SpotifyUri, authentication::Credentials, cache::Cache, config::DeviceType, config::SessionConfig,
         session::Session,
     },
-    metadata::{Artist, Metadata, Track, audio::{AudioItem, UniqueFields}},
+    metadata::{Artist, Metadata, Show, Track, audio::{AudioItem, UniqueFields}},
     playback::{
         audio_backend,
         config::{AudioFormat, PlayerConfig},
@@ -38,6 +38,9 @@ const OAUTH_SCOPES: &[&str] = &["streaming"];
 const DEVICE_NAME: &str = "SlimSpot";
 // Last row of a full search page; clicking it appends the next page of tracks.
 const MORE_URI: &str = "slimspot:more";
+// Spotify took a few seconds to serve an uploaded cover (2026-10-05); poll for up to ~30 s.
+const COVER_POLL_INTERVAL: Duration = Duration::from_secs(3);
+const COVER_POLL_TRIES: u32 = 10;
 // A track asked for this recently is retried after a reconnect: Spotify sometimes closes the
 // session just as a track loads (audio key timeout, then "end of stream"; seen in the log 2026-10-04).
 const RETRY_LOAD_WINDOW: Duration = Duration::from_secs(30);
@@ -96,6 +99,8 @@ pub enum Command {
     EditPlaylist { name: String, description: String },
     /// Own playlist's new cover, from an image file the user picked.
     PlaylistCover(PathBuf),
+    /// Polls an uploaded cover until Spotify serves a new URL (`old`), `tries` more times.
+    RefreshCover { list: String, old: String, tries: u32 },
     /// The track list scrolled close to the last row with a liked mark: check the next batch.
     CheckLikedMore,
 }
@@ -307,6 +312,18 @@ fn kind_of(uri: &str) -> &'static str {
 /// Rows that open a page instead of playing.
 fn is_page(uri: &str) -> bool {
     uri == LIKED_SONGS || ["spotify:playlist:", "spotify:album:", "spotify:artist:", "spotify:show:"].iter().any(|p| uri.starts_with(p))
+}
+
+/// A podcast's publisher from librespot metadata; "" if the lookup fails (the header just omits it).
+async fn show_publisher(session: &Session, show_uri: &str) -> String {
+    let Ok(id) = SpotifyUri::from_uri(show_uri) else { return String::new() };
+    match Show::get(session, &id).await {
+        Ok(show) => show.publisher,
+        Err(e) => {
+            log::warn!("show lookup for {show_uri} failed: {e}");
+            String::new()
+        }
+    }
 }
 
 /// Rows that play when clicked: tracks and podcast episodes.
@@ -771,7 +788,10 @@ pub async fn run(
                     let result = if uri.starts_with("spotify:album:") {
                         w.album_tracks(&session, &uri).await
                     } else if uri.starts_with("spotify:show:") {
-                        w.show_episodes(&session, &uri).await
+                        match w.show_episodes(&session, &uri).await {
+                            Ok((name, rows)) => Ok((name, show_publisher(&session, &uri).await, rows)),
+                            Err(e) => Err(e),
+                        }
                     } else if uri.starts_with("spotify:artist:") {
                         match artist_top_tracks(&session, &uri).await {
                             Ok((name, mut top)) => w.artist_albums(&session, &uri).await.map(|albums| {
@@ -1285,11 +1305,42 @@ pub async fn run(
                     match jpeg {
                         Ok(jpeg) => match w.upload_cover(&session, &list, &jpeg).await {
                             // Spotify processes the image asynchronously; the new URL shows up a bit later.
-                            Ok(()) => set_status(&ui, "Cover uploaded; Spotify shows it after a moment"),
+                            Ok(()) => {
+                                set_status(&ui, "Cover uploaded; waiting for Spotify to process it...");
+                                let old = library.iter().find(|i| i.uri == list).map(|i| i.cover_url.clone()).unwrap_or_default();
+                                let _ = tx.send(Command::RefreshCover { list, old, tries: COVER_POLL_TRIES });
+                            }
                             Err(e) => set_status(&ui, e),
                         },
                         Err(e) => set_status(&ui, e),
                     }
+                }
+                Command::RefreshCover { list, old, tries } => {
+                    let Some(w) = web.as_mut() else { continue };
+                    let url = w.playlist_cover(&session, &list).await.unwrap_or_default();
+                    if url.is_empty() || url == old {
+                        if tries > 0 {
+                            // A timer task, so the command loop keeps running while Spotify works.
+                            let tx = tx.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(COVER_POLL_INTERVAL).await;
+                                let _ = tx.send(Command::RefreshCover { list, old, tries: tries - 1 });
+                            });
+                        }
+                        continue;
+                    }
+                    for item in library.iter_mut().chain(own_lists.iter_mut()).filter(|i| i.uri == list) {
+                        item.cover_url = url.clone();
+                    }
+                    refresh_library(&ui, &library, &own_lists);
+                    if let Some(page) = nav.current_mut().filter(|p| p.list == list) {
+                        page.cover_url = url.clone();
+                        let _ = ui.upgrade_in_event_loop(move |app| {
+                            app.set_page_cover(Default::default());
+                            app.set_page_cover_url(url.into());
+                        });
+                    }
+                    set_status(&ui, "Cover updated");
                 }
                 Command::CheckLikedMore => {
                     if let Some(w) = web.as_mut() {

@@ -186,10 +186,15 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let (weak, tx) = (app.as_weak(), tx.clone());
         app.on_change_cover(move || {
-            let Some(app) = weak.upgrade() else { return };
-            if let Some(path) = dialog::pick_image(&app) {
-                let _ = tx.send(Command::PlaylistCover(path));
-            }
+            let (weak, tx) = (weak.clone(), tx.clone());
+            // Called from the popup's click handler, which closes the popup right after: the
+            // modal dialog opens on the next turn of the event loop, once the popup is gone.
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                let Some(app) = weak.upgrade() else { return };
+                if let Some(path) = dialog::pick_image(&app) {
+                    let _ = tx.send(Command::PlaylistCover(path));
+                }
+            });
         });
     }
     {

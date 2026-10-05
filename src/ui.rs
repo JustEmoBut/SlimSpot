@@ -1183,7 +1183,7 @@ slint::slint! {
                         HorizontalLayout {
                             spacing: 8px;
                             // The cover needs an existing playlist; it can be set after creating.
-                            if !root.creating : Chip { label: "Change cover..."; clicked => { rename-popup.close(); root.change-cover(); } }
+                            if !root.creating : Chip { label: "Change cover..."; clicked => { root.change-cover(); rename-popup.close(); } }
                             Rectangle { horizontal-stretch: 1; }
                             Chip { label: root.creating ? "Create" : "Save"; chosen: true; clicked => { root.save-details(); rename-popup.close(); } }
                         }
