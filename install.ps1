@@ -47,7 +47,11 @@ try {
 $FirstInstall = -not (Test-Path -LiteralPath $Exe)
 Stop-SlimSpot
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Copy-Item -LiteralPath $Built -Destination $Exe -Force
+# Windows can keep the exe locked for a moment after the process has exited.
+for ($try = 1; ; $try++) {
+    try { Copy-Item -LiteralPath $Built -Destination $Exe -Force -ErrorAction Stop; break }
+    catch { if ($try -ge 10) { throw }; Start-Sleep -Milliseconds 500 }
+}
 Write-Host "Installed to $Exe"
 
 $Shell = New-Object -ComObject WScript.Shell
