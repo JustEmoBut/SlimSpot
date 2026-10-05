@@ -15,8 +15,10 @@ Spotify ToS concerns are accepted by the owner. Prepared for a public release (2
 - Day-to-day build: `cargo build --profile fast` → `target/fast/slimspot.exe` (~25–40 s after a change: no LTO, 16 codegen units, incremental)
 - Release build: `cargo build --release` → `target/release/slimspot.exe` (full LTO, ~4 min after any change since it re-optimises the whole program on one thread; 0.5 MB smaller exe, no RAM difference)
 - Install/update for daily use: `.\install.ps1` (`fast` build, copy to `%LOCALAPPDATA%\Programs\SlimSpot\SlimSpot.exe`, Start menu shortcut, autostart on first install). `-Release` (LTO build), `-NoAutostart`, `-Uninstall`. It stops a running SlimSpot first.
+- Release: bump `version` in `Cargo.toml` (the update check compares against it), build with `-Release`, zip `SlimSpot.exe`, `LICENSE`, `OFL.txt`, `README.md` as `SlimSpot-X.Y.Z-windows-x64.zip`, publish it on a `vX.Y.Z` GitHub release. Running copies offer it via "Update to vX" (only once the repo is public: anonymous API calls to a private repo get 404).
+- Built-in skin: `cargo run --example default_skin` regenerates `assets/skin/*.png` after changing `examples/default_skin.rs`.
 - Runtime files: `%APPDATA%\SlimSpot\` — `credentials.json` (librespot), `web_refresh_token`, `settings.json`, `slimspot.log` (warn/error only), `audio/` cache
-- Web API client id, first that is set: env `SLIMSPOT_WEB_CLIENT_ID`, Settings → Spotify app (`settings.json` `web_client_id`, validated as 32 hex), the client id the saved token belongs to, else the public app shared by ncspot/spotify-player/Spotifast (Spotifast's model: optional personal id over a shared default). Redirect `http://127.0.0.1:8989/login`. A new id takes effect on restart (one browser consent); clearing it also deletes `web_refresh_token`.
+- Web API client id, first that is set: env `SLIMSPOT_WEB_CLIENT_ID`, Settings → Spotify app (`settings.json` `web_client_id`, validated as 32 hex), the client id the saved token belongs to, else the public app shared by ncspot/spotify-player/Spotifast (Spotifast's model: optional personal id over a shared default). Redirect `http://127.0.0.1:8989/login`. A new id takes effect on restart (one browser consent); clearing it also deletes `web_refresh_token`. If refreshing the saved token answers `invalid_client` (the personal app was deleted), the shared app is used, the id is cleared from Settings and the status line says so; an env var naming it must be removed by hand, since a dead id can't be detected before the browser consent (see constraints).
 
 ## Architecture (`src/`)
 | Module | Responsibility |
@@ -36,6 +38,7 @@ Spotify ToS concerns are accepted by the owner. Prepared for a public release (2
 | `dialog.rs` | Native Open dialog (IFileOpenDialog) for picking a playlist cover or a .wsz skin (windows-only) |
 | `skin.rs` | Winamp classic skins: own zip reader, BMP sheets to `WaSkin`, pledit.txt colors, text.bmp glyph cells; built-in skin embedded from `assets/skin/` |
 | `eq.rs` | 10-band EQ, preamp and balance: `EqSink` wraps librespot's sink, settings via a static (`eq::set`) |
+| `update.rs` | GitHub Releases update: check at startup, download, swap the exe (`.old`), relaunch with `--wait-pid` |
 | `examples/default_skin.rs` | Draws the built-in skin into `assets/skin/*.png` (`cargo run --example default_skin`) |
 | `taskbar.rs` | Taskbar thumbnail buttons (prev/play-pause/next) and progress via ITaskbarList3 (windows-only) |
 | `autostart.rs` | "Start with Windows": HKCU `Run` value `"<exe>" --tray` (windows-only) |
@@ -113,12 +116,15 @@ Spotify ToS concerns are accepted by the owner. Prepared for a public release (2
 - **Album header** shows "Album · year · label" (`Page.info`).
 - **Playing row**: clicking or hovering the current track pauses/resumes (shows pause while audible) instead of restarting it.
 - **Taskbar**: thumbnail toolbar icons are drawn in code (16 px, supersampled), the window is subclassed for `THBN_CLICKED` and re-adds buttons on `TaskbarButtonCreated` (the button is recreated after hiding to the tray). Progress turns yellow (paused) when not playing. Tray tooltip shows "Title - Artist".
+- **Updates** (`update.rs`): one check of `/repos/JustEmoBut/SlimSpot/releases/latest` per start, spawned right after the Connect session and before the Web API login (that login can wait for a browser consent forever). A newer `vX.Y.Z` tag with a `-windows-x64.zip` asset shows an "Update to vX" chip in the header; installing renames the running exe to `SlimSpot.exe.old` (allowed while it runs; overwriting isn't), writes the new one, starts it with `--wait-pid <pid>` and quits. The new process waits (10 s max) for the old one before the single-instance guard, then deletes the `.old`. Failures (offline, private repo = 404) only go to the log. HTTP via librespot's client (redirects followed by hand), zip via `skin::unzip`: no new crates.
 - **Toast on track change** was skipped: it needs an AppUserModelID on the Start shortcut (`install.ps1`).
 
 ## Known external constraints (verified against the live API, 2026-10-03)
 - Development Mode Web API: `search` and `/artists/{id}/albums` reject `limit > 10`; playlists/saved tracks accept 50. Search `offset` works up to 990.
 - `/me/player/queue` works (empty: `{"currently_playing":null,"queue":[]}`). `POST /me/player/queue?uri=` answers 404 with no active device and 200 with a non-JSON body on success, so non-GET 2xx bodies that don't parse count as success.
 - `POST /me/playlists` creates, `PUT /playlists/{id}` renames, `DELETE /playlists/{id}/followers` removes from the library (all verified live 2026-10-04).
+- A deleted app's Client ID can't be told from a live one without a real grant: `/authorize` answers 303 to the login page and `/api/token` with a fake refresh token answers `invalid_grant` for live, deleted and made-up ids alike; only refreshing a real token gives `invalid_client` (checked 2026-10-05).
+- A Development Mode app over its quota gets 429 with a Retry-After of hours (65470 s seen 2026-10-05), on its own Client ID, not just the shared one.
 - `/me/library/contains` rejects more than 40 URIs (400 "Too many uris requested"). Recently played needs `user-read-recently-played`.
 - Playlist edits need `playlist-modify-private`/`-public`; `POST /playlists/{id}/items` `{"uris":[..]}` adds, `DELETE` with `{"items":[{"uri":..}]}` removes (both verified live).
 - `/artists/{id}/top-tracks` returns 403 → top tracks come from librespot metadata (`Artist::get` + `Track::get`).

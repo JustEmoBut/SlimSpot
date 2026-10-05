@@ -29,6 +29,10 @@ paths:
 - The winit backend passes `Window.icon` to Windows only when the image's cache key changes; a `slint::Image::from_rgba8` image has no key, so a window icon set from Rust never shows. Embed it with `@image-url(...)` in the markup.
 - Fonts embed with `import "../assets/fonts/X.ttf";` inside `slint!` (path relative to the source file) plus `default-font-family` on the Window.
 - Computer-use/SendKeys Escape presses never reach the app (no key event at all), while a real keyboard's Esc works: test Esc by hand, don't "fix" it from automated runs.
+- Compiling in `renderer-femtovg` makes FemtoVG the winit backend's default renderer; select `"software"` by name with `slint::BackendSelector` before the first window.
+- `WindowMoveArea` doesn't move a `no-frame` window on Windows here (winit posts `WM_NCLBUTTONDOWN` asynchronously). Send it synchronously after `ReleaseCapture`, then dispatch a `PointerReleased` to Slint: the modal move loop eats the button-up and Slint would route every later click to the pressed TouchArea.
+- When min size == max size Slint makes the window non-resizable and removes `WS_MAXIMIZEBOX`, but only restores the button at window creation; set the style bit back yourself after relaxing the constraints.
+- Sizing a window in the same turn as setting `no-frame` leaves the old caption and borders as a margin; size it again on the next event-loop turn.
 - To check the UI visually, capture the window with Win32 `PrintWindow(hwnd, dc, PW_RENDERFULLCONTENT)` from Windows PowerShell 5.1 (`System.Drawing`); screen capture grabs whatever window is in front. The app window is class `Window Class`, title `SlimSpot` (the tray has its own hidden window).
 
 ## librespot
