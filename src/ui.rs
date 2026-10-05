@@ -273,7 +273,7 @@ slint::slint! {
                     if data.uri.starts-with("slimspot:") : Icon { width: parent.width * 0.6; height: self.width; shape: Icons.search; tint: Theme.subdued; }
                     if data.uri == "liked" : Icon { width: parent.width * 0.5; height: self.width; shape: Icons.heart; filled: true; tint: Theme.text; }
                     // Tracks: a play arrow on hover, equalizer bars while playing (like Spotify's row number).
-                    if data.uri.starts-with("spotify:track:") && (root.has-hover || root.playing) : Rectangle {
+                    if (data.uri.starts-with("spotify:track:") || data.uri.starts-with("spotify:episode:")) && (root.has-hover || root.playing) : Rectangle {
                         background: #00000099;
                         Icon {
                             width: parent.width * 0.5;
@@ -474,9 +474,11 @@ slint::slint! {
     component Chip inherits TouchArea {
         in property <string> label;
         in property <bool> chosen;
+        // Total horizontal padding; the sidebar's filter row uses less so four chips fit.
+        in property <length> pad: 20px;
         height: 30px;
         mouse-cursor: pointer;
-        min-width: t.preferred-width + 20px;
+        min-width: t.preferred-width + root.pad;
         Rectangle {
             border-radius: 15px;
             background: root.chosen ? Theme.accent : root.has-hover ? Theme.hover : Theme.raised;
@@ -558,9 +560,16 @@ slint::slint! {
             row-menu.show();
         }
         function menu-act(action: string) {
-            root.row-action(action, root.menu-row.uri);
             row-menu.close();
+            // Removing from the library asks first (a playlist of your own is deleted).
+            if (action == "unfollow") {
+                root.confirm-row = root.menu-row;
+                confirm-popup.show();
+                return;
+            }
+            root.row-action(action, root.menu-row.uri);
         }
+        in-out property <Row> confirm-row;
         callback play-page();
         callback filter-library(int, string, bool);
         // Find in page: 0 = page order, 1 = title, 2 = artist, 3 = duration. Rust resets both on a new page.
@@ -568,6 +577,9 @@ slint::slint! {
         in-out property <int> page-sort;
         callback filter-page(string, int);
         callback move-row(int, int);
+        // Search page tab (0 = All, Songs, Albums, Artists, Playlists); -1 on other pages.
+        in property <int> search-tab: -1;
+        callback choose-search-tab(int);
         in property <bool> numbered;
         // Compact window with only the player bar.
         in-out property <bool> mini;
@@ -583,9 +595,17 @@ slint::slint! {
         // Sleep timer choice: 0 off, -1 end of track, otherwise minutes.
         in-out property <int> sleep-minutes;
         callback set-sleep(int);
-        callback create-playlist();
-        callback rename-playlist(string);
+        callback create-playlist(string, string);
+        // The details popup creates a new playlist instead of editing the open one.
+        in-out property <bool> creating;
+        // Own playlist's edit popup: name, description (prefilled from page-info) and cover.
+        callback edit-playlist(string, string);
+        callback change-cover();
+        function save-details() {
+            if (root.creating) { root.create-playlist(root.rename-text, root.desc-text); } else { root.edit-playlist(root.rename-text, root.desc-text); }
+        }
         in-out property <string> rename-text;
+        in-out property <string> desc-text;
         in-out property <bool> library-az;
         in property <bool> page-playable;
         in-out property <int> library-kind;
@@ -719,27 +739,33 @@ slint::slint! {
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
                             }
-                            IconButton { y: (parent.height - self.height) / 2; shape: Icons.plus; dot: false; size: 18px; clicked => { root.create-playlist(); } }
+                            IconButton { y: (parent.height - self.height) / 2; shape: Icons.plus; dot: false; size: 18px; clicked => {
+                                // Like editing, but nothing exists until Save (Spotify creates at once).
+                                root.creating = true;
+                                root.rename-text = "My Playlist #" + (root.targets.length + 1);
+                                root.desc-text = "";
+                                rename-popup.show();
+                            } }
                         }
                         HorizontalLayout {
                             spacing: 4px;
                             alignment: start;
                             // Like Spotify: no "All" chip; clicking the chosen filter again clears it.
-                            for label[i] in ["Playlists", "Albums", "Artists"] : Chip {
+                            for label[i] in ["Playlists", "Albums", "Artists", "Podcasts"] : Chip {
                                 label: label;
+                                pad: 14px;
                                 chosen: root.library-kind == i + 1;
                                 clicked => {
                                     root.library-kind = root.library-kind == i + 1 ? 0 : i + 1;
                                     root.filter-library(root.library-kind, lib-filter.text, root.library-az);
                                 }
                             }
-                            Chip {
-                                label: "A-Z";
-                                chosen: root.library-az;
-                                clicked => { root.library-az = !root.library-az; root.filter-library(root.library-kind, lib-filter.text, root.library-az); }
-                            }
                         }
+                        // The sort chip sits next to the search field, like Spotify's sort control.
+                        HorizontalLayout {
+                            spacing: 4px;
                         Rectangle {
+                            horizontal-stretch: 1;
                             height: 32px;
                             border-radius: 6px;
                             background: lib-filter.has-focus ? Theme.hover : Theme.field;
@@ -761,6 +787,14 @@ slint::slint! {
                                 text: "Search in Your Library";
                                 font-size: 13px;
                                 color: Theme.muted;
+                            }
+                        }
+                            Chip {
+                                y: 1px;
+                                label: "A-Z";
+                                pad: 14px;
+                                chosen: root.library-az;
+                                clicked => { root.library-az = !root.library-az; root.filter-library(root.library-kind, lib-filter.text, root.library-az); }
                             }
                         }
                         ListView {
@@ -882,7 +916,7 @@ slint::slint! {
                                     follow-text := Text { text: root.page-saved ? "Following" : "Follow"; font-size: 13px; font-weight: 600; color: Theme.text; }
                                 }
                             }
-                            if root.page-kind == "Album" : TouchArea {
+                            if root.page-kind == "Album" || root.page-kind == "Podcast" : TouchArea {
                                 width: 32px;
                                 height: 32px;
                                 y: (parent.height - self.height) / 2;
@@ -909,9 +943,18 @@ slint::slint! {
                                         shape: Icons.pencil;
                                         dot: false;
                                         size: 18px;
-                                        clicked => { root.rename-text = root.page-title; rename-popup.show(); }
+                                        clicked => { root.creating = false; root.rename-text = root.page-title; root.desc-text = root.page-info; rename-popup.show(); }
                                     }
                                 }
+                            }
+                        }
+                        if root.search-tab >= 0 && !root.show-lyrics : HorizontalLayout {
+                            spacing: 4px;
+                            alignment: start;
+                            for label[i] in ["All", "Songs", "Albums", "Artists", "Playlists"] : Chip {
+                                label: label;
+                                chosen: root.search-tab == i;
+                                clicked => { if (root.search-tab != i) { root.choose-search-tab(i); } }
                             }
                         }
                         HorizontalLayout {
@@ -964,10 +1007,10 @@ slint::slint! {
                             changed visible-height => { root.list-height = self.visible-height; }
                             for row[i] in tracks: RowItem {
                                 data: row;
-                                number: root.numbered && row.uri.starts-with("spotify:track:") ? i + 1 : 0;
+                                number: root.numbered && (row.uri.starts-with("spotify:track:") || row.uri.starts-with("spotify:episode:")) ? i + 1 : 0;
                                 playing: row.uri == root.current-track;
                                 audible: self.playing && root.playing;
-                                // "Show more tracks" and similar app rows have no menu.
+                                // "Show more" and similar app rows have no menu.
                                 menu: !row.uri.starts-with("slimspot:");
                                 draggable: root.editable && root.page-sort == 0 && root.page-filter-text == "";
                                 index: i;
@@ -1040,8 +1083,8 @@ slint::slint! {
                         if !root.menu-playlists : Rectangle { height: 1px; background: Theme.border; }
                         if !root.menu-playlists : MenuEntry { label: "Copy link"; shape: Icons.link; clicked => { root.menu-act("copy"); } }
                         if !root.menu-playlists && is-track && root.editable && !root.menu-sidebar : MenuEntry { label: "Remove from this playlist"; shape: Icons.trash; danger: true; clicked => { root.menu-act("remove"); } }
-                        if !root.menu-playlists && !root.menu-sidebar && (root.menu-row.uri.starts-with("spotify:album:") || root.menu-row.uri.starts-with("spotify:artist:")) : MenuEntry { label: root.menu-row.uri.starts-with("spotify:artist:") ? "Follow" : "Save to Your Library"; shape: Icons.plus; clicked => { root.menu-act("save"); } }
-                        if !root.menu-playlists && root.menu-sidebar && (root.menu-row.uri.starts-with("spotify:playlist:") || root.menu-row.uri.starts-with("spotify:album:") || root.menu-row.uri.starts-with("spotify:artist:")) : MenuEntry { label: "Remove from Your Library"; shape: Icons.trash; danger: true; clicked => { root.menu-act("unfollow"); } }
+                        if !root.menu-playlists && !root.menu-sidebar && (root.menu-row.uri.starts-with("spotify:album:") || root.menu-row.uri.starts-with("spotify:artist:") || root.menu-row.uri.starts-with("spotify:show:")) : MenuEntry { label: root.menu-row.uri.starts-with("spotify:artist:") ? "Follow" : "Save to Your Library"; shape: Icons.plus; clicked => { root.menu-act("save"); } }
+                        if !root.menu-playlists && root.menu-sidebar && (root.menu-row.uri.starts-with("spotify:playlist:") || root.menu-row.uri.starts-with("spotify:album:") || root.menu-row.uri.starts-with("spotify:artist:") || root.menu-row.uri.starts-with("spotify:show:")) : MenuEntry { label: "Remove from Your Library"; shape: Icons.trash; danger: true; clicked => { root.menu-act("unfollow"); } }
                         if root.menu-playlists : MenuEntry { label: "Back"; shape: Icons.back; clicked => { root.menu-playlists = false; } }
                         if root.menu-playlists : Rectangle { height: 1px; background: Theme.border; }
                         if root.menu-playlists : VerticalLayout {
@@ -1051,11 +1094,43 @@ slint::slint! {
                     }
                 }
             }
+            confirm-popup := PopupWindow {
+                x: (root.width - 360px) / 2;
+                y: 160px;
+                width: 360px;
+                close-policy: close-on-click-outside;
+                Rectangle {
+                    background: Theme.raised;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    drop-shadow-blur: 16px;
+                    drop-shadow-color: #00000099;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 12px;
+                        Text { text: "Remove from Your Library?"; font-size: 15px; font-weight: 700; color: Theme.text; }
+                        Text {
+                            text: root.confirm-row.uri.starts-with("spotify:playlist:")
+                                ? "\"" + root.confirm-row.title + "\" will be removed. If it's your own playlist, it is deleted."
+                                : "\"" + root.confirm-row.title + "\" will be removed from Your Library.";
+                            wrap: word-wrap;
+                            font-size: 13px;
+                            color: Theme.subdued;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle { horizontal-stretch: 1; }
+                            Chip { label: "Cancel"; clicked => { confirm-popup.close(); } }
+                            Chip { label: "Remove"; chosen: true; clicked => { root.row-action("unfollow", root.confirm-row.uri); confirm-popup.close(); } }
+                        }
+                    }
+                }
+            }
             rename-popup := PopupWindow {
                 x: 320px;
                 y: 120px;
-                width: 360px;
-                height: 120px;
+                width: 380px;
                 close-policy: close-on-click-outside;
                 Rectangle {
                     background: Theme.raised;
@@ -1065,7 +1140,7 @@ slint::slint! {
                     VerticalLayout {
                         padding: 16px;
                         spacing: 12px;
-                        Text { text: "Rename playlist"; font-size: 15px; font-weight: 700; color: Theme.text; }
+                        Text { text: root.creating ? "Create playlist" : "Edit details"; font-size: 15px; font-weight: 700; color: Theme.text; }
                         Rectangle {
                             height: 36px;
                             border-radius: 4px;
@@ -1079,8 +1154,38 @@ slint::slint! {
                                 single-line: true;
                                 font-size: 14px;
                                 color: Theme.text;
-                                accepted => { root.rename-playlist(self.text); rename-popup.close(); }
+                                accepted => { root.save-details(); rename-popup.close(); }
                             }
+                        }
+                        Rectangle {
+                            height: 72px;
+                            border-radius: 4px;
+                            background: Theme.field;
+                            desc-input := TextInput {
+                                text <=> root.desc-text;
+                                x: 10px;
+                                y: 8px;
+                                width: parent.width - 20px;
+                                height: parent.height - 16px;
+                                wrap: word-wrap;
+                                single-line: false;
+                                font-size: 13px;
+                                color: Theme.text;
+                            }
+                            if desc-input.text == "" : Text {
+                                x: 10px;
+                                y: 8px;
+                                text: "Add an optional description";
+                                font-size: 13px;
+                                color: Theme.subdued;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            // The cover needs an existing playlist; it can be set after creating.
+                            if !root.creating : Chip { label: "Change cover..."; clicked => { rename-popup.close(); root.change-cover(); } }
+                            Rectangle { horizontal-stretch: 1; }
+                            Chip { label: root.creating ? "Create" : "Save"; chosen: true; clicked => { root.save-details(); rename-popup.close(); } }
                         }
                     }
                 }

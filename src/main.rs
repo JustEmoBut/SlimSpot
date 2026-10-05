@@ -6,6 +6,8 @@ mod autostart;
 mod clipboard;
 mod covers;
 #[cfg(windows)]
+mod dialog;
+#[cfg(windows)]
 mod instance;
 mod logger;
 mod lyrics;
@@ -142,6 +144,12 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_play_page(send(|| Command::PlayPage));
     {
         let tx = tx.clone();
+        app.on_choose_search_tab(move |tab| {
+            let _ = tx.send(Command::SearchTab(tab));
+        });
+    }
+    {
+        let tx = tx.clone();
         app.on_filter_library(move |kind, text, az| {
             let _ = tx.send(Command::FilterLibrary { kind, text: text.to_string(), az });
         });
@@ -162,8 +170,28 @@ fn main() -> Result<(), slint::PlatformError> {
             let _ = tx.send(Command::SleepTimer(minutes));
         });
     }
-    app.on_create_playlist(send(|| Command::CreatePlaylist));
-    app.on_rename_playlist(send_str(Command::RenamePlaylist));
+    {
+        let tx = tx.clone();
+        app.on_create_playlist(move |name, description| {
+            let _ = tx.send(Command::CreatePlaylist { name: name.into(), description: description.into() });
+        });
+    }
+    {
+        let tx = tx.clone();
+        app.on_edit_playlist(move |name, description| {
+            let _ = tx.send(Command::EditPlaylist { name: name.into(), description: description.into() });
+        });
+    }
+    #[cfg(windows)]
+    {
+        let (weak, tx) = (app.as_weak(), tx.clone());
+        app.on_change_cover(move || {
+            let Some(app) = weak.upgrade() else { return };
+            if let Some(path) = dialog::pick_image(&app) {
+                let _ = tx.send(Command::PlaylistCover(path));
+            }
+        });
+    }
     {
         // Mini player: remember the full size and shrink to the player bar (and back).
         let weak = app.as_weak();

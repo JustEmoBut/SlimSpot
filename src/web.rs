@@ -25,6 +25,7 @@ const WEB_SCOPES: &[&str] = &[
     "playlist-modify-private",
     "playlist-modify-public",
     "user-read-recently-played",
+    "ugc-image-upload",
 ];
 const WEB_TOKEN_FILE: &str = "web_refresh_token";
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(60);
@@ -35,6 +36,8 @@ const API: &str = "https://api.spotify.com/v1";
 // Spotify rejects limit > 10 ("Invalid limit") on search and artist albums for Development Mode
 // apps (verified 2026-10-03 with a personal client id); playlists and saved tracks still take 50.
 pub const SEARCH_LIMIT: u32 = 10;
+/// Search tabs after "All", in the order the UI shows them (Songs, Albums, Artists, Playlists).
+pub const SEARCH_TYPES: [&str; 4] = ["track", "album", "artist", "playlist"];
 const ARTIST_ALBUMS_LIMIT: u32 = 10;
 // Artist albums are paged 10 at a time; stop after this many pages.
 const ARTIST_ALBUM_PAGES: usize = 5;
@@ -131,13 +134,24 @@ impl WebApi {
         body: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
         let payload = bytes::Bytes::from(body.map(|b| b.to_string()).unwrap_or_default());
+        self.send_raw(session, method, url, payload, "application/json").await
+    }
+
+    async fn send_raw(
+        &mut self,
+        session: &Session,
+        method: http::Method,
+        url: &str,
+        payload: bytes::Bytes,
+        content_type: &str,
+    ) -> Result<serde_json::Value, String> {
         for attempt in 0..=RATE_LIMIT_RETRIES {
             let token = self.access_token().await?;
             let req = http::Request::builder()
                 .method(method.clone())
                 .uri(url)
                 .header("Authorization", format!("Bearer {token}"))
-                .header("Content-Type", "application/json")
+                .header("Content-Type", content_type)
                 // Spotify's front end rejects body-less PUT/DELETE without it ("411 Length Required");
                 // the HTTP client doesn't add it for an empty body.
                 .header("Content-Length", payload.len())
@@ -200,11 +214,21 @@ impl WebApi {
             .collect())
     }
 
-    /// The next page of track results for "Show more" (offset verified to work up to 990, 2026-10-03).
-    pub async fn search_tracks(&mut self, session: &Session, query: &str, offset: u32) -> Result<Vec<Item>, String> {
-        let url = format!("{API}/search?type=track&limit={SEARCH_LIMIT}&offset={offset}&q={}", url_encode(query));
+    /// One search tab's results from `offset` (verified to work up to 990, 2026-10-03).
+    /// `kind` is one of SEARCH_TYPES. Also says whether Spotify has a further page.
+    pub async fn search_type(&mut self, session: &Session, query: &str, kind: &str, offset: u32) -> Result<(Vec<Item>, bool), String> {
+        let url = format!("{API}/search?type={kind}&limit={SEARCH_LIMIT}&offset={offset}&q={}", url_encode(query));
         let json = self.get_json(session, &url).await?;
-        Ok(json["tracks"]["items"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(track_row).collect())
+        let row: fn(&serde_json::Value) -> Option<Item> = match kind {
+            "album" => album_row,
+            "artist" => artist_row,
+            "playlist" => playlist_row,
+            _ => track_row,
+        };
+        let page = &json[format!("{kind}s")];
+        // Playlist results contain nulls (2 of 10 seen 2026-10-05), so a short page isn't the end; `next` is.
+        let rows = page["items"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(row).collect();
+        Ok((rows, page["next"].is_string()))
     }
 
     /// Up next on the active device; `{"currently_playing":null,"queue":[]}` when nothing plays.
@@ -240,16 +264,30 @@ impl WebApi {
     }
 
     /// A new private playlist owned by the user (`POST /me/playlists`).
-    pub async fn create_playlist(&mut self, session: &Session, name: &str) -> Result<Item, String> {
-        let body = serde_json::json!({ "name": name, "public": false });
+    pub async fn create_playlist(&mut self, session: &Session, name: &str, description: &str) -> Result<Item, String> {
+        let body = serde_json::json!({ "name": name, "description": description, "public": false });
         let json = self.send(session, http::Method::POST, &format!("{API}/me/playlists"), Some(body)).await?;
         playlist_row(&json).ok_or_else(|| "Spotify returned no playlist".to_string())
     }
 
-    pub async fn rename_playlist(&mut self, session: &Session, playlist: &str, name: &str) -> Result<(), String> {
+    pub async fn edit_playlist(&mut self, session: &Session, playlist: &str, name: &str, description: &str) -> Result<(), String> {
         let id = playlist.strip_prefix("spotify:playlist:").ok_or("Not a playlist")?;
-        let body = serde_json::json!({ "name": name });
+        let body = serde_json::json!({ "name": name, "description": description });
         self.send(session, http::Method::PUT, &format!("{API}/playlists/{id}"), Some(body)).await.map(|_| ())
+    }
+
+    /// The playlist's description as plain text (Spotify stores it with HTML links and entities).
+    pub async fn playlist_description(&mut self, session: &Session, playlist: &str) -> Result<String, String> {
+        let id = playlist.strip_prefix("spotify:playlist:").ok_or("Not a playlist")?;
+        let json = self.get_json(session, &format!("{API}/playlists/{id}?fields=description")).await?;
+        Ok(plain_text(json["description"].as_str().unwrap_or_default()))
+    }
+
+    /// Replaces the playlist's cover with a JPEG (Spotify's limit: 256 KB after base64).
+    pub async fn upload_cover(&mut self, session: &Session, playlist: &str, jpeg: &[u8]) -> Result<(), String> {
+        let id = playlist.strip_prefix("spotify:playlist:").ok_or("Not a playlist")?;
+        let body = bytes::Bytes::from(base64(jpeg));
+        self.send_raw(session, http::Method::PUT, &format!("{API}/playlists/{id}/images"), body, "image/jpeg").await.map(|_| ())
     }
 
     /// Removes a playlist from the library; for the user's own playlist this is Spotify's "Delete".
@@ -287,6 +325,22 @@ impl WebApi {
     pub async fn saved_albums(&mut self, session: &Session) -> Result<Vec<Item>, String> {
         let items = self.all_items(session, format!("{API}/me/albums?limit={PAGE_LIMIT}")).await?;
         Ok(items.iter().filter_map(|i| album_row(&i["album"])).collect())
+    }
+
+    /// Podcasts saved to the library (`/me/shows` items wrap the show).
+    pub async fn saved_shows(&mut self, session: &Session) -> Result<Vec<Item>, String> {
+        let items = self.all_items(session, format!("{API}/me/shows?limit={PAGE_LIMIT}")).await?;
+        Ok(items.iter().filter_map(|i| show_row(&i["show"])).collect())
+    }
+
+    /// The show's name, publisher and newest episodes (first page only).
+    pub async fn show_episodes(&mut self, session: &Session, show_uri: &str) -> Result<(String, String, Vec<Item>), String> {
+        let id = show_uri.strip_prefix("spotify:show:").ok_or("Not a show URI")?;
+        let show = self.get_json(session, &format!("{API}/shows/{id}")).await?;
+        // ponytail: newest PAGE_LIMIT episodes only; follow `next` if older episodes are wanted.
+        let page = self.get_json(session, &format!("{API}/shows/{id}/episodes?limit={PAGE_LIMIT}")).await?;
+        let rows = page["items"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(episode_row).collect();
+        Ok((show["name"].as_str().unwrap_or_default().into(), show["publisher"].as_str().unwrap_or_default().into(), rows))
     }
 
     /// Followed artists; this endpoint pages by cursor under `artists`, not by `items`/`next` at the top.
@@ -448,6 +502,56 @@ fn album_row(a: &serde_json::Value) -> Option<Item> {
     })
 }
 
+/// Standard base64 with padding (RFC 4648), for the cover upload body.
+fn base64(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let n = u32::from(chunk[0]) << 16 | u32::from(*chunk.get(1).unwrap_or(&0)) << 8 | u32::from(*chunk.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() { ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
+/// Drops HTML tags and decodes the entities Spotify uses in descriptions.
+fn plain_text(html: &str) -> String {
+    let mut text = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    text.replace("&#x27;", "'").replace("&#39;", "'").replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+}
+
+fn show_row(s: &serde_json::Value) -> Option<Item> {
+    Some(Item {
+        title: s["name"].as_str().unwrap_or("?").into(),
+        artist: format!("Podcast · {}", s["publisher"].as_str().unwrap_or_default()),
+        uri: s["uri"].as_str().filter(|u| u.starts_with("spotify:show:"))?.into(),
+        cover_url: smallest_image(&s["images"]).into(),
+        ..Default::default()
+    })
+}
+
+/// Episodes list their release date where tracks list artists.
+fn episode_row(e: &serde_json::Value) -> Option<Item> {
+    Some(Item {
+        title: e["name"].as_str().unwrap_or("?").into(),
+        artist: e["release_date"].as_str().unwrap_or_default().into(),
+        uri: e["uri"].as_str().filter(|u| u.starts_with("spotify:episode:"))?.into(),
+        cover_url: smallest_image(&e["images"]).into(),
+        duration_ms: e["duration_ms"].as_u64().unwrap_or(0) as u32,
+        ..Default::default()
+    })
+}
+
 fn device_row(d: &serde_json::Value) -> Option<Item> {
     let active = if d["is_active"].as_bool() == Some(true) { " · playing here" } else { "" };
     Some(Item {
@@ -562,5 +666,19 @@ mod tests {
         assert_eq!(pick_client_id(None, saved), "mine");
         assert_eq!(pick_client_id(Some("  ".into()), saved), "mine");
         assert_eq!(pick_client_id(None, None), DEFAULT_WEB_CLIENT_ID);
+    }
+
+    #[test]
+    fn base64_pads_like_rfc4648() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn plain_text_strips_links_and_entities() {
+        assert_eq!(plain_text("Hits by <a href=\"spotify:artist:x\">Ann</a> &amp; friends&#x27;"), "Hits by Ann & friends'");
     }
 }

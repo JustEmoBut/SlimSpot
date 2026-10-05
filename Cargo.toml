@@ -21,7 +21,7 @@ lto = true
 
 [target.'cfg(windows)'.dependencies]
 # Both already in the tree (windows via cpal/winit, raw-window-handle via slint); only extra modules compile.
-windows = { version = "=0.62.2", features = ["Foundation", "Media", "Storage_Streams", "Win32_Foundation", "Win32_System_WinRT", "Win32_System_Threading", "Win32_Security", "Win32_UI_WindowsAndMessaging", "Win32_System_Registry", "Win32_Graphics_Dwm", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Shell", "Win32_System_Com", "Win32_Graphics_Gdi"] }
+windows = { version = "=0.62.2", features = ["Foundation", "Media", "Storage_Streams", "Win32_Foundation", "Win32_System_WinRT", "Win32_System_Threading", "Win32_Security", "Win32_UI_WindowsAndMessaging", "Win32_System_Registry", "Win32_Graphics_Dwm", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_Graphics_Gdi"] }
 raw-window-handle = "0.6"
 
 # Day-to-day builds: same optimisation level, no LTO, parallel + incremental codegen.

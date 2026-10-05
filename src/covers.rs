@@ -22,6 +22,22 @@ const CORNER_PX: f32 = 6.0;
 
 /// kind: 0 = track list, 1 = sidebar, 2 = now-playing bar, 3 = now-playing panel, 4 = page header
 /// (matches the Slint callback).
+/// Cover uploads are scaled to this square; a JPEG at JPEG_QUALITY stays far below Spotify's
+/// 256 KB (base64) limit.
+const UPLOAD_PX: u32 = 500;
+const JPEG_QUALITY: u8 = 85;
+
+/// Any JPEG/PNG file as a square JPEG for `PUT /playlists/{id}/images`.
+pub fn upload_jpeg(file: &[u8]) -> Result<Vec<u8>, String> {
+    let img = image::load_from_memory(file).map_err(|e| format!("Not a usable image: {e}"))?;
+    let square = img.resize_to_fill(UPLOAD_PX, UPLOAD_PX, image::imageops::FilterType::Triangle).to_rgb8();
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY)
+        .encode_image(&square)
+        .map_err(|e| format!("JPEG encoding failed: {e}"))?;
+    Ok(out)
+}
+
 pub struct CoverRequest {
     pub kind: i32,
     pub index: usize,

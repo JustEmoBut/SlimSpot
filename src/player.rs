@@ -29,7 +29,7 @@ use crate::covers::{self, CoverRequest};
 use crate::nav::History;
 use crate::settings::{self, LastSession, Quality, Repeat, Settings};
 use crate::ui::{App, Row, clear_lyrics, set_liked_rows, set_current, set_lyrics, set_page_header, set_playing, set_position, set_rows, set_status};
-use crate::web::{Item, LIKED_SONGS, SEARCH_LIMIT, WebApi};
+use crate::web::{Item, LIKED_SONGS, SEARCH_LIMIT, SEARCH_TYPES, WebApi};
 
 // Spotify desktop client id; same as librespot's internal KEYMASTER_CLIENT_ID.
 const SPOTIFY_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
@@ -83,13 +83,19 @@ pub enum Command {
     FilterLibrary { kind: i32, text: String, az: bool },
     /// Find in page: rows of the current page matching `text`, in `sort` order (see `page-sort`).
     FilterPage { text: String, sort: i32 },
+    /// Search page tab: 0 = All, then Songs/Albums/Artists/Playlists (SEARCH_TYPES).
+    SearchTab(i32),
     /// Drag and drop in an own playlist: the row at `from` now goes to index `to`.
     MoveRow { from: usize, to: usize },
     /// Pause after this many minutes; -1 = at the end of the current track, 0 = off.
     SleepTimer(i32),
-    CreatePlaylist,
+    /// From the create popup; an empty name falls back to Spotify's "My Playlist #N".
+    CreatePlaylist { name: String, description: String },
     /// Rename the playlist on screen.
-    RenamePlaylist(String),
+    /// Own playlist's new name and description (the header's edit popup).
+    EditPlaylist { name: String, description: String },
+    /// Own playlist's new cover, from an image file the user picked.
+    PlaylistCover(PathBuf),
     /// The track list scrolled close to the last row with a liked mark: check the next batch.
     CheckLikedMore,
 }
@@ -291,6 +297,8 @@ fn kind_of(uri: &str) -> &'static str {
         "Album"
     } else if uri.starts_with("spotify:artist:") {
         "Artist"
+    } else if uri.starts_with("spotify:show:") {
+        "Podcast"
     } else {
         "Playlist"
     }
@@ -298,7 +306,12 @@ fn kind_of(uri: &str) -> &'static str {
 
 /// Rows that open a page instead of playing.
 fn is_page(uri: &str) -> bool {
-    uri == LIKED_SONGS || ["spotify:playlist:", "spotify:album:", "spotify:artist:"].iter().any(|p| uri.starts_with(p))
+    uri == LIKED_SONGS || ["spotify:playlist:", "spotify:album:", "spotify:artist:", "spotify:show:"].iter().any(|p| uri.starts_with(p))
+}
+
+/// Rows that play when clicked: tracks and podcast episodes.
+fn is_playable(uri: &str) -> bool {
+    uri.starts_with("spotify:track:") || uri.starts_with("spotify:episode:")
 }
 
 /// Accepts `spotify:track:ID` or `https://open.spotify.com/[intl-xx/]track/ID?si=...`.
@@ -384,8 +397,10 @@ struct Page {
     shown: Shown,
     /// Sidebar entry to highlight (playlists and Liked Songs only), or "".
     list: String,
-    /// Search query and next track offset while "Show more" is offered.
-    more: Option<(String, u32)>,
+    /// Search query, result type and next offset while "Show more" is offered.
+    more: Option<(String, &'static str, u32)>,
+    /// Search pages: the query and the chosen tab (0 = All, then SEARCH_TYPES).
+    search: Option<(String, i32)>,
     /// One of the user's own playlists: rows can be removed.
     editable: bool,
     /// Small label above the title ("Playlist", "Album", ...).
@@ -409,8 +424,43 @@ fn set_page_saved(ui: &slint::Weak<App>, nav: &mut History<Page>, uri: &str, sav
     }
 }
 
+/// A search results page for one tab: "All" mixes artists, albums and tracks; the other tabs
+/// list one type. Both page with "Show more".
+async fn search_page(w: &mut WebApi, session: &Session, query: &str, tab: i32) -> Result<Page, String> {
+    let kind = usize::try_from(tab - 1).ok().and_then(|i| SEARCH_TYPES.get(i)).copied();
+    let (mut rows, has_next) = match kind {
+        Some(kind) => w.search_type(session, query, kind, 0).await?,
+        None => (w.search(session, query).await?, false),
+    };
+    // Only the track rows form the play queue; album/artist/playlist rows open pages.
+    let tracks: Vec<String> = rows.iter().filter(|r| r.uri.starts_with("spotify:track:")).map(|r| r.uri.clone()).collect();
+    // "All" pages its tracks, as before the tabs.
+    let (paged, more_left) = match kind {
+        Some(kind) => (kind, has_next),
+        None => ("track", tracks.len() == SEARCH_LIMIT as usize),
+    };
+    let more = more_left.then(|| (query.to_string(), paged, SEARCH_LIMIT));
+    if more.is_some() {
+        rows.push(more_row());
+    }
+    Ok(Page {
+        title: format!("Search: {query}"),
+        rows,
+        shown: Shown::Tracks(tracks),
+        list: String::new(),
+        more,
+        search: Some((query.to_string(), tab)),
+        editable: false,
+        kind: "Search",
+        info: String::new(),
+        saved: false,
+        cover_url: String::new(),
+        liked_upto: 0,
+    })
+}
+
 fn more_row() -> Item {
-    Item { title: "Show more tracks".into(), uri: MORE_URI.into(), ..Default::default() }
+    Item { title: "Show more".into(), uri: MORE_URI.into(), ..Default::default() }
 }
 
 /// Opens `page` as a new history entry and shows it.
@@ -435,12 +485,13 @@ fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<S
     set_status(ui, page_summary(nav));
     let editable = page.editable;
     // Spotify numbers the rows of track lists, not of mixed pages like an artist's or search.
-    let numbered = matches!(page.kind, "Playlist" | "Album" | "Radio" | "Up next");
-    let playable = page.rows.iter().any(|r| r.uri.starts_with("spotify:track:"));
+    let numbered = matches!(page.kind, "Playlist" | "Album" | "Radio" | "Up next" | "Podcast");
+    let playable = page.rows.iter().any(|r| is_playable(&r.uri));
     let cover = page.cover_url.clone();
     let liked_upto = page.liked_upto as i32;
     let info = page.info.clone();
     let saved = page.saved;
+    let search_tab = page.search.as_ref().map_or(-1, |s| s.1);
     let page_uri = match &page.shown {
         Shown::Context(uri) => uri.clone(),
         Shown::Tracks(_) => String::new(),
@@ -448,6 +499,7 @@ fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<S
     let _ = ui.upgrade_in_event_loop(move |app| {
         app.set_page_info(info.into());
         app.set_page_saved(saved);
+        app.set_search_tab(search_tab);
         app.set_page_uri(page_uri.into());
         app.set_liked_checked(liked_upto);
         if app.get_page_cover_url() != cover.as_str() {
@@ -480,10 +532,12 @@ fn page_summary(nav: &History<Page>) -> String {
     let Some(page) = nav.current() else { return String::new() };
     let rows = page.rows.iter().filter(|r| r.uri != MORE_URI);
     let tracks = rows.clone().filter(|r| r.uri.starts_with("spotify:track:")).count();
+    let episodes = rows.clone().filter(|r| r.uri.starts_with("spotify:episode:")).count();
     let total_ms: u64 = rows.clone().map(|r| r.duration_ms as u64).sum();
-    match (tracks, total_ms) {
-        (0, _) | (_, 0) => format!("{} items", rows.count()),
-        (n, ms) => format!("{n} songs, {}", about(ms)),
+    match (tracks, episodes, total_ms) {
+        (_, _, 0) | (0, 0, _) => format!("{} items", rows.count()),
+        (0, n, ms) => format!("{n} episodes, {}", about(ms)),
+        (n, _, ms) => format!("{n} songs, {}", about(ms)),
     }
 }
 
@@ -665,6 +719,10 @@ pub async fn run(
             Ok(a) => lists.extend(a),
             Err(e) => set_status(&ui, format!("Followed artists failed: {e}")),
         }
+        match w.saved_shows(&session).await {
+            Ok(s) => lists.extend(s),
+            Err(e) => set_status(&ui, format!("Saved podcasts failed: {e}")),
+        }
         library = lists.clone();
         let me = format!("spotify:user:{}", session.username());
         own_lists = lists.iter().filter(|l| l.uri.starts_with("spotify:playlist:") && l.artist_uri == me).cloned().collect();
@@ -712,6 +770,8 @@ pub async fn run(
                     // Album and artist pages bring their own name; lists are named by the clicked row.
                     let result = if uri.starts_with("spotify:album:") {
                         w.album_tracks(&session, &uri).await
+                    } else if uri.starts_with("spotify:show:") {
+                        w.show_episodes(&session, &uri).await
                     } else if uri.starts_with("spotify:artist:") {
                         match artist_top_tracks(&session, &uri).await {
                             Ok((name, mut top)) => w.artist_albums(&session, &uri).await.map(|albums| {
@@ -742,17 +802,23 @@ pub async fn run(
                             let editable = own_lists.iter().any(|l| l.uri == uri);
                             // Albums show their own cover; playlists the sidebar row's.
                             let cover_url = match kind_of(&uri) {
-                                "Album" => rows.first().map(|r| r.cover_url.clone()).unwrap_or_default(),
+                                "Album" | "Podcast" => rows.first().map(|r| r.cover_url.clone()).unwrap_or_default(),
                                 "Playlist" => find_item(&nav, &library, None, &uri).map(|i| i.cover_url.clone()).unwrap_or_default(),
                                 _ => String::new(),
                             };
                             let kind = kind_of(&uri);
-                            let saved = matches!(kind, "Album" | "Artist") && w.is_saved(&session, &uri).await.unwrap_or(false);
+                            let saved = matches!(kind, "Album" | "Artist" | "Podcast") && w.is_saved(&session, &uri).await.unwrap_or(false);
+                            // Playlists show their description where albums show year and label.
+                            let info = if uri.starts_with("spotify:playlist:") {
+                                w.playlist_description(&session, &uri).await.unwrap_or_default()
+                            } else {
+                                info
+                            };
                             // Only sidebar entries get highlighted.
                             let sidebar = uri == LIKED_SONGS || uri.starts_with("spotify:playlist:");
                             let list = if sidebar { uri } else { String::new() };
                             let reveal_row = reveal.take().filter(|_| playing_context.as_ref() == Some(&context));
-                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Context(context), list, more: None, editable, kind, info, saved, cover_url, liked_upto: 0 });
+                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Context(context), list, more: None, search: None, editable, kind, info, saved, cover_url, liked_upto: 0 });
                             if let Some(track) = reveal_row {
                                 reveal_track(&ui, &nav, &track);
                             }
@@ -763,18 +829,18 @@ pub async fn run(
                 }
                 Command::PlayUri(uri) if uri == MORE_URI => {
                     let (Some(w), Some(page)) = (web.as_mut(), nav.current_mut()) else { continue };
-                    let Some((query, offset)) = page.more.take() else { continue };
+                    let Some((query, kind, offset)) = page.more.take() else { continue };
                     set_status(&ui, "Loading more...");
-                    match w.search_tracks(&session, &query, offset).await {
-                        Ok(found) => {
+                    match w.search_type(&session, &query, kind, offset).await {
+                        Ok((found, has_next)) => {
                             page.rows.pop(); // the "Show more" row
-                            if found.len() == SEARCH_LIMIT as usize {
-                                page.more = Some((query, offset + SEARCH_LIMIT));
+                            if has_next {
+                                page.more = Some((query, kind, offset + SEARCH_LIMIT));
                             }
                             // Spotify's later search pages repeat earlier hits (seen 2026-10-03).
                             let fresh: Vec<Item> = found.into_iter().filter(|f| !page.rows.iter().any(|r| r.uri == f.uri)).collect();
                             if let Shown::Tracks(uris) = &mut page.shown {
-                                uris.extend(fresh.iter().map(|r| r.uri.clone()));
+                                uris.extend(fresh.iter().filter(|r| r.uri.starts_with("spotify:track:")).map(|r| r.uri.clone()));
                             }
                             page.rows.extend(fresh);
                             if page.more.is_some() {
@@ -783,7 +849,7 @@ pub async fn run(
                         }
                         // Keep the row so the click can be retried.
                         Err(e) => {
-                            page.more = Some((query, offset));
+                            page.more = Some((query, kind, offset));
                             set_status(&ui, e);
                             continue;
                         }
@@ -796,7 +862,7 @@ pub async fn run(
                     match w.queue(&session).await {
                         Ok(rows) => {
                             let uris = rows.iter().map(|r| r.uri.clone()).collect();
-                            open_page(&ui, &mut nav, &mut shown, Page { title: "Queue".into(), rows, shown: Shown::Tracks(uris), list: String::new(), more: None, editable: false, kind: "Up next", info: String::new(), saved: false, cover_url: String::new(), liked_upto: 0 });
+                            open_page(&ui, &mut nav, &mut shown, Page { title: "Queue".into(), rows, shown: Shown::Tracks(uris), list: String::new(), more: None, search: None, editable: false, kind: "Up next", info: String::new(), saved: false, cover_url: String::new(), liked_upto: 0 });
                             mark_liked(&ui, w, &session, &mut nav).await;
                         }
                         Err(e) => set_status(&ui, e),
@@ -841,16 +907,26 @@ pub async fn run(
                         continue;
                     };
                     set_status(&ui, "Searching...");
-                    match w.search(&session, q.trim()).await {
-                        Ok(mut rows) => {
-                            // Only the track rows form the play queue; album/artist rows open pages.
-                            let tracks: Vec<String> = rows.iter().filter(|r| r.uri.starts_with("spotify:track:")).map(|r| r.uri.clone()).collect();
-                            let more = (tracks.len() == SEARCH_LIMIT as usize).then(|| (q.trim().to_string(), SEARCH_LIMIT));
-                            if more.is_some() {
-                                rows.push(more_row());
+                    match search_page(w, &session, q.trim(), 0).await {
+                        Ok(page) => {
+                            open_page(&ui, &mut nav, &mut shown, page);
+                            mark_liked(&ui, w, &session, &mut nav).await;
+                        }
+                        Err(e) => set_status(&ui, e),
+                    }
+                }
+                Command::SearchTab(tab) => {
+                    let query = nav.current().and_then(|p| p.search.clone()).map(|(q, _)| q);
+                    let (Some(w), Some(query)) = (web.as_mut(), query) else { continue };
+                    set_status(&ui, "Searching...");
+                    match search_page(w, &session, &query, tab).await {
+                        // A tab switch replaces the search page instead of adding history.
+                        Ok(page) => {
+                            if let Some(current) = nav.current_mut() {
+                                *current = page;
                             }
-                            let title = format!("Search: {}", q.trim());
-                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Tracks(tracks), list: String::new(), more, editable: false, kind: "Search", info: String::new(), saved: false, cover_url: String::new(), liked_upto: 0 });
+                            show_current(&ui, &nav, &mut shown);
+                            scroll_to_top(&ui);
                             mark_liked(&ui, w, &session, &mut nav).await;
                         }
                         Err(e) => set_status(&ui, e),
@@ -910,7 +986,7 @@ pub async fn run(
                                 rows,
                                 shown: Shown::Tracks(uris.clone()),
                                 list: String::new(),
-                                more: None,
+                                more: None, search: None,
                                 editable: false,
                                 kind: "Radio",
                                 info: String::new(),
@@ -1076,7 +1152,7 @@ pub async fn run(
                                 rows,
                                 shown: Shown::Tracks(uris),
                                 list: String::new(),
-                                more: None,
+                                more: None, search: None,
                                 editable: false,
                                 kind: "Home",
                                 info: String::new(),
@@ -1090,7 +1166,7 @@ pub async fn run(
                     }
                 }
                 Command::PlayPage => {
-                    let first = nav.current().and_then(|p| p.rows.iter().find(|r| r.uri.starts_with("spotify:track:")));
+                    let first = nav.current().and_then(|p| p.rows.iter().find(|r| is_playable(&r.uri)));
                     if let Some(row) = first {
                         let _ = tx.send(Command::PlayUri(row.uri.clone()));
                     }
@@ -1103,6 +1179,7 @@ pub async fn run(
                             1 => i.uri == LIKED_SONGS || i.uri.starts_with("spotify:playlist:"),
                             2 => i.uri.starts_with("spotify:album:"),
                             3 => i.uri.starts_with("spotify:artist:"),
+                            4 => i.uri.starts_with("spotify:show:"),
                             _ => true,
                         })
                         .filter(|i| text.is_empty() || i.title.to_lowercase().contains(&text) || i.artist.to_lowercase().contains(&text))
@@ -1160,10 +1237,13 @@ pub async fn run(
                         m => format!("Pausing in {m} min"),
                     });
                 }
-                Command::CreatePlaylist => {
+                Command::CreatePlaylist { name, description } => {
                     let Some(w) = web.as_mut() else { continue };
-                    let name = format!("My Playlist #{}", own_lists.len() + 1);
-                    match w.create_playlist(&session, &name).await {
+                    let name = match name.trim() {
+                        "" => format!("My Playlist #{}", own_lists.len() + 1),
+                        name => name.to_string(),
+                    };
+                    match w.create_playlist(&session, &name, description.trim()).await {
                         Ok(item) => {
                             // New playlists come first, below Liked Songs, as in Spotify.
                             library.insert(1.min(library.len()), item.clone());
@@ -1174,24 +1254,40 @@ pub async fn run(
                         Err(e) => set_status(&ui, e),
                     }
                 }
-                Command::RenamePlaylist(name) => {
-                    let name = name.trim().to_string();
+                Command::EditPlaylist { name, description } => {
+                    let (name, description) = (name.trim().to_string(), description.trim().to_string());
                     let list = nav.current().filter(|p| p.editable).map(|p| p.list.clone());
                     let (Some(w), Some(list)) = (web.as_mut(), list) else { continue };
                     if name.is_empty() {
                         continue;
                     }
-                    match w.rename_playlist(&session, &list, &name).await {
+                    match w.edit_playlist(&session, &list, &name, &description).await {
                         Ok(()) => {
                             for item in library.iter_mut().chain(own_lists.iter_mut()).filter(|i| i.uri == list) {
                                 item.title = name.clone();
                             }
                             if let Some(page) = nav.current_mut() {
                                 page.title = name.clone();
+                                page.info = description.clone();
                             }
+                            let _ = ui.upgrade_in_event_loop(move |app| app.set_page_info(description.into()));
                             refresh_library(&ui, &library, &own_lists);
                             set_page_header(&ui, nav.current().map(|p| p.kind).unwrap_or(""), name, nav.can_back(), nav.can_forward());
                         }
+                        Err(e) => set_status(&ui, e),
+                    }
+                }
+                Command::PlaylistCover(path) => {
+                    let list = nav.current().filter(|p| p.editable).map(|p| p.list.clone());
+                    let (Some(w), Some(list)) = (web.as_mut(), list) else { continue };
+                    set_status(&ui, "Uploading cover...");
+                    let jpeg = std::fs::read(&path).map_err(|e| format!("Reading {} failed: {e}", path.display())).and_then(|f| crate::covers::upload_jpeg(&f));
+                    match jpeg {
+                        Ok(jpeg) => match w.upload_cover(&session, &list, &jpeg).await {
+                            // Spotify processes the image asynchronously; the new URL shows up a bit later.
+                            Ok(()) => set_status(&ui, "Cover uploaded; Spotify shows it after a moment"),
+                            Err(e) => set_status(&ui, e),
+                        },
                         Err(e) => set_status(&ui, e),
                     }
                 }
