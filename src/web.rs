@@ -276,6 +276,13 @@ impl WebApi {
         self.send(session, http::Method::DELETE, &format!("{API}/playlists/{id}/items"), Some(body)).await.map(|_| ())
     }
 
+    /// Moves the item at `from` so it lands before the item now at `insert_before` (Spotify's reorder).
+    pub async fn move_in_playlist(&mut self, session: &Session, playlist: &str, from: usize, insert_before: usize) -> Result<(), String> {
+        let id = playlist.strip_prefix("spotify:playlist:").ok_or("Not a playlist")?;
+        let body = serde_json::json!({ "range_start": from, "insert_before": insert_before });
+        self.send(session, http::Method::PUT, &format!("{API}/playlists/{id}/items"), Some(body)).await.map(|_| ())
+    }
+
     /// Albums saved to the library (`/me/albums` items wrap the album).
     pub async fn saved_albums(&mut self, session: &Session) -> Result<Vec<Item>, String> {
         let items = self.all_items(session, format!("{API}/me/albums?limit={PAGE_LIMIT}")).await?;
@@ -318,8 +325,8 @@ impl WebApi {
         self.send(session, http::Method::PUT, &format!("{API}/me/player"), Some(body)).await.map(|_| ())
     }
 
-    /// The album's name and tracks. Album tracks carry no images, so they all get the album's cover.
-    pub async fn album_tracks(&mut self, session: &Session, album_uri: &str) -> Result<(String, Vec<Item>), String> {
+    /// The album's name, "year · label" and tracks. Album tracks carry no images, so they all get the album's cover.
+    pub async fn album_tracks(&mut self, session: &Session, album_uri: &str) -> Result<(String, String, Vec<Item>), String> {
         let id = album_uri.strip_prefix("spotify:album:").ok_or("Not an album URI")?;
         let album = self.get_json(session, &format!("{API}/albums/{id}")).await?;
         let cover = smallest_image(&album["images"]).to_string();
@@ -332,7 +339,11 @@ impl WebApi {
             .filter_map(track_row)
             .map(|t| Item { cover_url: cover.clone(), album_uri: album_uri.to_string(), ..t })
             .collect();
-        Ok((album["name"].as_str().unwrap_or_default().to_string(), rows))
+        // release_date is "YYYY", "YYYY-MM" or "YYYY-MM-DD" depending on its precision.
+        let year = album["release_date"].as_str().unwrap_or_default().get(..4).unwrap_or_default();
+        let label = album["label"].as_str().unwrap_or_default();
+        let info = [year, label].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+        Ok((album["name"].as_str().unwrap_or_default().to_string(), info, rows))
     }
 
     /// The artist's albums and singles, newest first as Spotify orders them, up to ARTIST_ALBUM_PAGES pages.

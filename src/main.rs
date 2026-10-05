@@ -14,6 +14,8 @@ mod nav;
 mod media_keys;
 mod player;
 mod settings;
+#[cfg(windows)]
+mod taskbar;
 mod ui;
 mod web;
 
@@ -31,6 +33,8 @@ use crate::player::Command;
 use crate::ui::{App, Tray};
 
 const POSITION_TICK: Duration = Duration::from_millis(500);
+// NOTIFYICONDATAW.szTip holds 128 UTF-16 units including the terminator.
+const TOOLTIP_MAX_CHARS: usize = 120;
 // Polls for the native window handle after startup; gives up after ~5 s.
 #[cfg(windows)]
 const MEDIA_KEYS_RETRY: Duration = Duration::from_millis(100);
@@ -143,6 +147,16 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
     {
+        let filter_tx = tx.clone();
+        app.on_filter_page(move |text, sort| {
+            let _ = filter_tx.send(Command::FilterPage { text: text.to_string(), sort });
+        });
+        let tx = tx.clone();
+        app.on_move_row(move |from, to| {
+            let _ = tx.send(Command::MoveRow { from: from as usize, to: to as usize });
+        });
+    }
+    {
         let tx = tx.clone();
         app.on_set_sleep(move |minutes| {
             let _ = tx.send(Command::SleepTimer(minutes));
@@ -190,6 +204,14 @@ fn main() -> Result<(), slint::PlatformError> {
             if t.get_playing() != a.get_playing() {
                 t.set_playing(a.get_playing());
             }
+            let now = a.get_now();
+            let tip: String = match now.title.as_str() {
+                "" => "SlimSpot".into(),
+                title => format!("{title} - {}", now.artist).chars().take(TOOLTIP_MAX_CHARS).collect(),
+            };
+            if t.get_tip() != tip.as_str() {
+                t.set_tip(tip.into());
+            }
         }
     });
     app.on_toggle_shuffle(send(|| Command::ToggleShuffle));
@@ -230,6 +252,7 @@ fn main() -> Result<(), slint::PlatformError> {
             };
             if done {
                 timer.stop();
+                taskbar::setup(&app, &tx);
                 instance::dark_title_bar(&app);
                 // Tray start: the window was only shown so its HWND exists for the media keys.
                 if start_in_tray {

@@ -81,6 +81,10 @@ pub enum Command {
     PlayPage,
     /// Sidebar filter: 0 all, 1 playlists, 2 albums, 3 artists; plus a name filter and A-Z order.
     FilterLibrary { kind: i32, text: String, az: bool },
+    /// Find in page: rows of the current page matching `text`, in `sort` order (see `page-sort`).
+    FilterPage { text: String, sort: i32 },
+    /// Drag and drop in an own playlist: the row at `from` now goes to index `to`.
+    MoveRow { from: usize, to: usize },
     /// Pause after this many minutes; -1 = at the end of the current track, 0 = off.
     SleepTimer(i32),
     CreatePlaylist,
@@ -386,10 +390,23 @@ struct Page {
     editable: bool,
     /// Small label above the title ("Playlist", "Album", ...).
     kind: &'static str,
+    /// Shown after the kind label: an album's "year · label", or "".
+    info: String,
+    /// Album saved / artist followed (header button); only meaningful on those pages.
+    saved: bool,
     /// Header cover (playlists and albums), or "".
     cover_url: String,
     /// Rows already checked for liked marks (`mark_liked` continues from here).
     liked_upto: usize,
+}
+
+/// Keeps the header's Follow / Save button in step after a library change from anywhere.
+fn set_page_saved(ui: &slint::Weak<App>, nav: &mut History<Page>, uri: &str, saved: bool) {
+    let Some(page) = nav.current_mut() else { return };
+    if matches!(&page.shown, Shown::Context(c) if c == uri) {
+        page.saved = saved;
+        let _ = ui.upgrade_in_event_loop(move |app| app.set_page_saved(saved));
+    }
 }
 
 fn more_row() -> Item {
@@ -422,13 +439,24 @@ fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<S
     let playable = page.rows.iter().any(|r| r.uri.starts_with("spotify:track:"));
     let cover = page.cover_url.clone();
     let liked_upto = page.liked_upto as i32;
+    let info = page.info.clone();
+    let saved = page.saved;
+    let page_uri = match &page.shown {
+        Shown::Context(uri) => uri.clone(),
+        Shown::Tracks(_) => String::new(),
+    };
     let _ = ui.upgrade_in_event_loop(move |app| {
+        app.set_page_info(info.into());
+        app.set_page_saved(saved);
+        app.set_page_uri(page_uri.into());
         app.set_liked_checked(liked_upto);
         if app.get_page_cover_url() != cover.as_str() {
             app.set_page_cover(Default::default());
             app.set_page_cover_url(cover.into());
         }
         app.set_editable(editable);
+        app.set_page_filter_text("".into());
+        app.set_page_sort(0);
         app.set_numbered(numbered);
         app.set_page_playable(playable);
     });
@@ -688,22 +716,22 @@ pub async fn run(
                         match artist_top_tracks(&session, &uri).await {
                             Ok((name, mut top)) => w.artist_albums(&session, &uri).await.map(|albums| {
                                 top.extend(albums);
-                                (name, top)
+                                (name, String::new(), top)
                             }),
                             Err(e) => Err(e),
                         }
                     } else {
                         match w.list_tracks(&session, &uri).await {
-                            Ok(rows) => Ok((String::new(), rows)),
+                            Ok(rows) => Ok((String::new(), String::new(), rows)),
                             Err(e) if uri.starts_with("spotify:playlist:") => {
                                 log::warn!("Web API refused {uri} ({e}); reading it through librespot");
-                                context_tracks(&session, &uri).await.map(|rows| (String::new(), rows))
+                                context_tracks(&session, &uri).await.map(|rows| (String::new(), String::new(), rows))
                             }
                             Err(e) => Err(e),
                         }
                     };
                     match result {
-                        Ok((name, rows)) => {
+                        Ok((name, info, rows)) => {
                             // Otherwise the clicked row (sidebar or the page it was on) knows the name.
                             let title = if name.is_empty() {
                                 find_item(&nav, &library, None, &uri).map(|i| i.title.clone()).unwrap_or_default()
@@ -719,11 +747,12 @@ pub async fn run(
                                 _ => String::new(),
                             };
                             let kind = kind_of(&uri);
+                            let saved = matches!(kind, "Album" | "Artist") && w.is_saved(&session, &uri).await.unwrap_or(false);
                             // Only sidebar entries get highlighted.
                             let sidebar = uri == LIKED_SONGS || uri.starts_with("spotify:playlist:");
                             let list = if sidebar { uri } else { String::new() };
                             let reveal_row = reveal.take().filter(|_| playing_context.as_ref() == Some(&context));
-                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Context(context), list, more: None, editable, kind, cover_url, liked_upto: 0 });
+                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Context(context), list, more: None, editable, kind, info, saved, cover_url, liked_upto: 0 });
                             if let Some(track) = reveal_row {
                                 reveal_track(&ui, &nav, &track);
                             }
@@ -767,7 +796,7 @@ pub async fn run(
                     match w.queue(&session).await {
                         Ok(rows) => {
                             let uris = rows.iter().map(|r| r.uri.clone()).collect();
-                            open_page(&ui, &mut nav, &mut shown, Page { title: "Queue".into(), rows, shown: Shown::Tracks(uris), list: String::new(), more: None, editable: false, kind: "Up next", cover_url: String::new(), liked_upto: 0 });
+                            open_page(&ui, &mut nav, &mut shown, Page { title: "Queue".into(), rows, shown: Shown::Tracks(uris), list: String::new(), more: None, editable: false, kind: "Up next", info: String::new(), saved: false, cover_url: String::new(), liked_upto: 0 });
                             mark_liked(&ui, w, &session, &mut nav).await;
                         }
                         Err(e) => set_status(&ui, e),
@@ -821,7 +850,7 @@ pub async fn run(
                                 rows.push(more_row());
                             }
                             let title = format!("Search: {}", q.trim());
-                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Tracks(tracks), list: String::new(), more, editable: false, kind: "Search", cover_url: String::new(), liked_upto: 0 });
+                            open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: Shown::Tracks(tracks), list: String::new(), more, editable: false, kind: "Search", info: String::new(), saved: false, cover_url: String::new(), liked_upto: 0 });
                             mark_liked(&ui, w, &session, &mut nav).await;
                         }
                         Err(e) => set_status(&ui, e),
@@ -884,6 +913,8 @@ pub async fn run(
                                 more: None,
                                 editable: false,
                                 kind: "Radio",
+                                info: String::new(),
+                                saved: false,
                                 cover_url: String::new(),
                                 liked_upto: 0,
                             });
@@ -901,7 +932,15 @@ pub async fn run(
                     }
                 }
                 Command::RowAction { action, uri } => {
-                    let item = find_item(&nav, &library, now_item.as_ref(), &uri).cloned().unwrap_or_default();
+                    // The header's Follow / Save button acts on the page itself, which isn't one of its rows.
+                    let page_item = nav.current().filter(|p| matches!(&p.shown, Shown::Context(c) if *c == uri)).map(|p| Item {
+                        title: p.title.clone(),
+                        artist: p.kind.to_string(),
+                        uri: uri.clone(),
+                        cover_url: p.cover_url.clone(),
+                        ..Default::default()
+                    });
+                    let item = find_item(&nav, &library, now_item.as_ref(), &uri).cloned().or(page_item).unwrap_or_default();
                     let follow_up = match action.as_str() {
                         "radio" => Some(Command::Radio(Some(uri.clone()))),
                         "open" => Some(Command::OpenList(uri.clone())),
@@ -965,12 +1004,36 @@ pub async fn run(
                             }
                             None
                         }
+                        "save" => {
+                            if let Some(w) = web.as_mut() {
+                                match w.set_saved(&session, &uri, true).await {
+                                    Ok(()) => {
+                                        if !library.iter().any(|i| i.uri == uri) {
+                                            library.push(item.clone());
+                                            refresh_library(&ui, &library, &own_lists);
+                                        }
+                                        set_page_saved(&ui, &mut nav, &uri, true);
+                                        set_status(&ui, format!("Added \"{}\" to Your Library", item.title));
+                                    }
+                                    Err(e) => set_status(&ui, e),
+                                }
+                            }
+                            None
+                        }
                         "unfollow" => {
                             if let Some(w) = web.as_mut() {
-                                match w.unfollow_playlist(&session, &uri).await {
+                                // Albums and artists leave through the unified library endpoint; a playlist
+                                // is unfollowed (Spotify's delete for own playlists).
+                                let result = if uri.starts_with("spotify:playlist:") {
+                                    w.unfollow_playlist(&session, &uri).await
+                                } else {
+                                    w.set_saved(&session, &uri, false).await
+                                };
+                                match result {
                                     Ok(()) => {
                                         library.retain(|i| i.uri != uri);
                                         own_lists.retain(|i| i.uri != uri);
+                                        set_page_saved(&ui, &mut nav, &uri, false);
                                         refresh_library(&ui, &library, &own_lists);
                                         // Its page would show a playlist that no longer exists.
                                         if nav.current().is_some_and(|p| p.list == uri) {
@@ -1016,6 +1079,8 @@ pub async fn run(
                                 more: None,
                                 editable: false,
                                 kind: "Home",
+                                info: String::new(),
+                                saved: false,
                                 cover_url: String::new(),
                                 liked_upto: 0,
                             });
@@ -1047,6 +1112,44 @@ pub async fn run(
                         rows.sort_by_key(|i| i.title.to_lowercase());
                     }
                     set_rows(&ui, rows, App::set_lists);
+                }
+                Command::FilterPage { text, sort } => {
+                    let Some(page) = nav.current() else { continue };
+                    let text = text.trim().to_lowercase();
+                    let mut rows: Vec<Item> = page
+                        .rows
+                        .iter()
+                        .filter(|i| text.is_empty() || i.title.to_lowercase().contains(&text) || i.artist.to_lowercase().contains(&text))
+                        // "Show more" only makes sense at the end of the unfiltered list.
+                        .filter(|i| i.uri != MORE_URI || (text.is_empty() && sort == 0))
+                        .cloned()
+                        .collect();
+                    match sort {
+                        1 => rows.sort_by_key(|i| i.title.to_lowercase()),
+                        2 => rows.sort_by_key(|i| i.artist.to_lowercase()),
+                        3 => rows.sort_by_key(|i| i.duration_ms),
+                        _ => {}
+                    }
+                    set_rows(&ui, rows, App::set_tracks);
+                }
+                Command::MoveRow { from, to } => {
+                    let list = nav.current().filter(|p| p.editable && from < p.rows.len() && to < p.rows.len()).map(|p| p.list.clone());
+                    let (Some(w), Some(list)) = (web.as_mut(), list) else { continue };
+                    if from == to {
+                        continue;
+                    }
+                    // Spotify counts insert_before in the list before the move.
+                    let insert_before = if to > from { to + 1 } else { to };
+                    match w.move_in_playlist(&session, &list, from, insert_before).await {
+                        Ok(()) => {
+                            if let Some(page) = nav.current_mut() {
+                                let row = page.rows.remove(from);
+                                page.rows.insert(to, row);
+                            }
+                            show_current(&ui, &nav, &mut shown);
+                        }
+                        Err(e) => set_status(&ui, e),
+                    }
                 }
                 Command::SleepTimer(minutes) => {
                     sleep_at = (minutes > 0).then(|| tokio::time::Instant::now() + Duration::from_secs(minutes as u64 * 60));

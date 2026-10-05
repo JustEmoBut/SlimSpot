@@ -191,6 +191,8 @@ slint::slint! {
         in property <bool> selected;
         // Playing rows show their title in green, like Spotify.
         in property <bool> playing;
+        // The current row is actually sounding (not paused): hover shows pause instead of play.
+        in property <bool> audible;
         in property <length> cover-size: 40px;
         // Row menu (right-click and "..."); off for rows that aren't Spotify items (devices).
         in property <bool> menu: true;
@@ -198,6 +200,16 @@ slint::slint! {
         in property <int> number;
         // Sidebar rows can be removed from the library.
         in property <bool> sidebar;
+        // Rows of an own playlist can be dragged; `dropped(n)` reports the drop n rows down (negative: up).
+        in property <bool> draggable;
+        callback dropped(int);
+        // Set while a drag is under way, so the release isn't taken as a click.
+        out property <bool> dragged;
+        property <length> drag-start;
+        // Position in the list and its length, so the drop stays inside the list.
+        in property <int> index;
+        in property <int> count;
+        property <int> drop-offset: max(-root.index, min(root.count - 1 - root.index, round((self.mouse-y - root.drag-start) / root.height)));
         // Right-click or "...": open the app's menu at this window position.
         callback open-menu(length, length);
         // Fired whenever this (possibly recycled) row instance shows a row without a loaded cover.
@@ -210,10 +222,21 @@ slint::slint! {
             if (root.menu && event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
                 root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
             }
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                root.dragged = false;
+                root.drag-start = self.mouse-y;
+            }
+            if (root.dragged && event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
+                root.dropped(root.drop-offset);
+            }
+        }
+        moved => {
+            // A few pixels of jitter still count as a click.
+            if (root.draggable && root.pressed && abs(self.mouse-y - root.drag-start) > 8px) { root.dragged = true; }
         }
         Rectangle {
             border-radius: 8px;
-            background: root.selected ? Theme.selected : root.has-hover ? Theme.hover : transparent;
+            background: root.dragged && root.pressed ? Theme.selected : root.selected ? Theme.selected : root.has-hover ? Theme.hover : transparent;
             animate background { duration: 120ms; }
             // Selected sidebar entry: a short accent bar on the left edge.
             if root.selected : Rectangle {
@@ -255,7 +278,7 @@ slint::slint! {
                         Icon {
                             width: parent.width * 0.5;
                             height: self.width;
-                            shape: root.playing && !root.has-hover ? Icons.bars : Icons.play;
+                            shape: !root.playing ? Icons.play : !root.has-hover ? Icons.bars : root.audible ? Icons.pause : Icons.play;
                             filled: true;
                             tint: root.playing ? Theme.accent : Theme.text;
                         }
@@ -286,6 +309,15 @@ slint::slint! {
                     color: Theme.subdued;
                 }
             }
+        }
+        // Drop marker: an accent line where the dragged row will land (below the target row
+        // when moving down, above it when moving up).
+        if root.dragged && root.pressed && root.drop-offset != 0 : Rectangle {
+            x: 8px;
+            width: parent.width - 16px;
+            height: 2px;
+            y: (root.drop-offset > 0 ? root.drop-offset + 1 : root.drop-offset) * root.height - 1px;
+            background: Theme.accent;
         }
         // The "..." on hover opens the same menu as a right-click.
         if root.menu && root.has-hover : IconButton {
@@ -471,6 +503,10 @@ slint::slint! {
         // Big heading of the main panel and the back/forward arrows next to it.
         in property <string> page-title: "Home";
         in property <string> page-kind;
+        in property <string> page-info;
+        // Artist/album pages: the page's URI and whether it's followed/saved (header button).
+        in property <string> page-uri;
+        in property <bool> page-saved;
         in property <bool> can-back;
         in property <bool> can-forward;
         callback go-back();
@@ -527,6 +563,11 @@ slint::slint! {
         }
         callback play-page();
         callback filter-library(int, string, bool);
+        // Find in page: 0 = page order, 1 = title, 2 = artist, 3 = duration. Rust resets both on a new page.
+        in-out property <string> page-filter-text;
+        in-out property <int> page-sort;
+        callback filter-page(string, int);
+        callback move-row(int, int);
         in property <bool> numbered;
         // Compact window with only the player bar.
         in-out property <bool> mini;
@@ -631,6 +672,7 @@ slint::slint! {
                     if (event.text == Key.LeftArrow) { root.prev(); return accept; }
                     if (event.text == Key.UpArrow) { root.volume = min(100, root.volume + 5); root.set-volume(root.volume, true); return accept; }
                     if (event.text == Key.DownArrow) { root.volume = max(0, root.volume - 5); root.set-volume(root.volume, true); return accept; }
+                    if (event.text == "f" && root.page-playable) { page-filter.focus(); return accept; }
                     if (event.text == "f" || event.text == "l") { query.focus(); return accept; }
                     if (event.text == "s") { root.toggle-shuffle(); return accept; }
                     if (event.text == "r") { root.cycle-repeat(); return accept; }
@@ -826,10 +868,38 @@ slint::slint! {
                                     Icon { width: 26px; height: 26px; shape: Icons.play; filled: true; tint: Theme.text; }
                                 }
                             }
+                            // Like Spotify: an outlined "Follow" pill on artists, a round +/check on albums.
+                            if root.page-kind == "Artist" : TouchArea {
+                                width: follow-text.preferred-width + 32px;
+                                height: 32px;
+                                y: (parent.height - self.height) / 2;
+                                mouse-cursor: pointer;
+                                clicked => { root.row-action(root.page-saved ? "unfollow" : "save", root.page-uri); }
+                                Rectangle {
+                                    border-radius: 16px;
+                                    border-width: 1px;
+                                    border-color: parent.has-hover ? Theme.text : Theme.subdued;
+                                    follow-text := Text { text: root.page-saved ? "Following" : "Follow"; font-size: 13px; font-weight: 600; color: Theme.text; }
+                                }
+                            }
+                            if root.page-kind == "Album" : TouchArea {
+                                width: 32px;
+                                height: 32px;
+                                y: (parent.height - self.height) / 2;
+                                mouse-cursor: pointer;
+                                clicked => { root.row-action(root.page-saved ? "unfollow" : "save", root.page-uri); }
+                                Rectangle {
+                                    border-radius: 16px;
+                                    border-width: root.page-saved ? 0px : 1.5px;
+                                    border-color: parent.has-hover ? Theme.text : Theme.subdued;
+                                    background: root.page-saved ? Theme.accent : transparent;
+                                    Icon { width: 20px; height: 20px; shape: root.page-saved ? Icons.check : Icons.plus; tint: Theme.text; }
+                                }
+                            }
                             VerticalLayout {
                                 spacing: 2px;
                                 alignment: center;
-                                if root.page-kind != "" : Text { text: root.page-kind; font-size: 12px; font-weight: 600; color: Theme.text; }
+                                if root.page-kind != "" : Text { text: root.page-info == "" ? root.page-kind : root.page-kind + " · " + root.page-info; font-size: 12px; font-weight: 600; color: Theme.text; }
                                 HorizontalLayout {
                                     spacing: 8px;
                                     alignment: start;
@@ -844,7 +914,42 @@ slint::slint! {
                                 }
                             }
                         }
-                        Text { text: root.status; font-size: 12px; color: Theme.subdued; overflow: elide; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Text { text: root.status; font-size: 12px; color: Theme.subdued; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                            // Find and sort within the page (Ctrl+F); backend filters, no request.
+                            if root.page-playable && !root.show-lyrics : Chip {
+                                label: ["Custom order", "Title", "Artist", "Duration"][root.page-sort];
+                                clicked => { root.page-sort = mod(root.page-sort + 1, 4); root.filter-page(page-filter.text, root.page-sort); }
+                            }
+                            Rectangle {
+                                visible: root.page-playable && !root.show-lyrics;
+                                width: self.visible ? 180px : 0px;
+                                height: 30px;
+                                border-radius: 6px;
+                                background: page-filter.has-focus ? Theme.hover : Theme.field;
+                                Icon { x: 8px; width: 14px; height: 14px; y: (parent.height - 14px) / 2; shape: Icons.search; tint: Theme.subdued; }
+                                page-filter := TextInput {
+                                    x: 28px;
+                                    width: parent.width - 36px;
+                                    height: parent.height;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                    font-size: 12px;
+                                    color: Theme.text;
+                                    text <=> root.page-filter-text;
+                                    edited => { root.filter-page(self.text, root.page-sort); }
+                                }
+                                if page-filter.text == "" : Text {
+                                    x: 28px;
+                                    height: parent.height;
+                                    vertical-alignment: center;
+                                    text: "Find in page";
+                                    font-size: 12px;
+                                    color: Theme.subdued;
+                                }
+                            }
+                        }
                         Rectangle { height: 1px; background: #ffffff1a; }
                         if root.show-lyrics : LyricsView {
                             vertical-stretch: 1;
@@ -861,9 +966,15 @@ slint::slint! {
                                 data: row;
                                 number: root.numbered && row.uri.starts-with("spotify:track:") ? i + 1 : 0;
                                 playing: row.uri == root.current-track;
+                                audible: self.playing && root.playing;
                                 // "Show more tracks" and similar app rows have no menu.
                                 menu: !row.uri.starts-with("slimspot:");
-                                clicked => { root.play-uri(row.uri); }
+                                draggable: root.editable && root.page-sort == 0 && root.page-filter-text == "";
+                                index: i;
+                                count: root.tracks.length;
+                                // Like Spotify: the playing row pauses/resumes instead of restarting.
+                                clicked => { if (!self.dragged) { if (self.playing) { root.toggle(); } else { root.play-uri(row.uri); } } }
+                                dropped(n) => { root.move-row(i, i + n); }
                                 open-menu(x, y) => { root.open-row-menu(row, x, y, false); }
                                 need-cover => { root.need-cover(0, i, row.uri, row.cover-url); }
                             }
@@ -929,7 +1040,8 @@ slint::slint! {
                         if !root.menu-playlists : Rectangle { height: 1px; background: Theme.border; }
                         if !root.menu-playlists : MenuEntry { label: "Copy link"; shape: Icons.link; clicked => { root.menu-act("copy"); } }
                         if !root.menu-playlists && is-track && root.editable && !root.menu-sidebar : MenuEntry { label: "Remove from this playlist"; shape: Icons.trash; danger: true; clicked => { root.menu-act("remove"); } }
-                        if !root.menu-playlists && root.menu-sidebar && root.menu-row.uri.starts-with("spotify:playlist:") : MenuEntry { label: "Remove from Your Library"; shape: Icons.trash; danger: true; clicked => { root.menu-act("unfollow"); } }
+                        if !root.menu-playlists && !root.menu-sidebar && (root.menu-row.uri.starts-with("spotify:album:") || root.menu-row.uri.starts-with("spotify:artist:")) : MenuEntry { label: root.menu-row.uri.starts-with("spotify:artist:") ? "Follow" : "Save to Your Library"; shape: Icons.plus; clicked => { root.menu-act("save"); } }
+                        if !root.menu-playlists && root.menu-sidebar && (root.menu-row.uri.starts-with("spotify:playlist:") || root.menu-row.uri.starts-with("spotify:album:") || root.menu-row.uri.starts-with("spotify:artist:")) : MenuEntry { label: "Remove from Your Library"; shape: Icons.trash; danger: true; clicked => { root.menu-act("unfollow"); } }
                         if root.menu-playlists : MenuEntry { label: "Back"; shape: Icons.back; clicked => { root.menu-playlists = false; } }
                         if root.menu-playlists : Rectangle { height: 1px; background: Theme.border; }
                         if root.menu-playlists : VerticalLayout {
@@ -1177,7 +1289,9 @@ slint::slint! {
         callback next();
         callback prev();
         callback quit();
-        tooltip: "SlimSpot";
+        // Rust shows the playing track here.
+        in-out property <string> tip: "SlimSpot";
+        tooltip: root.tip;
         clicked => { root.show-window(); }
         Menu {
             MenuItem { title: "Show SlimSpot"; activated => { root.show-window(); } }
