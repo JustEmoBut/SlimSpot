@@ -7,7 +7,7 @@ Spotify ToS concerns are accepted by the owner. Prepared for a public release (2
 - RAM is the deciding metric. Measure **Private bytes** of the installed build (`fast` profile; same RAM as the LTO release, measured 2026-10-04) while a track plays, sampled 3× over 10 s
   (`Get-Process slimspot`), after opening a playlist and scrolling. Working Set includes shared DLLs and is secondary.
 - Budget: **50 MB private** while playing (owner's limit, set 2026-10-05); small per-feature growth is acceptable within it.
-- Reference points (2026-10-05, after the feature batch): ~15.7 MB private at startup idle, 22.7 MB while playing after opening and scrolling a 790-song playlist. Startup was 11.5 MB at the start of that day; search tabs/podcasts/popups added ~3.5 MB (podcast loading ~0.6 MB of it, the rest not isolated). Spotifast (egui) claims 100–250 MB; a Tauri app measured 194 MB.
+- Reference points (2026-10-05, after the feature batch): ~15.7 MB private at startup idle, 22.7 MB while playing after opening and scrolling a 790-song playlist. Startup was 11.5 MB at the start of that day; search tabs/podcasts/popups added ~3.5 MB (podcast loading ~0.6 MB of it, the rest not isolated). Winamp skin mode (built-in skin, idle): 16.7 MB. Spotifast (egui) claims 100–250 MB; a Tauri app measured 194 MB.
 - Any new feature reports its RAM delta. No GPU renderer, no webview, no browser engine.
 
 ## Commands
@@ -26,14 +26,17 @@ Spotify ToS concerns are accepted by the owner. Prepared for a public release (2
 | `player.rs` | Backend tokio thread: login, Spotify Connect device (Spirc), command/event loop, reconnect |
 | `web.rs` | Spotify Web API (separate OAuth grant): search (all + per-type tabs, paged), queue (view, add), recently played, liked checks, playlists (create, edit name/description, cover upload, remove, add/remove/reorder tracks), Liked Songs, albums, artist release groups (paged), newest release, saved albums, followed artists, saved podcasts + episodes (paged), saved episodes ("Your Episodes"), like/unlike, devices, transfer |
 | `covers.rs` | Thumbnails for instantiated rows only (track list, sidebar, "Add songs" results, Home tiles), 64 px, max 300 decoded; 300 px for the now-playing panel and page header (one each) |
-| `settings.rs` | `settings.json`: volume, shuffle, repeat, quality, normalize, last session, last-opened times of library entries, theme |
+| `settings.rs` | `settings.json`: volume, shuffle, repeat, quality, normalize, last session, last-opened times of library entries, theme, GPU renderer, skin path/mode, EQ |
 | `media_keys.rs` | Windows SystemMediaTransportControls (windows-only) |
 | `logger.rs` | File logger for warn/error, including librespot's |
 | `instance.rs` | Single instance via a named event; a second launch wakes the running window; title bar colors via DWM (windows-only) |
 | `lyrics.rs` | Lyrics via librespot `spclient().get_lyrics` (Spotify's color-lyrics, no Web API), parsing and current-line lookup |
 | `nav.rs` | Back/forward history of whole pages (rows included, 20 deep) |
 | `clipboard.rs` | Win32 plain-text clipboard and `open.spotify.com` links for "Copy link" (windows-only) |
-| `dialog.rs` | Native Open dialog (IFileOpenDialog) for picking a playlist cover (windows-only) |
+| `dialog.rs` | Native Open dialog (IFileOpenDialog) for picking a playlist cover or a .wsz skin (windows-only) |
+| `skin.rs` | Winamp classic skins: own zip reader, BMP sheets to `WaSkin`, pledit.txt colors, text.bmp glyph cells; built-in skin embedded from `assets/skin/` |
+| `eq.rs` | 10-band EQ, preamp and balance: `EqSink` wraps librespot's sink, settings via a static (`eq::set`) |
+| `examples/default_skin.rs` | Draws the built-in skin into `assets/skin/*.png` (`cargo run --example default_skin`) |
 | `taskbar.rs` | Taskbar thumbnail buttons (prev/play-pause/next) and progress via ITaskbarList3 (windows-only) |
 | `autostart.rs` | "Start with Windows": HKCU `Run` value `"<exe>" --tray` (windows-only) |
 | `build.rs` | Embeds `assets/icon.ico` into the exe via the Windows SDK's `rc.exe` (skipped with a warning if missing) |
@@ -57,7 +60,11 @@ Spotify ToS concerns are accepted by the owner. Prepared for a public release (2
 - **Paused audio stays open**: librespot's rodio sink only pauses (`rodio_sink.pause()`), the output stream lives on. Measured 2026-10-05: 16 ms CPU per 10 s paused, private 17.6 MB vs 14.0 MB before the first play; not worth a custom sink. Whether the open stream blocks system sleep is unverified (`powercfg /requests` needs admin).
 - **Font**: Poppins Regular/SemiBold (SIL OFL, `assets/fonts/`, license in `OFL.txt`) embedded with `import "../assets/fonts/…ttf"` in `slint!` and set as `default-font-family`; ~320 KB of exe, no measurable private RAM.
 - **Title bar**: kept native (snap, resize) but colored through DWM (`DWMWA_CAPTION_COLOR`/`TEXT_COLOR`/`BORDER_COLOR`, Windows 11) to blend into `Theme.base`. A frameless window would need its own move/snap handling.
-- **Renderer stays software**: the femtovg (OpenGL) renderer measured 103.4 MB private vs 15.6 MB (2026-10-04), almost all of it the GL driver; blur, smooth large animations and rounded gradients would need it.
+- **Renderer: software by default, GPU optional** (Settings → "GPU acceleration", `settings.json` `gpu`, applies on restart; chosen in `main::select_renderer` before the window exists, falls back to software). femtovg is compiled in, which makes it Slint's default, so software is selected by name. femtovg measured 103.4 MB private vs 15.6 MB (2026-10-04), almost all of it the GL driver: over the 50 MB budget, hence opt-in (owner's call, 2026-10-05).
+- **Winamp skin mode** (Ctrl+W, settings, options menu): the same window becomes the classic main + EQ + playlist stack (275 px wide, 1x/2x), frameless (`no-frame`), min = max size. Sprite coordinates are webamp's `skinSprites`. Classic `.wsz` only; any sheet a skin lacks comes from the built-in skin (Spotifast's model). The built-in skin is original art (Midnight Indigo, own 5x6 font), not a copy of Winamp's base skin, which stays out of the repo for licensing.
+- **Skin window mechanics**: Slint's `WindowMoveArea` didn't move the window (winit posts `WM_NCLBUTTONDOWN` asynchronously); `instance::start_move` sends it synchronously, then dispatches a pointer release, since the move loop eats it and Slint would route every later click to the title bar. The size is set again 50 ms after entering (`FRAME_SETTLE`), once the old frame is gone (else a black margin). Slint drops `WS_MAXIMIZEBOX` while min = max and never restores it: `instance::enable_maximize` on leaving.
+- **Skin controls**: options menu (right click on a title bar, the O, the menu icon): big window, choose skin, built-in skin, double size, always on top, quit. Eject and the playlist's eject also return to the big window. LIST opens library entries into the playlist window (= the current page's rows); double-click plays. ADD/REM/SEL/MISC, AUTO, the EQ graph, shade and visualizer are decorative.
+- **EQ**: real, not decorative: RBJ peaking biquads (Q 1) at Winamp's 10 bands, ±12 dB, plus preamp and balance, in `EqSink` around the rodio sink; bypassed when off and flat. Sliders apply at once (`eq::set`), saved on release (`Command::Eq`). Presets are Winamp's built-in ones.
 - **Queue view** (`Ctrl+U`, bar icon): Spirc keeps its queue private, so the page comes from Web API `/me/player/queue`. It opens as a track list; clicking a row plays that list, not the original context.
 - **Search "Show more"**: a search page with a further page ends with a `slimspot:more` row; clicking it appends the next `offset` page to the same history entry (`nav::History::current_mut`). Rows with a `slimspot:` URI have no context menu.
 - **Search tabs** (All/Songs/Albums/Artists/Playlists, `Page.search`): All mixes artists, albums and tracks (pages tracks while a full 10 came back); the type tabs page by the response's `next`, since playlist results contain nulls (2 of 10 seen 2026-10-05). Switching tabs replaces the search page in history instead of pushing one.
