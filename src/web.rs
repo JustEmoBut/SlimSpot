@@ -45,8 +45,10 @@ const ARTIST_ALBUM_PAGES: usize = 5;
 const SEARCH_ARTISTS: usize = 3;
 const SEARCH_ALBUMS: usize = 6;
 const CONTAINS_LIMIT: usize = 40;
-const PAGE_LIMIT: u32 = 50;
+pub const PAGE_LIMIT: u32 = 50;
 pub const LIKED_SONGS: &str = "liked";
+/// Sidebar row for saved podcast episodes (Spotify's "Your Episodes").
+pub const YOUR_EPISODES: &str = "episodes";
 
 /// Thread-safe row data; `ui::Row` holds a `slint::Image`, which must stay on the UI thread.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -340,15 +342,32 @@ impl WebApi {
         Ok(items.iter().filter_map(|i| show_row(&i["show"])).collect())
     }
 
-    /// The show's name and newest episodes (first page only). The publisher comes from librespot
-    /// (`player::show_publisher`): this app's `/shows/{id}` has no `publisher` field (seen 2026-10-05).
-    pub async fn show_episodes(&mut self, session: &Session, show_uri: &str) -> Result<(String, Vec<Item>), String> {
+    /// The show's name. The publisher comes from librespot (`player::show_publisher`): this
+    /// app's `/shows/{id}` has no `publisher` field (seen 2026-10-05).
+    pub async fn show_name(&mut self, session: &Session, show_uri: &str) -> Result<String, String> {
         let id = show_uri.strip_prefix("spotify:show:").ok_or("Not a show URI")?;
         let show = self.get_json(session, &format!("{API}/shows/{id}")).await?;
-        // ponytail: newest PAGE_LIMIT episodes only; follow `next` if older episodes are wanted.
-        let page = self.get_json(session, &format!("{API}/shows/{id}/episodes?limit={PAGE_LIMIT}")).await?;
+        Ok(show["name"].as_str().unwrap_or_default().into())
+    }
+
+    /// One page of a show's episodes, newest first, and whether older ones follow.
+    pub async fn show_episodes(&mut self, session: &Session, show_uri: &str, offset: u32) -> Result<(Vec<Item>, bool), String> {
+        let id = show_uri.strip_prefix("spotify:show:").ok_or("Not a show URI")?;
+        let page = self.get_json(session, &format!("{API}/shows/{id}/episodes?limit={PAGE_LIMIT}&offset={offset}")).await?;
         let rows = page["items"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(episode_row).collect();
-        Ok((show["name"].as_str().unwrap_or_default().into(), rows))
+        Ok((rows, page["next"].is_string()))
+    }
+
+    /// Saved episodes ("Your Episodes"); `/me/episodes` items wrap the episode, which names its show.
+    pub async fn saved_episodes(&mut self, session: &Session) -> Result<Vec<Item>, String> {
+        let items = self.all_items(session, format!("{API}/me/episodes?limit={PAGE_LIMIT}")).await?;
+        Ok(items
+            .iter()
+            .filter_map(|i| {
+                let show = i["episode"]["show"]["name"].as_str().unwrap_or_default().to_string();
+                episode_row(&i["episode"]).map(|e| Item { artist: show, ..e })
+            })
+            .collect())
     }
 
     /// Followed artists; this endpoint pages by cursor under `artists`, not by `items`/`next` at the top.

@@ -118,6 +118,8 @@ pub struct Settings {
     /// Spotify's loudness normalisation (librespot "auto": album gain in albums, track gain otherwise).
     pub normalize: bool,
     pub last: Option<LastSession>,
+    /// Library URI -> when it was last opened (Unix seconds), for the "Recents" sort.
+    pub opened: std::collections::HashMap<String, u64>,
     path: PathBuf,
 }
 
@@ -136,6 +138,10 @@ impl Settings {
             quality: json["quality"].as_i64().map_or(Quality::default(), Quality::from_ui),
             normalize: json["normalize"].as_bool().unwrap_or(false),
             last: LastSession::from_json(&json["last"]),
+            opened: json["opened"]
+                .as_object()
+                .map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_u64()?))).collect())
+                .unwrap_or_default(),
             path,
         }
     }
@@ -148,6 +154,7 @@ impl Settings {
             "quality": self.quality.as_ui(),
             "normalize": self.normalize,
             "last": self.last.as_ref().map(LastSession::to_json),
+            "opened": self.opened,
         });
         std::fs::write(&self.path, json.to_string()).map_err(|e| format!("Saving settings failed: {e}"))
     }

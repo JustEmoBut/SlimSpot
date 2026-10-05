@@ -268,9 +268,11 @@ slint::slint! {
                     border-radius: data.uri.starts-with("spotify:artist:") ? root.cover-size / 2 : 4px;
                     clip: true;
                     // Spotify has no image for Liked Songs; mimic its gradient tile.
-                    background: data.uri == "liked" ? @linear-gradient(135deg, #450af5 0%, #c4efd9 100%) : data.uri.starts-with("slimspot:") ? transparent : Theme.raised;
+                    // "Your Episodes" gets Spotify's green tile.
+                    background: data.uri == "liked" ? @linear-gradient(135deg, #450af5 0%, #c4efd9 100%) : data.uri == "episodes" ? rgb(0, 100, 80) : data.uri.starts-with("slimspot:") ? transparent : Theme.raised;
                     Image { source: data.cover; width: parent.width; height: parent.height; image-fit: cover; }
                     if data.uri.starts-with("slimspot:") : Icon { width: parent.width * 0.6; height: self.width; shape: Icons.search; tint: Theme.subdued; }
+                    if data.uri == "episodes" : Icon { width: parent.width * 0.5; height: self.width; shape: Icons.radio; tint: Theme.text; }
                     if data.uri == "liked" : Icon { width: parent.width * 0.5; height: self.width; shape: Icons.heart; filled: true; tint: Theme.text; }
                     // Tracks: a play arrow on hover, equalizer bars while playing (like Spotify's row number).
                     if (data.uri.starts-with("spotify:track:") || data.uri.starts-with("spotify:episode:")) && (root.has-hover || root.playing) : Rectangle {
@@ -571,12 +573,16 @@ slint::slint! {
         }
         in-out property <Row> confirm-row;
         callback play-page();
-        callback filter-library(int, string, bool);
+        callback filter-library(int, string, int);
         // Find in page: 0 = page order, 1 = title, 2 = artist, 3 = duration. Rust resets both on a new page.
         in-out property <string> page-filter-text;
         in-out property <int> page-sort;
         callback filter-page(string, int);
         callback move-row(int, int);
+        // "Add songs" popup on own playlists: search results and adding one to the page.
+        in property <[Row]> add-results;
+        callback add-search(string);
+        callback add-to-page(string);
         // Search page tab (0 = All, Songs, Albums, Artists, Playlists); -1 on other pages.
         in property <int> search-tab: -1;
         callback choose-search-tab(int);
@@ -606,7 +612,8 @@ slint::slint! {
         }
         in-out property <string> rename-text;
         in-out property <string> desc-text;
-        in-out property <bool> library-az;
+        // Sidebar sort: 0 = library order, 1 = recently opened, 2 = A-Z.
+        in-out property <int> library-sort;
         in property <bool> page-playable;
         in-out property <int> library-kind;
         in property <[Row]> targets;
@@ -757,7 +764,7 @@ slint::slint! {
                                 chosen: root.library-kind == i + 1;
                                 clicked => {
                                     root.library-kind = root.library-kind == i + 1 ? 0 : i + 1;
-                                    root.filter-library(root.library-kind, lib-filter.text, root.library-az);
+                                    root.filter-library(root.library-kind, lib-filter.text, root.library-sort);
                                 }
                             }
                         }
@@ -778,7 +785,7 @@ slint::slint! {
                                 single-line: true;
                                 font-size: 13px;
                                 color: Theme.text;
-                                edited => { root.filter-library(root.library-kind, self.text, root.library-az); }
+                                edited => { root.filter-library(root.library-kind, self.text, root.library-sort); }
                             }
                             if lib-filter.text == "" : Text {
                                 x: 32px;
@@ -791,10 +798,10 @@ slint::slint! {
                         }
                             Chip {
                                 y: 1px;
-                                label: "A-Z";
+                                label: ["Sort", "Recents", "A-Z"][root.library-sort];
                                 pad: 14px;
-                                chosen: root.library-az;
-                                clicked => { root.library-az = !root.library-az; root.filter-library(root.library-kind, lib-filter.text, root.library-az); }
+                                chosen: root.library-sort != 0;
+                                clicked => { root.library-sort = mod(root.library-sort + 1, 3); root.filter-library(root.library-kind, lib-filter.text, root.library-sort); }
                             }
                         }
                         ListView {
@@ -945,6 +952,13 @@ slint::slint! {
                                         size: 18px;
                                         clicked => { root.creating = false; root.rename-text = root.page-title; root.desc-text = root.page-info; rename-popup.show(); }
                                     }
+                                    if root.editable : IconButton {
+                                        y: (parent.height - self.height) / 2;
+                                        shape: Icons.plus;
+                                        dot: false;
+                                        size: 18px;
+                                        clicked => { add-popup.show(); }
+                                    }
                                 }
                             }
                         }
@@ -999,6 +1013,11 @@ slint::slint! {
                             lines: root.lyric-lines;
                             current: root.lyric-index;
                             note: root.lyrics-note;
+                        }
+                        if !root.show-lyrics && root.editable && root.tracks.length == 0 : HorizontalLayout {
+                            alignment: center;
+                            padding-top: 24px;
+                            Chip { label: "Let's find something for your playlist"; chosen: true; clicked => { add-popup.show(); } }
                         }
                         if !root.show-lyrics : ListView {
                             vertical-stretch: 1;
@@ -1094,6 +1113,64 @@ slint::slint! {
                     }
                 }
             }
+            add-popup := PopupWindow {
+                x: (root.width - 480px) / 2;
+                y: 96px;
+                width: 480px;
+                height: min(520px, root.height - 120px);
+                close-policy: close-on-click-outside;
+                Rectangle {
+                    background: Theme.raised;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    drop-shadow-blur: 16px;
+                    drop-shadow-color: #00000099;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 10px;
+                        Text { text: "Add songs to " + root.page-title; font-size: 15px; font-weight: 700; color: Theme.text; overflow: elide; }
+                        Rectangle {
+                            height: 36px;
+                            border-radius: 6px;
+                            background: Theme.field;
+                            Icon { x: 8px; width: 16px; height: 16px; y: (parent.height - 16px) / 2; shape: Icons.search; tint: Theme.subdued; }
+                            add-query := TextInput {
+                                init => { self.focus(); }
+                                x: 32px;
+                                width: parent.width - 40px;
+                                height: parent.height;
+                                vertical-alignment: center;
+                                single-line: true;
+                                font-size: 13px;
+                                color: Theme.text;
+                                accepted => { root.add-search(self.text); }
+                            }
+                            if add-query.text == "" : Text {
+                                x: 32px;
+                                height: parent.height;
+                                vertical-alignment: center;
+                                text: "Search for songs (Enter)";
+                                font-size: 13px;
+                                color: Theme.subdued;
+                            }
+                        }
+                        ListView {
+                            vertical-stretch: 1;
+                            for row[i] in root.add-results : HorizontalLayout {
+                                spacing: 8px;
+                                RowItem {
+                                    horizontal-stretch: 1;
+                                    data: row;
+                                    menu: false;
+                                    need-cover => { root.need-cover(5, i, row.uri, row.cover-url); }
+                                }
+                                Chip { y: (parent.height - self.height) / 2; label: "Add"; clicked => { root.add-to-page(row.uri); } }
+                            }
+                        }
+                    }
+                }
+            }
             confirm-popup := PopupWindow {
                 x: (root.width - 360px) / 2;
                 y: 160px;
@@ -1146,6 +1223,8 @@ slint::slint! {
                             border-radius: 4px;
                             background: Theme.field;
                             TextInput {
+                                // Popup content is created on every show, so this focuses each time.
+                                init => { self.focus(); self.select-all(); }
                                 text <=> root.rename-text;
                                 x: 10px;
                                 width: parent.width - 20px;

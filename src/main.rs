@@ -142,6 +142,8 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_go_home(send(|| Command::Home));
     app.on_check_liked_more(send(|| Command::CheckLikedMore));
     app.on_play_page(send(|| Command::PlayPage));
+    app.on_add_search(send_str(Command::AddSearch));
+    app.on_add_to_page(send_str(Command::AddToPage));
     {
         let tx = tx.clone();
         app.on_choose_search_tab(move |tab| {
@@ -150,8 +152,8 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     {
         let tx = tx.clone();
-        app.on_filter_library(move |kind, text, az| {
-            let _ = tx.send(Command::FilterLibrary { kind, text: text.to_string(), az });
+        app.on_filter_library(move |kind, text, sort| {
+            let _ = tx.send(Command::FilterLibrary { kind, text: text.to_string(), sort });
         });
     }
     {

@@ -20,7 +20,8 @@ const BIG_COVER_PX: u32 = 300;
 // Corner radius baked into non-artist covers, in thumbnail pixels (~4 px on a 48 px row at 1x).
 const CORNER_PX: f32 = 6.0;
 
-/// kind: 0 = track list, 1 = sidebar, 2 = now-playing bar, 3 = now-playing panel, 4 = page header
+/// kind: 0 = track list, 1 = sidebar, 2 = now-playing bar, 3 = now-playing panel, 4 = page header,
+/// 5 = "Add songs" results
 /// (matches the Slint callback).
 /// Cover uploads are scaled to this square; a JPEG at JPEG_QUALITY stays far below Spotify's
 /// 256 KB (base64) limit.
@@ -158,11 +159,15 @@ mod tests {
 
 thread_local! {
     /// Rows currently holding a decoded cover, oldest first (UI thread only).
-    static LOADED_COVERS: RefCell<VecDeque<(bool, String)>> = RefCell::default();
+    static LOADED_COVERS: RefCell<VecDeque<(i32, String)>> = RefCell::default();
 }
 
-fn row_model(app: &App, is_list: bool) -> ModelRc<Row> {
-    if is_list { app.get_lists() } else { app.get_tracks() }
+fn row_model(app: &App, kind: i32) -> ModelRc<Row> {
+    match kind {
+        1 => app.get_lists(),
+        5 => app.get_add_results(),
+        _ => app.get_tracks(),
+    }
 }
 
 /// Applies a cover if the row is still the one that asked (the list may have changed meanwhile),
@@ -190,8 +195,7 @@ fn set_cover(app: &App, req: CoverRequest, pixels: SharedPixelBuffer<Rgba8Pixel>
         }
         return;
     }
-    let is_list = req.kind == 1;
-    let model = row_model(app, is_list);
+    let model = row_model(app, req.kind);
     let Some(mut row) = model.row_data(req.index) else { return };
     if row.uri != req.uri.as_str() || row.cover_url != req.url.as_str() {
         return;
@@ -199,10 +203,10 @@ fn set_cover(app: &App, req: CoverRequest, pixels: SharedPixelBuffer<Rgba8Pixel>
     row.cover = slint::Image::from_rgba8(pixels);
     model.set_row_data(req.index, row);
     LOADED_COVERS.with_borrow_mut(|loaded| {
-        loaded.push_back((is_list, req.uri));
+        loaded.push_back((req.kind, req.uri));
         while loaded.len() > MAX_LOADED_COVERS {
-            let Some((is_list, uri)) = loaded.pop_front() else { break };
-            let model = row_model(app, is_list);
+            let Some((kind, uri)) = loaded.pop_front() else { break };
+            let model = row_model(app, kind);
             // ponytail: linear scan per eviction; fine for a few thousand rows, index map if lists get huge.
             if let Some(i) = (0..model.row_count()).find(|&i| model.row_data(i).is_some_and(|r| r.uri == uri.as_str())) {
                 let mut row = model.row_data(i).expect("index from row_count");
