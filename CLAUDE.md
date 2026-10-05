@@ -1,7 +1,7 @@
 # SlimSpot
 
-Personal-use, minimum-RAM native Spotify client for Windows. Rust + Slint (software renderer) + librespot.
-Spotify ToS concerns are accepted by the owner; this is not for distribution.
+Minimum-RAM native Spotify client for Windows. Rust + Slint (software renderer) + librespot. MIT licensed (`LICENSE`); `README.md` is the user-facing doc.
+Spotify ToS concerns are accepted by the owner. Prepared for a public release (2026-10-05), but **the GitHub repo stays private until the owner says otherwise**: never change its visibility on your own.
 
 ## Goal & how it's judged
 - RAM is the deciding metric. Measure **Private bytes** of the installed build (`fast` profile; same RAM as the LTO release, measured 2026-10-04) while a track plays, sampled 3× over 10 s
@@ -16,7 +16,7 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - Release build: `cargo build --release` → `target/release/slimspot.exe` (full LTO, ~4 min after any change since it re-optimises the whole program on one thread; 0.5 MB smaller exe, no RAM difference)
 - Install/update for daily use: `.\install.ps1` (`fast` build, copy to `%LOCALAPPDATA%\Programs\SlimSpot\SlimSpot.exe`, Start menu shortcut, autostart on first install). `-Release` (LTO build), `-NoAutostart`, `-Uninstall`. It stops a running SlimSpot first.
 - Runtime files: `%APPDATA%\SlimSpot\` — `credentials.json` (librespot), `web_refresh_token`, `settings.json`, `slimspot.log` (warn/error only), `audio/` cache
-- Web API client id: env `SLIMSPOT_WEB_CLIENT_ID` (owner's own dev app; redirect `http://127.0.0.1:8989/login`). Without it, the client id the saved token belongs to is reused.
+- Web API client id, first that is set: env `SLIMSPOT_WEB_CLIENT_ID`, Settings → Spotify app (`settings.json` `web_client_id`, validated as 32 hex), the client id the saved token belongs to, else the public app shared by ncspot/spotify-player/Spotifast (Spotifast's model: optional personal id over a shared default). Redirect `http://127.0.0.1:8989/login`. A new id takes effect on restart (one browser consent); clearing it also deletes `web_refresh_token`.
 
 ## Architecture (`src/`)
 | Module | Responsibility |
@@ -46,6 +46,7 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - Spotify Connect device name: `SlimSpot`, type Computer.
 - **Close hides to the tray**, playback continues; real quit is tray "Quit" or `Ctrl+Q` (saves the session, shuts Spirc down so no stale device lingers). The event loop runs via `run_event_loop_until_quit`, not `app.run()`.
 - **Last session is shown paused and loaded on the first Play**, never at startup: loading would make SlimSpot the active device and pause the phone. Saved on track change, pause and quit (`settings.json` → `last`).
+- **Licensing for release**: own code MIT; Slint under its Royalty-free License 2.0, whose attribution is the "Made with Slint" badge in `README.md` (keep it); Poppins under OFL (`assets/fonts/OFL.txt`).
 - **Icons**: `assets/icon.svg` is the source; `icon-64.png`/`icon-256.png` are rendered from it (headless Edge, 64 downscaled from 256) and embedded, so no runtime SVG renderer: the tray icon with `include_bytes!`, the window icon with `@image-url` in the markup (an icon set from Rust never reaches the title bar).
 - **Keyboard**: shortcuts live in one root `FocusScope`; Esc returns focus to it from the search box.
 - **Lyrics**: fetched per track change, not cached on disk; shown in place of the track list (`Ctrl+Y`). Fixed line height + elide so the sung line is centered arithmetically; highlighted on the 500 ms position tick.
