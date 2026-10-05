@@ -18,7 +18,11 @@ A minimal-RAM native Spotify client for Windows, written in Rust with [Slint](ht
 
 ## Install
 
-Requirements: Windows 10/11, a Spotify Premium account. Building needs the Rust toolchain; the exe icon needs the Windows SDK (`rc.exe`), without it the build only skips the icon.
+Requirements: Windows 10/11, a Spotify Premium account.
+
+**Download:** get the zip from [Releases](https://github.com/JustEmoBut/SlimSpot/releases), unzip it and run `SlimSpot.exe`. The exe isn't code-signed, so SmartScreen may warn ("More info" → "Run anyway").
+
+**From source:** needs the Rust toolchain; the exe icon needs the Windows SDK (`rc.exe`), without it the build only skips the icon.
 
 ```powershell
 git clone https://github.com/JustEmoBut/SlimSpot.git
