@@ -872,8 +872,9 @@ pub async fn run(
     // Sleep timer: pause at this instant, or when the playing track ends.
     let mut sleep_at: Option<tokio::time::Instant> = None;
     let mut sleep_after_track = false;
-    // When this window last asked Spirc to load something.
-    let mut last_load: Option<Instant> = None;
+    // What this window last asked Spirc to load (when, track, start position): a dropped session
+    // can kill the load before TrackChanged, so a reconnect or Play retries this, not `now_uri`.
+    let mut last_load: Option<(Instant, String, u32)> = None;
     // Paused by a Paused event (the device is active and `play` works). After a reconnect it isn't,
     // and Spirc ignores `play` while inactive, so Play loads the track again instead.
     let mut paused_here = false;
@@ -1096,7 +1097,7 @@ pub async fn run(
                         _ => None,
                     };
                     let request = load_request(shown.as_ref(), &uri, &settings, 0, true);
-                    last_load = Some(Instant::now());
+                    last_load = Some((Instant::now(), uri.clone(), 0));
                     spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
                 }
                 Command::Submit(s) if parse_track(&s).is_some() => {
@@ -1105,7 +1106,7 @@ pub async fn run(
                     pending_resume = None;
                     playing_context = None;
                     let request = load_request(None, &uri, &settings, 0, true);
-                    last_load = Some(Instant::now());
+                    last_load = Some((Instant::now(), uri.clone(), 0));
                     spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
                 }
                 Command::Submit(q) if q.trim().is_empty() => {}
@@ -1149,15 +1150,21 @@ pub async fn run(
                         playing_context = last.context.clone();
                         let shown = last.context.map(Shown::Context);
                         let request = load_request(shown.as_ref(), &last.item.uri, &settings, last.position_ms, true);
-                        last_load = Some(Instant::now());
+                        last_load = Some((Instant::now(), last.item.uri.clone(), last.position_ms));
                         spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
                     }
                     None if playing || paused_here => spirc_result(&ui, if playing { spirc.pause() } else { spirc.play() }),
                     None => {
-                        let Some(uri) = now_uri.clone() else { continue };
+                        // Nothing started yet (e.g. the session dropped during the first load):
+                        // retry what was last asked for.
+                        let target = now_uri.clone().map(|u| (u, position.0)).or_else(|| last_load.as_ref().map(|l| (l.1.clone(), l.2)));
+                        let Some((uri, at)) = target else {
+                            set_status(&ui, "Nothing to play yet: pick a song");
+                            continue;
+                        };
                         let context = playing_context.clone().map(Shown::Context);
-                        let request = load_request(context.as_ref(), &uri, &settings, position.0, true);
-                        last_load = Some(Instant::now());
+                        let request = load_request(context.as_ref(), &uri, &settings, at, true);
+                        last_load = Some((Instant::now(), uri.clone(), position.0));
                         spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
                     }
                 },
@@ -1215,7 +1222,7 @@ pub async fn run(
                             pending_resume = None;
                             let first = uris[0].clone();
                             let request = load_request(shown.as_ref(), &first, &settings, 0, true);
-                            last_load = Some(Instant::now());
+                            last_load = Some((Instant::now(), first.clone(), 0));
                             spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
                         }
                         Err(e) => set_status(&ui, e),
@@ -1740,7 +1747,12 @@ pub async fn run(
                 let reason = if session_invalid { "connection to Spotify lost" } else { "Connect loop stopped (see slimspot.log)" };
                 log::warn!("Spotify Connect ended unexpectedly: {reason}");
                 set_status(&ui, format!("Spotify Connect stopped: {reason}. Reconnecting..."));
-                let was_playing = playing || last_load.is_some_and(|t| t.elapsed() < RETRY_LOAD_WINDOW);
+                // A load asked for just now whose track never started is retried as asked.
+                let retry = last_load
+                    .as_ref()
+                    .filter(|l| l.0.elapsed() < RETRY_LOAD_WINDOW && now_uri.as_deref() != Some(l.1.as_str()))
+                    .map(|l| (l.1.clone(), l.2));
+                let was_playing = playing || last_load.as_ref().is_some_and(|l| l.0.elapsed() < RETRY_LOAD_WINDOW);
                 generation += 1;
                 (session, spirc, events, mixer) = reconnect(&ui, &cache, &settings, &ended_tx, generation).await;
                 playing = false;
@@ -1748,7 +1760,13 @@ pub async fn run(
                 set_playing(&ui, false);
                 set_status(&ui, "Reconnected");
                 let context = playing_context.clone().map(Shown::Context);
-                resume(&ui, &spirc, context.as_ref().or(shown.as_ref()), &settings, now_uri.as_deref(), position, was_playing);
+                match retry {
+                    Some((uri, at)) => {
+                        let request = load_request(context.as_ref().or(shown.as_ref()), &uri, &settings, at, true);
+                        spirc_result(&ui, spirc.activate().and_then(|()| spirc.load(request)));
+                    }
+                    None => resume(&ui, &spirc, context.as_ref().or(shown.as_ref()), &settings, now_uri.as_deref(), position, was_playing),
+                }
             },
             _ = async { tokio::time::sleep_until(sleep_at.expect("guarded")).await }, if sleep_at.is_some() => {
                 sleep_at = None;
