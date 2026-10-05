@@ -17,22 +17,23 @@ slint::slint! {
     // palette, accent swapped away from Spotify green). Every color is rgb(): inside slint! a hex
     // like #5eead4 tokenizes as a Rust float exponent.
     // Palettes (settings → Theme): 0 Midnight Indigo (default), 1 Nord, 2 Tokyo Night,
-    // 3 Catppuccin Mocha, 4 Rosé Pine. Values from each palette's published colors.
+    // 3 Catppuccin Mocha, 4 Rosé Pine, 5 Dark (neutral black/grey surfaces, Indigo's accents).
+    // Values from each palette's published colors.
     export global Theme {
         in-out property <int> palette;
-        out property <color> base: [rgb(8, 8, 26), rgb(46, 52, 64), rgb(26, 27, 38), rgb(17, 17, 27), rgb(25, 23, 36)][palette];
-        out property <color> panel: [rgb(16, 16, 42), rgb(59, 66, 82), rgb(31, 35, 53), rgb(30, 30, 46), rgb(31, 29, 46)][palette];
-        out property <color> raised: [rgb(27, 27, 56), rgb(67, 76, 94), rgb(41, 46, 66), rgb(49, 50, 68), rgb(38, 35, 58)][palette];
-        out property <color> hover: [rgb(35, 35, 74), rgb(76, 86, 106), rgb(52, 59, 88), rgb(69, 71, 90), rgb(57, 53, 82)][palette];
-        out property <color> selected: [rgb(44, 44, 94), rgb(86, 95, 118), rgb(61, 70, 110), rgb(88, 91, 112), rgb(82, 79, 103)][palette];
-        out property <color> field: [rgb(27, 27, 56), rgb(67, 76, 94), rgb(41, 46, 66), rgb(49, 50, 68), rgb(38, 35, 58)][palette];
+        out property <color> base: [rgb(8, 8, 26), rgb(46, 52, 64), rgb(26, 27, 38), rgb(17, 17, 27), rgb(25, 23, 36), rgb(0, 0, 0)][palette];
+        out property <color> panel: [rgb(16, 16, 42), rgb(59, 66, 82), rgb(31, 35, 53), rgb(30, 30, 46), rgb(31, 29, 46), rgb(18, 18, 18)][palette];
+        out property <color> raised: [rgb(27, 27, 56), rgb(67, 76, 94), rgb(41, 46, 66), rgb(49, 50, 68), rgb(38, 35, 58), rgb(31, 31, 31)][palette];
+        out property <color> hover: [rgb(35, 35, 74), rgb(76, 86, 106), rgb(52, 59, 88), rgb(69, 71, 90), rgb(57, 53, 82), rgb(42, 42, 42)][palette];
+        out property <color> selected: [rgb(44, 44, 94), rgb(86, 95, 118), rgb(61, 70, 110), rgb(88, 91, 112), rgb(82, 79, 103), rgb(51, 51, 51)][palette];
+        out property <color> field: [rgb(27, 27, 56), rgb(67, 76, 94), rgb(41, 46, 66), rgb(49, 50, 68), rgb(38, 35, 58), rgb(36, 36, 36)][palette];
         out property <color> border: rgba(255, 255, 255, 0.08);
-        out property <color> text: [rgb(248, 250, 252), rgb(236, 239, 244), rgb(192, 202, 245), rgb(205, 214, 244), rgb(224, 222, 244)][palette];
-        out property <color> subdued: [rgb(163, 168, 195), rgb(180, 188, 204), rgb(169, 177, 214), rgb(166, 173, 200), rgb(144, 140, 170)][palette];
-        out property <color> muted: [rgb(107, 111, 142), rgb(129, 138, 158), rgb(86, 95, 137), rgb(127, 132, 156), rgb(110, 106, 134)][palette];
-        out property <color> track: [rgb(46, 46, 90), rgb(76, 86, 106), rgb(59, 66, 97), rgb(69, 71, 90), rgb(57, 53, 82)][palette];
-        out property <color> accent: [rgb(139, 92, 246), rgb(136, 192, 208), rgb(122, 162, 247), rgb(203, 166, 247), rgb(196, 167, 231)][palette];
-        out property <color> accent2: [rgb(34, 211, 238), rgb(163, 190, 140), rgb(187, 154, 247), rgb(137, 220, 235), rgb(235, 188, 186)][palette];
+        out property <color> text: [rgb(248, 250, 252), rgb(236, 239, 244), rgb(192, 202, 245), rgb(205, 214, 244), rgb(224, 222, 244), rgb(255, 255, 255)][palette];
+        out property <color> subdued: [rgb(163, 168, 195), rgb(180, 188, 204), rgb(169, 177, 214), rgb(166, 173, 200), rgb(144, 140, 170), rgb(179, 179, 179)][palette];
+        out property <color> muted: [rgb(107, 111, 142), rgb(129, 138, 158), rgb(86, 95, 137), rgb(127, 132, 156), rgb(110, 106, 134), rgb(114, 114, 114)][palette];
+        out property <color> track: [rgb(46, 46, 90), rgb(76, 86, 106), rgb(59, 66, 97), rgb(69, 71, 90), rgb(57, 53, 82), rgb(77, 77, 77)][palette];
+        out property <color> accent: [rgb(139, 92, 246), rgb(136, 192, 208), rgb(122, 162, 247), rgb(203, 166, 247), rgb(196, 167, 231), rgb(139, 92, 246)][palette];
+        out property <color> accent2: [rgb(34, 211, 238), rgb(163, 190, 140), rgb(187, 154, 247), rgb(137, 220, 235), rgb(235, 188, 186), rgb(34, 211, 238)][palette];
         // Progress fill only: the software renderer ignores border-radius on gradient backgrounds,
         // so rounded things (buttons, chips, badges) use the solid accent.
         out property <brush> glow: @linear-gradient(135deg, accent 0%, accent2 100%);
@@ -1449,7 +1450,7 @@ slint::slint! {
                         HorizontalLayout {
                             spacing: 4px;
                             alignment: start;
-                            for name[i] in ["Indigo", "Nord", "Tokyo", "Mocha", "Rosé"] : Chip {
+                            for name[i] in ["Indigo", "Nord", "Tokyo", "Mocha", "Rosé", "Dark"] : Chip {
                                 label: name;
                                 pad: 14px;
                                 chosen: Theme.palette == i;
