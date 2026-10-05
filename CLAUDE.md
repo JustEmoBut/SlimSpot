@@ -32,6 +32,7 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 | `lyrics.rs` | Lyrics via librespot `spclient().get_lyrics` (Spotify's color-lyrics, no Web API), parsing and current-line lookup |
 | `nav.rs` | Back/forward history of whole pages (rows included, 20 deep) |
 | `clipboard.rs` | Win32 plain-text clipboard and `open.spotify.com` links for "Copy link" (windows-only) |
+| `taskbar.rs` | Taskbar thumbnail buttons (prev/play-pause/next) and progress via ITaskbarList3 (windows-only) |
 | `autostart.rs` | "Start with Windows": HKCU `Run` value `"<exe>" --tray` (windows-only) |
 | `build.rs` | Embeds `assets/icon.ico` into the exe via the Windows SDK's `rc.exe` (skipped with a warning if missing) |
 
@@ -76,6 +77,14 @@ Spotify ToS concerns are accepted by the owner; this is not for distribution.
 - **Exe icon without a build-dependency crate**: `build.rs` calls `rc.exe` directly. `assets/icon.ico` holds PNG-compressed 16–256 px entries generated from `icon-256.png`.
 - **Autostart**: the registry `Run` value is the source of truth (the checkbox reads it back after every change). `install.ps1` turns it on only for a first install, so turning it off in the app survives updates.
 - **`--tray` start**: the window is shown once so its HWND exists for the media keys, then hidden as soon as they attach (Slint creates the native window only on first show).
+
+- **Find in page** (`Ctrl+F` on pages with tracks; `Ctrl+L` stays the global search): filter text and sort (page order/title/artist/duration) are applied in the backend (`Command::FilterPage`) to the current page's rows, no request; a new page resets both. "Show more" is hidden while filtering.
+- **Playlist reorder**: drag rows of an own playlist (only unfiltered, page order) with a drop marker line; `PUT /playlists/{id}/items` `range_start`/`insert_before`, then the local rows move.
+- **Library saves**: albums/artists are saved/followed and removed through the unified `/me/library` (`set_saved`), from the row menu and the page header (Spotify-style "Follow"/"Following" pill on artists, round +/check on albums; state from `is_saved` on open, kept in `Page.saved`).
+- **Album header** shows "Album · year · label" (`Page.info`).
+- **Playing row**: clicking or hovering the current track pauses/resumes (shows pause while audible) instead of restarting it.
+- **Taskbar**: thumbnail toolbar icons are drawn in code (16 px, supersampled), the window is subclassed for `THBN_CLICKED` and re-adds buttons on `TaskbarButtonCreated` (the button is recreated after hiding to the tray). Progress turns yellow (paused) when not playing. Tray tooltip shows "Title - Artist".
+- **Toast on track change** was skipped: it needs an AppUserModelID on the Start shortcut (`install.ps1`).
 
 ## Known external constraints (verified against the live API, 2026-10-03)
 - Development Mode Web API: `search` and `/artists/{id}/albums` reject `limit > 10`; playlists/saved tracks accept 50. Search `offset` works up to 990.
