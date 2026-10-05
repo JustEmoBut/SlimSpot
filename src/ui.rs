@@ -987,6 +987,32 @@ slint::slint! {
                 self.menu-y = max(0px, min(y, self.height - 130px));
                 options-menu.show();
             }
+            // ADD / REM / SEL / MISC under the playlist: one popup, items picked by `pl-kind`.
+            property <string> pl-kind;
+            // The selected row, else the playing track.
+            property <string> pl-uri: root.wa-sel >= 0 && root.wa-sel < root.tracks.length ? root.tracks[root.wa-sel].uri : root.current-track;
+            property <bool> pl-track: self.pl-uri.starts-with("spotify:track:");
+            property <bool> pl-chosen: root.wa-sel >= 0 && root.wa-sel < root.tracks.length;
+            function open-pl(kind: string, x: length, y: length) {
+                self.pl-kind = kind;
+                self.menu-x = max(0px, min(x, self.width - 190px));
+                self.menu-y = max(0px, min(y - 150px, self.height - 150px));
+                pl-menu.show();
+            }
+            function pl-act(act: string) {
+                if (act == "search") { root.skin-toggle(); query.focus(); }
+                if (act == "liked") { root.wa-sel = -1; root.open-list("liked"); }
+                if (act == "home") { root.wa-sel = -1; root.go-home(); }
+                if (act == "queue-view") { root.wa-sel = -1; root.show-queue(); }
+                if (act == "sel-none") { root.wa-sel = -1; }
+                if (act == "sel-first" && root.tracks.length > 0) { root.wa-sel = 0; root.wa-pl-y = 0; }
+                if (act == "sel-last" && root.tracks.length > 0) { root.wa-sel = root.tracks.length - 1; root.wa-pl-y = -max(0px, root.tracks.length * 13 * self.s - 174 * self.s); }
+                if (act == "remove" || act == "queue" || act == "like" || act == "radio" || act == "album" || act == "artist" || act == "copy") {
+                    // These change the page (or its rows): the old selection index means nothing there.
+                    if (act == "remove" || act == "radio" || act == "album" || act == "artist") { root.wa-sel = -1; }
+                    root.row-action(act, self.pl-uri);
+                }
+            }
             function open-lists(x: length, y: length) {
                 self.menu-x = max(0px, min(x - 200px, self.width - 220px));
                 self.menu-y = max(0px, min(y - 240px, self.height - 240px));
@@ -1237,6 +1263,13 @@ slint::slint! {
                 // Running time and mini transport in the bottom-right corner.
                 for g[i] in root.wa-pl-time : Sprite { src: root.skin.text; s: root.wa-s; px: 132 + i * 5; py: 204; w: 5; h: 6; sx: g.x; sy: g.y; }
                 for g[i] in root.wa-mini-time : Sprite { src: root.skin.text; s: root.wa-s; px: 191 + i * 5; py: 217; w: 5; h: 6; sx: g.x; sy: g.y; }
+                for kind[i] in ["add", "rem", "sel", "misc"] : TouchArea {
+                    x: (11 + i * 29) * root.wa-s;
+                    y: 204 * root.wa-s;
+                    width: 25 * root.wa-s;
+                    height: 18 * root.wa-s;
+                    clicked => { wa.open-pl(kind, self.absolute-position.x, self.absolute-position.y); }
+                }
                 TouchArea {
                     x: 230 * parent.s;
                     y: 204 * parent.s;
@@ -1283,6 +1316,54 @@ slint::slint! {
                                     if (i == 4) { root.wa-on-top = !root.wa-on-top; }
                                     if (i == 5) { root.quit(); }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+            pl-menu := PopupWindow {
+                x: wa.menu-x;
+                y: wa.menu-y;
+                width: 190px;
+                Rectangle {
+                    background: root.skin.pl-normal-bg;
+                    border-width: 1px;
+                    border-color: root.skin.pl-normal;
+                    VerticalLayout {
+                        padding: 3px;
+                        for item in (wa.pl-kind == "add" ? [
+                            { label: "Search Spotify...", act: "search", on: true },
+                            { label: "Liked Songs", act: "liked", on: true },
+                            { label: "Recently played", act: "home", on: true },
+                            { label: "Queue", act: "queue-view", on: true },
+                        ] : wa.pl-kind == "rem" ? [
+                            { label: "Remove from this playlist", act: "remove", on: root.editable && wa.pl-chosen && wa.pl-track },
+                            { label: "Clear selection", act: "sel-none", on: wa.pl-chosen },
+                        ] : wa.pl-kind == "sel" ? [
+                            { label: "Select first", act: "sel-first", on: root.tracks.length > 0 },
+                            { label: "Select last", act: "sel-last", on: root.tracks.length > 0 },
+                            { label: "Select none", act: "sel-none", on: wa.pl-chosen },
+                        ] : [
+                            { label: "Add to queue", act: "queue", on: wa.pl-track },
+                            { label: "Save to Liked Songs", act: "like", on: wa.pl-track },
+                            { label: "Start radio", act: "radio", on: wa.pl-track },
+                            { label: "Go to album", act: "album", on: wa.pl-track },
+                            { label: "Go to artist", act: "artist", on: wa.pl-track },
+                            { label: "Copy link", act: "copy", on: wa.pl-uri != "" },
+                        ]) : Rectangle {
+                            height: 20px;
+                            background: item.on && pm.has-hover ? root.skin.pl-selected-bg : transparent;
+                            Text {
+                                x: 8px;
+                                text: item.label;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                color: root.skin.pl-normal;
+                                opacity: item.on ? 1 : 0.4;
+                            }
+                            pm := TouchArea {
+                                enabled: item.on;
+                                clicked => { wa.pl-act(item.act); }
                             }
                         }
                     }
