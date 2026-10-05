@@ -24,6 +24,7 @@ paths:
 - An element inside `if cond : ...` can't be referenced by id from outside it, and a PopupWindow's children can't be written from outside the popup: collapse with `visible` + `min/max-height: 0` instead of `if`, and bind popup inputs to root properties (`text <=> root.x`).
 - A layout's minimum height comes from its children; `max-height: 0` alone doesn't shrink it, an explicit `min-height: 0px` is needed too.
 - The software renderer also ignores `border-radius` on gradient backgrounds (they render square); rounded elements use solid colors.
+- Calling a PopupWindow's `close()` inside its own click handler drops the rest of that handler (later callbacks never run). Invoke callbacks first, then close; a Rust callback that opens a modal (file dialog) should defer it with `slint::Timer::single_shot(Duration::ZERO, ..)`.
 - `if cond : for x in list : ...` doesn't parse; put the `for` inside a layout under the `if`.
 - The winit backend passes `Window.icon` to Windows only when the image's cache key changes; a `slint::Image::from_rgba8` image has no key, so a window icon set from Rust never shows. Embed it with `@image-url(...)` in the markup.
 - Fonts embed with `import "../assets/fonts/X.ttf";` inside `slint!` (path relative to the source file) plus `default-font-family` on the Window.
