@@ -316,6 +316,17 @@ impl WebApi {
         self.send(session, http::Method::POST, &format!("{API}/playlists/{id}/items"), Some(body)).await.map(|_| ())
     }
 
+    /// Appends many tracks, in order (Spotify takes at most 100 URIs per request).
+    pub async fn add_tracks(&mut self, session: &Session, playlist: &str, uris: &[String]) -> Result<(), String> {
+        const MAX_URIS_PER_ADD: usize = 100;
+        let id = playlist.strip_prefix("spotify:playlist:").ok_or("Not a playlist")?;
+        for chunk in uris.chunks(MAX_URIS_PER_ADD) {
+            let body = serde_json::json!({ "uris": chunk });
+            self.send(session, http::Method::POST, &format!("{API}/playlists/{id}/items"), Some(body)).await?;
+        }
+        Ok(())
+    }
+
     /// Removes every occurrence of `uri` from the playlist.
     pub async fn remove_from_playlist(&mut self, session: &Session, playlist: &str, uri: &str) -> Result<(), String> {
         let id = playlist.strip_prefix("spotify:playlist:").ok_or("Not a playlist")?;

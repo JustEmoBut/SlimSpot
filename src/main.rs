@@ -143,6 +143,17 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_check_liked_more(send(|| Command::CheckLikedMore));
     app.on_play_page(send(|| Command::PlayPage));
     app.on_add_search(send_str(Command::AddSearch));
+    app.on_save_radio(send(|| Command::SaveRadio));
+    {
+        let (weak, tx) = (app.as_weak(), tx.clone());
+        app.on_set_theme(move |palette| {
+            #[cfg(windows)]
+            if let Some(app) = weak.upgrade() {
+                instance::dark_title_bar(&app);
+            }
+            let _ = tx.send(Command::Theme(palette));
+        });
+    }
     app.on_add_to_page(send_str(Command::AddToPage));
     {
         let tx = tx.clone();

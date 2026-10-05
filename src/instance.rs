@@ -67,14 +67,16 @@ pub fn dark_title_bar(app: &crate::ui::App) {
         let _ = unsafe { DwmSetWindowAttribute(hwnd, attribute, (&value as *const u32).cast(), size_of::<u32>() as u32) };
     };
     set(DWMWA_USE_IMMERSIVE_DARK_MODE, 1);
-    // Theme colors as COLORREF (0x00BBGGRR): the caption blends into Theme.base, the title is Theme.subdued.
-    set(DWMWA_CAPTION_COLOR, colorref(8, 8, 26));
-    set(DWMWA_TEXT_COLOR, colorref(163, 168, 195));
-    set(DWMWA_BORDER_COLOR, colorref(27, 27, 56));
+    // The current palette's colors: the caption blends into Theme.base, the title is Theme.subdued.
+    let theme = app.global::<crate::ui::Theme>();
+    set(DWMWA_CAPTION_COLOR, colorref(theme.get_base()));
+    set(DWMWA_TEXT_COLOR, colorref(theme.get_subdued()));
+    set(DWMWA_BORDER_COLOR, colorref(theme.get_raised()));
 }
 
-fn colorref(r: u8, g: u8, b: u8) -> u32 {
-    u32::from(r) | u32::from(g) << 8 | u32::from(b) << 16
+/// COLORREF is 0x00BBGGRR.
+fn colorref(c: slint::Color) -> u32 {
+    u32::from(c.red()) | u32::from(c.green()) << 8 | u32::from(c.blue()) << 16
 }
 
 impl Instance {

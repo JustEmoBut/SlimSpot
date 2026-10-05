@@ -16,23 +16,26 @@ slint::slint! {
     // "Midnight Indigo": deep navy surfaces, violet accent fading into cyan (ui-ux-pro-max music
     // palette, accent swapped away from Spotify green). Every color is rgb(): inside slint! a hex
     // like #5eead4 tokenizes as a Rust float exponent.
-    global Theme {
-        out property <color> base: rgb(8, 8, 26);
-        out property <color> panel: rgb(16, 16, 42);
-        out property <color> raised: rgb(27, 27, 56);
-        out property <color> hover: rgb(35, 35, 74);
-        out property <color> selected: rgb(44, 44, 94);
-        out property <color> field: rgb(27, 27, 56);
+    // Palettes (settings → Theme): 0 Midnight Indigo (default), 1 Nord, 2 Tokyo Night,
+    // 3 Catppuccin Mocha, 4 Rosé Pine. Values from each palette's published colors.
+    export global Theme {
+        in-out property <int> palette;
+        out property <color> base: [rgb(8, 8, 26), rgb(46, 52, 64), rgb(26, 27, 38), rgb(17, 17, 27), rgb(25, 23, 36)][palette];
+        out property <color> panel: [rgb(16, 16, 42), rgb(59, 66, 82), rgb(31, 35, 53), rgb(30, 30, 46), rgb(31, 29, 46)][palette];
+        out property <color> raised: [rgb(27, 27, 56), rgb(67, 76, 94), rgb(41, 46, 66), rgb(49, 50, 68), rgb(38, 35, 58)][palette];
+        out property <color> hover: [rgb(35, 35, 74), rgb(76, 86, 106), rgb(52, 59, 88), rgb(69, 71, 90), rgb(57, 53, 82)][palette];
+        out property <color> selected: [rgb(44, 44, 94), rgb(86, 95, 118), rgb(61, 70, 110), rgb(88, 91, 112), rgb(82, 79, 103)][palette];
+        out property <color> field: [rgb(27, 27, 56), rgb(67, 76, 94), rgb(41, 46, 66), rgb(49, 50, 68), rgb(38, 35, 58)][palette];
         out property <color> border: rgba(255, 255, 255, 0.08);
-        out property <color> text: rgb(248, 250, 252);
-        out property <color> subdued: rgb(163, 168, 195);
-        out property <color> muted: rgb(107, 111, 142);
-        out property <color> track: rgb(46, 46, 90);
-        out property <color> accent: rgb(139, 92, 246);
-        out property <color> accent2: rgb(34, 211, 238);
+        out property <color> text: [rgb(248, 250, 252), rgb(236, 239, 244), rgb(192, 202, 245), rgb(205, 214, 244), rgb(224, 222, 244)][palette];
+        out property <color> subdued: [rgb(163, 168, 195), rgb(180, 188, 204), rgb(169, 177, 214), rgb(166, 173, 200), rgb(144, 140, 170)][palette];
+        out property <color> muted: [rgb(107, 111, 142), rgb(129, 138, 158), rgb(86, 95, 137), rgb(127, 132, 156), rgb(110, 106, 134)][palette];
+        out property <color> track: [rgb(46, 46, 90), rgb(76, 86, 106), rgb(59, 66, 97), rgb(69, 71, 90), rgb(57, 53, 82)][palette];
+        out property <color> accent: [rgb(139, 92, 246), rgb(136, 192, 208), rgb(122, 162, 247), rgb(203, 166, 247), rgb(196, 167, 231)][palette];
+        out property <color> accent2: [rgb(34, 211, 238), rgb(163, 190, 140), rgb(187, 154, 247), rgb(137, 220, 235), rgb(235, 188, 186)][palette];
         // Progress fill only: the software renderer ignores border-radius on gradient backgrounds,
         // so rounded things (buttons, chips, badges) use the solid accent.
-        out property <brush> glow: @linear-gradient(135deg, rgb(139, 92, 246) 0%, rgb(34, 211, 238) 100%);
+        out property <brush> glow: @linear-gradient(135deg, accent 0%, accent2 100%);
     }
 
     // 24x24 line/fill icons, drawn here (no icon font or image assets).
@@ -124,7 +127,7 @@ slint::slint! {
             border-radius: self.width / 2;
             background: Theme.accent;
             drop-shadow-blur: root.has-hover ? 14px : 8px;
-            drop-shadow-color: rgba(139, 92, 246, 0.55);
+            drop-shadow-color: Theme.accent.transparentize(45%);
             animate width, drop-shadow-blur { duration: 120ms; }
             Icon {
                 width: 18px;
@@ -583,6 +586,9 @@ slint::slint! {
         in property <[Row]> add-results;
         callback add-search(string);
         callback add-to-page(string);
+        callback save-radio();
+        // Settings → Theme: Rust saves it and recolors the title bar.
+        callback set-theme(int);
         // Search page tab (0 = All, Songs, Albums, Artists, Playlists); -1 on other pages.
         in property <int> search-tab: -1;
         callback choose-search-tab(int);
@@ -904,7 +910,7 @@ slint::slint! {
                                     border-radius: self.width / 2;
                                     background: Theme.accent;
                                     drop-shadow-blur: parent.has-hover ? 22px : 12px;
-                                    drop-shadow-color: rgba(139, 92, 246, 0.6);
+                                    drop-shadow-color: Theme.accent.transparentize(40%);
                                     animate drop-shadow-blur { duration: 150ms; }
                                     Icon { width: 26px; height: 26px; shape: Icons.play; filled: true; tint: Theme.text; }
                                 }
@@ -951,6 +957,18 @@ slint::slint! {
                                         dot: false;
                                         size: 18px;
                                         clicked => { root.creating = false; root.rename-text = root.page-title; root.desc-text = root.page-info; rename-popup.show(); }
+                                    }
+                                    if root.page-uri.starts-with("spotify:playlist:") || root.page-uri.starts-with("spotify:album:") || root.page-uri.starts-with("spotify:artist:") : IconButton {
+                                        y: (parent.height - self.height) / 2;
+                                        shape: Icons.radio;
+                                        dot: false;
+                                        size: 18px;
+                                        clicked => { root.row-action("radio", root.page-uri); }
+                                    }
+                                    if root.page-kind == "Radio" : Chip {
+                                        y: (parent.height - self.height) / 2;
+                                        label: "Save as playlist";
+                                        clicked => { root.save-radio(); }
                                     }
                                     if root.editable : IconButton {
                                         y: (parent.height - self.height) / 2;
@@ -1095,7 +1113,7 @@ slint::slint! {
                         if !root.menu-playlists && is-track : MenuEntry { label: "Add to queue"; shape: Icons.queue; clicked => { root.menu-act("queue"); } }
                         if !root.menu-playlists && is-track && root.targets.length > 0 : MenuEntry { label: "Add to playlist"; shape: Icons.plus; submenu: true; clicked => { root.menu-playlists = true; } }
                         if !root.menu-playlists && is-track : MenuEntry { label: "Save to Liked Songs"; shape: Icons.heart; clicked => { root.menu-act("like"); } }
-                        if !root.menu-playlists && is-track : MenuEntry { label: "Start radio"; shape: Icons.radio; clicked => { root.menu-act("radio"); } }
+                        if !root.menu-playlists && (is-track || root.menu-row.uri.starts-with("spotify:playlist:") || root.menu-row.uri.starts-with("spotify:album:") || root.menu-row.uri.starts-with("spotify:artist:")) : MenuEntry { label: "Start radio"; shape: Icons.radio; clicked => { root.menu-act("radio"); } }
                         if !root.menu-playlists && is-track : MenuEntry { label: "Go to artist"; shape: Icons.person; clicked => { root.menu-act("artist"); } }
                         if !root.menu-playlists && is-track : MenuEntry { label: "Go to album"; shape: Icons.disc; clicked => { root.menu-act("album"); } }
                         if !root.menu-playlists && !is-track : MenuEntry { label: "Open"; shape: Icons.open; clicked => { root.menu-act("open"); } }
@@ -1298,6 +1316,17 @@ slint::slint! {
                         }
                         Switch { label: "Normalize volume"; on <=> root.normalize; toggled(v) => { root.set-normalize(v); } }
                         Rectangle { height: 1px; background: Theme.border; }
+                        SectionTitle { text: "THEME"; shape: Icons.settings; }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            alignment: start;
+                            for name[i] in ["Indigo", "Nord", "Tokyo", "Mocha", "Rosé"] : Chip {
+                                label: name;
+                                pad: 14px;
+                                chosen: Theme.palette == i;
+                                clicked => { Theme.palette = i; root.set-theme(i); }
+                            }
+                        }
                         SectionTitle { text: "SLEEP TIMER"; shape: Icons.pause; }
                         HorizontalLayout {
                             spacing: 6px;

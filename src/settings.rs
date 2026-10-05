@@ -120,6 +120,8 @@ pub struct Settings {
     pub last: Option<LastSession>,
     /// Library URI -> when it was last opened (Unix seconds), for the "Recents" sort.
     pub opened: std::collections::HashMap<String, u64>,
+    /// Color palette index (`Theme.palette` in the markup).
+    pub theme: i32,
     path: PathBuf,
 }
 
@@ -142,6 +144,7 @@ impl Settings {
                 .as_object()
                 .map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_u64()?))).collect())
                 .unwrap_or_default(),
+            theme: json["theme"].as_i64().map_or(0, |t| t as i32),
             path,
         }
     }
@@ -155,6 +158,7 @@ impl Settings {
             "normalize": self.normalize,
             "last": self.last.as_ref().map(LastSession::to_json),
             "opened": self.opened,
+            "theme": self.theme,
         });
         std::fs::write(&self.path, json.to_string()).map_err(|e| format!("Saving settings failed: {e}"))
     }

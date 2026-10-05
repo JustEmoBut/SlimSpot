@@ -62,6 +62,8 @@ pub enum Command {
     CycleRepeat,
     Quality(Quality),
     Normalize(bool),
+    /// Settings → Theme: remember the palette.
+    Theme(i32),
     /// Save the session, disconnect the Connect device and end the UI event loop.
     Quit,
     ToggleLike,
@@ -87,6 +89,8 @@ pub enum Command {
     FilterLibrary { kind: i32, text: String, sort: i32 },
     /// Find in page: rows of the current page matching `text`, in `sort` order (see `page-sort`).
     FilterPage { text: String, sort: i32 },
+    /// Saves the open radio page as a new private playlist with its tracks.
+    SaveRadio,
     /// "Add songs" popup on an own playlist: search tracks.
     AddSearch(String),
     /// Adds a track from the "Add songs" results to the open own playlist.
@@ -275,13 +279,18 @@ fn track_item(uri: &SpotifyUri, track: Track) -> Item {
 
 /// A track's radio, resolved once: Spotify reshuffles a station every time it is resolved, so
 /// these exact tracks are both shown and played (as a track list, not the station context).
-async fn radio_tracks(session: &Session, track_uri: &str) -> Result<Vec<Item>, String> {
-    let id = track_uri.strip_prefix("spotify:track:").ok_or("Radio needs a Spotify track")?;
-    let rows = context_tracks(session, &format!("spotify:station:track:{id}"))
+/// Radio for a track, playlist, album or artist: Spotify's station context for it
+/// (`spotify:station:<kind>:<id>`).
+async fn radio_tracks(session: &Session, seed_uri: &str) -> Result<Vec<Item>, String> {
+    let station = ["track:", "playlist:", "album:", "artist:"]
+        .iter()
+        .find_map(|kind| seed_uri.strip_prefix("spotify:").filter(|rest| rest.starts_with(kind)))
+        .ok_or("Radio needs a track, playlist, album or artist")?;
+    let rows = context_tracks(session, &format!("spotify:station:{station}"))
         .await
         .map_err(|e| format!("Radio unavailable: {e}"))?;
     if rows.is_empty() {
-        return Err("Spotify has no radio for this track".into());
+        return Err("Spotify has no radio for this".into());
     }
     Ok(rows)
 }
@@ -629,7 +638,14 @@ fn find_item<'a>(nav: &'a History<Page>, library: &'a [Item], now: Option<&'a It
 
 fn push_settings(ui: &slint::Weak<App>, s: &Settings) {
     let (volume, shuffle, repeat, quality, normalize) = (s.volume, s.shuffle, s.repeat.as_ui(), s.quality.as_ui(), s.normalize);
+    let theme = s.theme;
     let _ = ui.upgrade_in_event_loop(move |app| {
+        use slint::ComponentHandle;
+        if app.global::<crate::ui::Theme>().get_palette() != theme {
+            app.global::<crate::ui::Theme>().set_palette(theme);
+            #[cfg(windows)]
+            crate::instance::dark_title_bar(&app);
+        }
         // Don't yank the slider while the user is dragging it.
         if (app.get_volume() - volume).abs() >= 1.0 {
             app.set_volume(volume);
@@ -1045,7 +1061,9 @@ pub async fn run(
                         Ok(rows) => {
                             let uris: Vec<String> = rows.iter().map(|r| r.uri.clone()).collect();
                             set_status(&ui, format!("Radio: {} tracks", rows.len()));
-                            let seed_title = find_item(&nav, &library, now_item.as_ref(), &seed).map(|i| i.title.clone()).unwrap_or_default();
+                            // A page's own radio (header button) isn't one of its rows: use the page title.
+                            let page_title = nav.current().filter(|p| matches!(&p.shown, Shown::Context(c) if *c == seed)).map(|p| p.title.clone());
+                            let seed_title = find_item(&nav, &library, now_item.as_ref(), &seed).map(|i| i.title.clone()).or(page_title).unwrap_or_default();
                             open_page(&ui, &mut nav, &mut shown, Page {
                                 title: format!("{seed_title} Radio"),
                                 rows,
@@ -1390,6 +1408,24 @@ pub async fn run(
                     }
                     set_status(&ui, "Cover updated");
                 }
+                Command::SaveRadio => {
+                    let page = nav.current().filter(|p| p.kind == "Radio").map(|p| (p.title.clone(), p.rows.iter().map(|r| r.uri.clone()).collect::<Vec<_>>()));
+                    let (Some(w), Some((title, uris))) = (web.as_mut(), page) else { continue };
+                    set_status(&ui, "Saving radio...");
+                    let saved = match w.create_playlist(&session, &title, "").await {
+                        Ok(item) => w.add_tracks(&session, &item.uri, &uris).await.map(|()| item),
+                        Err(e) => Err(e),
+                    };
+                    match saved {
+                        Ok(item) => {
+                            set_status(&ui, format!("Saved \"{}\" ({} songs)", item.title, uris.len()));
+                            library.insert(2.min(library.len()), item.clone());
+                            own_lists.insert(0, item);
+                            refresh_library(&ui, &library, &own_lists);
+                        }
+                        Err(e) => set_status(&ui, e),
+                    }
+                }
                 Command::AddSearch(query) => {
                     let Some(w) = web.as_mut() else { continue };
                     if query.trim().is_empty() {
@@ -1485,6 +1521,10 @@ pub async fn run(
                 Command::CycleRepeat => {
                     let next = settings.repeat.next();
                     spirc_result(&ui, spirc.repeat(next == Repeat::All).and_then(|()| spirc.repeat_track(next == Repeat::One)));
+                }
+                Command::Theme(palette) => {
+                    settings.theme = palette;
+                    save_settings(&ui, &settings);
                 }
                 Command::Quality(_) | Command::Normalize(_) => {
                     match cmd {
