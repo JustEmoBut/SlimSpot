@@ -685,7 +685,11 @@ slint::slint! {
         // Winamp skin mode: the window becomes the skin's main (+ EQ + playlist) windows, stacked.
         in-out property <bool> skin-mode;
         in property <WaSkin> skin;
-        in-out property <bool> wa-double;
+        // Free scale (Ctrl+drag on the playlist's corner grip); "Double size" toggles 1x/2x.
+        in-out property <float> wa-scale: 1;
+        property <bool> wa-double: root.wa-scale >= 2;
+        // Extra playlist height in 29 px steps (drag on the corner grip, like Winamp).
+        in-out property <int> wa-pl-ex;
         in-out property <bool> wa-on-top;
         in-out property <bool> wa-eq: true;
         in-out property <bool> wa-pl: true;
@@ -698,11 +702,11 @@ slint::slint! {
         in property <[Glyph]> wa-pl-time;
         in property <[Glyph]> wa-mini-time;
         property <bool> wa-blink;
-        property <length> wa-s: root.wa-double ? 2px : 1px;
-        property <length> wa-w: 275 * root.wa-s;
+        property <length> wa-s: root.wa-scale * 1px;
+        out property <length> wa-w: 275 * root.wa-s;
         property <int> wa-eq-y: 116;
         property <int> wa-pl-top: root.wa-eq ? 232 : 116;
-        property <length> wa-h: (116 + (root.wa-eq ? 116 : 0) + (root.wa-pl ? 232 : 0)) * root.wa-s;
+        out property <length> wa-h: (116 + (root.wa-eq ? 116 : 0) + (root.wa-pl ? 232 + root.wa-pl-ex * 29 : 0)) * root.wa-s;
         changed wa-h => { if (root.skin-mode) { root.skin-resize(root.wa-w, root.wa-h); } }
         changed wa-w => { if (root.skin-mode) { root.skin-resize(root.wa-w, root.wa-h); } }
         callback skin-toggle();
@@ -1046,7 +1050,7 @@ slint::slint! {
             if root.wa-double : Sprite { src: root.skin.titlebar; s: root.wa-s; px: 10; py: 47; w: 8; h: 8; sx: 328; sy: 69; }
             TouchArea { x: 10 * parent.s; y: 25 * parent.s; width: 8 * parent.s; height: 8 * parent.s; clicked => { wa.open-menu(18 * wa.s, 25 * wa.s); } }
             TouchArea { x: 10 * parent.s; y: 33 * parent.s; width: 8 * parent.s; height: 7 * parent.s; clicked => { root.wa-on-top = !root.wa-on-top; } }
-            TouchArea { x: 10 * parent.s; y: 47 * parent.s; width: 8 * parent.s; height: 8 * parent.s; clicked => { root.wa-double = !root.wa-double; } }
+            TouchArea { x: 10 * parent.s; y: 47 * parent.s; width: 8 * parent.s; height: 8 * parent.s; clicked => { root.wa-scale = root.wa-double ? 1 : 2; } }
             // Play state, time, title, bitrate, stereo.
             Sprite { src: root.skin.playpaus; s: parent.s; px: 26; py: 28; w: 9; h: 9; sx: root.playing ? 0 : root.position > 0 ? 9 : 18; sy: 0; }
             Rectangle {
@@ -1189,13 +1193,15 @@ slint::slint! {
             if root.wa-pl : Rectangle {
                 property <length> s: root.wa-s;
                 // Scroll handle position over the list's scroll range.
-                property <length> pl-range: max(1px, root.tracks.length * 13 * self.s - 174 * self.s);
+                // Extra height from the corner grip; the list and side borders grow, the bottom bar moves down.
+                property <int> ex: root.wa-pl-ex * 29;
+                property <length> pl-range: max(1px, root.tracks.length * 13 * self.s - (174 + self.ex) * self.s);
                 property <float> pl-pos: clamp(-root.wa-pl-y / self.pl-range, 0, 1);
                 x: 0;
                 y: root.wa-pl-top * self.s;
                 width: 275 * self.s;
-                height: 232 * self.s;
-                Rectangle { x: 12 * parent.s; y: 20 * parent.s; width: 243 * parent.s; height: 174 * parent.s; background: root.skin.pl-normal-bg; }
+                height: (232 + self.ex) * self.s;
+                Rectangle { x: 12 * parent.s; y: 20 * parent.s; width: 243 * parent.s; height: (174 + parent.ex) * parent.s; background: root.skin.pl-normal-bg; }
                 for i in 11 : Sprite { src: root.skin.pledit; s: root.wa-s; px: i * 25; w: 25; h: 20; sx: 127; sy: 0; }
                 Sprite { src: root.skin.pledit; s: parent.s; w: 25; h: 20; sx: 0; sy: 0; }
                 Sprite { src: root.skin.pledit; s: parent.s; px: 87; w: 100; h: 20; sx: 26; sy: 0; }
@@ -1205,16 +1211,16 @@ slint::slint! {
                 if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) { wa.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y); }
             } }
                 TouchArea { x: 264 * parent.s; y: 3 * parent.s; width: 9 * parent.s; height: 9 * parent.s; clicked => { root.wa-pl = false; } }
-                for i in 6 : Sprite { src: root.skin.pledit; s: root.wa-s; py: 20 + i * 29; w: 12; h: 29; sx: 0; sy: 42; }
-                for i in 6 : Sprite { src: root.skin.pledit; s: root.wa-s; px: 255; py: 20 + i * 29; w: 20; h: 29; sx: 31; sy: 42; }
-                Sprite { src: root.skin.pledit; s: parent.s; py: 194; w: 125; h: 38; sx: 0; sy: 72; }
-                Sprite { src: root.skin.pledit; s: parent.s; px: 125; py: 194; w: 150; h: 38; sx: 126; sy: 72; }
+                for i in 6 + root.wa-pl-ex : Sprite { src: root.skin.pledit; s: root.wa-s; py: 20 + i * 29; w: 12; h: 29; sx: 0; sy: 42; }
+                for i in 6 + root.wa-pl-ex : Sprite { src: root.skin.pledit; s: root.wa-s; px: 255; py: 20 + i * 29; w: 20; h: 29; sx: 31; sy: 42; }
+                Sprite { src: root.skin.pledit; s: parent.s; py: 194 + parent.ex; w: 125; h: 38; sx: 0; sy: 72; }
+                Sprite { src: root.skin.pledit; s: parent.s; px: 125; py: 194 + parent.ex; w: 150; h: 38; sx: 126; sy: 72; }
                 // The page's tracks; double-click plays (the normal list plays on a single click).
                 ListView {
                     x: 12 * parent.s;
                     y: 20 * parent.s;
                     width: 243 * parent.s;
-                    height: 174 * parent.s;
+                    height: (174 + parent.ex) * parent.s;
                     vertical-scrollbar-policy: always-off;
                     horizontal-scrollbar-policy: always-off;
                     content-y <=> root.wa-pl-y;
@@ -1251,41 +1257,70 @@ slint::slint! {
                         }
                     }
                 }
-                Sprite { src: root.skin.pledit; s: parent.s; px: 260; py: 20 + round(parent.pl-pos * (174 - 18)); w: 8; h: 18; sx: handle.pressed ? 61 : 52; sy: 53; }
+                Sprite { src: root.skin.pledit; s: parent.s; px: 260; py: 20 + round(parent.pl-pos * (174 + parent.ex - 18)); w: 8; h: 18; sx: handle.pressed ? 61 : 52; sy: 53; }
                 handle := TouchArea {
                     x: 260 * parent.s;
                     y: 20 * parent.s;
                     width: 8 * parent.s;
-                    height: 174 * parent.s;
+                    height: (174 + parent.ex) * parent.s;
                     moved => {
                         if (self.pressed) {
-                            root.wa-pl-y = -clamp((self.mouse-y / parent.s - 9) / (174 - 18), 0, 1) * parent.pl-range;
+                            root.wa-pl-y = -clamp((self.mouse-y / parent.s - 9) / (174 + parent.ex - 18), 0, 1) * parent.pl-range;
                         }
                     }
                 }
                 // Running time and mini transport in the bottom-right corner.
-                for g[i] in root.wa-pl-time : Sprite { src: root.skin.text; s: root.wa-s; px: 132 + i * 5; py: 204; w: 5; h: 6; sx: g.x; sy: g.y; }
-                for g[i] in root.wa-mini-time : Sprite { src: root.skin.text; s: root.wa-s; px: 191 + i * 5; py: 217; w: 5; h: 6; sx: g.x; sy: g.y; }
+                for g[i] in root.wa-pl-time : Sprite { src: root.skin.text; s: root.wa-s; px: 132 + i * 5; py: 204 + root.wa-pl-ex * 29; w: 5; h: 6; sx: g.x; sy: g.y; }
+                for g[i] in root.wa-mini-time : Sprite { src: root.skin.text; s: root.wa-s; px: 191 + i * 5; py: 217 + root.wa-pl-ex * 29; w: 5; h: 6; sx: g.x; sy: g.y; }
                 for kind[i] in ["add", "rem", "sel", "misc"] : TouchArea {
                     x: (11 + i * 29) * root.wa-s;
-                    y: 204 * root.wa-s;
+                    y: (204 + root.wa-pl-ex * 29) * root.wa-s;
                     width: 25 * root.wa-s;
                     height: 18 * root.wa-s;
                     clicked => { wa.open-pl(kind, self.absolute-position.x, self.absolute-position.y); }
                 }
                 TouchArea {
                     x: 230 * parent.s;
-                    y: 204 * parent.s;
+                    y: (204 + parent.ex) * parent.s;
                     width: 22 * parent.s;
                     height: 18 * parent.s;
                     clicked => { wa.open-lists(self.absolute-position.x, self.absolute-position.y); }
                 }
-                TouchArea { x: 130 * parent.s; y: 216 * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.prev(); } }
-                TouchArea { x: 139 * parent.s; y: 216 * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { if (!root.playing) { root.toggle(); } } }
-                TouchArea { x: 148 * parent.s; y: 216 * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.toggle(); } }
-                TouchArea { x: 157 * parent.s; y: 216 * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.wa-stop(); } }
-                TouchArea { x: 166 * parent.s; y: 216 * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.next(); } }
-                TouchArea { x: 175 * parent.s; y: 216 * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.skin-toggle(); } }
+                TouchArea { x: 130 * parent.s; y: (216 + parent.ex) * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.prev(); } }
+                TouchArea { x: 139 * parent.s; y: (216 + parent.ex) * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { if (!root.playing) { root.toggle(); } } }
+                TouchArea { x: 148 * parent.s; y: (216 + parent.ex) * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.toggle(); } }
+                TouchArea { x: 157 * parent.s; y: (216 + parent.ex) * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.wa-stop(); } }
+                TouchArea { x: 166 * parent.s; y: (216 + parent.ex) * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.next(); } }
+                TouchArea { x: 175 * parent.s; y: (216 + parent.ex) * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.skin-toggle(); } }
+                // Corner grip: the horizontal drag scales the whole skin (1-3x), the vertical one grows the
+                // playlist in 29 px steps, so a diagonal drag does both. Measured in window coordinates from
+                // the press, since the grip itself moves as the window resizes (its top-left stays put).
+                TouchArea {
+                    property <float> s0;
+                    property <length> ax;
+                    property <length> ay;
+                    property <float> oy;
+                    x: 255 * parent.s;
+                    y: (212 + parent.ex) * parent.s;
+                    width: 20 * parent.s;
+                    height: 20 * parent.s;
+                    mouse-cursor: nwse-resize;
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down) {
+                            self.s0 = root.wa-scale;
+                            self.ax = self.absolute-position.x + self.mouse-x;
+                            self.ay = self.absolute-position.y + self.mouse-y;
+                            self.oy = self.mouse-y / parent.s;
+                        }
+                    }
+                    moved => {
+                        if (!self.pressed) { return; }
+                        // The grip's x is 255 * scale, so this keeps it under the pointer.
+                        root.wa-scale = clamp(self.s0 + (self.absolute-position.x + self.mouse-x - self.ax) / 255px, 1, 3);
+                        // Pointer y in skin units, minus where the grip sits with no extra rows.
+                        root.wa-pl-ex = max(0, round(((self.absolute-position.y + self.mouse-y) / (root.wa-scale * 1px) - self.oy - root.wa-pl-top - 212) / 29));
+                    }
+                }
             }
 
             // ---------- Menus, in the playlist's colors like Spotifast's ----------
@@ -1315,7 +1350,7 @@ slint::slint! {
                                     if (i == 0) { root.skin-toggle(); }
                                     if (i == 1) { root.skin-choose(); }
                                     if (i == 2) { root.skin-builtin(); }
-                                    if (i == 3) { root.wa-double = !root.wa-double; }
+                                    if (i == 3) { root.wa-scale = root.wa-double ? 1 : 2; }
                                     if (i == 4) { root.wa-on-top = !root.wa-on-top; }
                                     if (i == 5) { root.quit(); }
                                 }

@@ -91,13 +91,19 @@ pub fn start_move(app: &crate::ui::App) {
         SendMessageW(HWND(h.hwnd.get() as _), WM_NCLBUTTONDOWN, Some(WPARAM(HTCAPTION as usize)), Some(LPARAM(0)));
     }
     // The move loop eats the button release, so Slint would keep the title bar's TouchArea
-    // pressed and route every later click to it. Tell it the button is up.
-    let release = slint::platform::WindowEvent::PointerReleased {
-        position: slint::LogicalPosition::new(0.0, 0.0),
-        button: slint::platform::PointerEventButton::Left,
-    };
-    app.window().dispatch_event(release);
-    app.window().dispatch_event(slint::platform::WindowEvent::PointerExited);
+    // pressed and route every later click to it. Tell it the button is up, on the next turn:
+    // this runs inside the TouchArea's press handler and Slint sets the grab only after it
+    // returns, so a release sent now would be lost and the grab would stay.
+    let weak = app.as_weak();
+    slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+        let Some(app) = weak.upgrade() else { return };
+        let release = slint::platform::WindowEvent::PointerReleased {
+            position: slint::LogicalPosition::new(0.0, 0.0),
+            button: slint::platform::PointerEventButton::Left,
+        };
+        app.window().dispatch_event(release);
+        app.window().dispatch_event(slint::platform::WindowEvent::PointerExited);
+    });
 }
 
 /// Gives the maximize button back after the fixed-size skin. Slint drops it (with WS_MAXIMIZEBOX)

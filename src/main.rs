@@ -562,9 +562,7 @@ impl SkinMode {
             self.full_size.set(Some(app.window().size()));
         }
         app.set_skin_mode(true);
-        let scale = if app.get_wa_double() { 2.0 } else { 1.0 };
-        let height = 116.0 + if app.get_wa_eq() { 116.0 } else { 0.0 } + if app.get_wa_pl() { 232.0 } else { 0.0 };
-        let size = slint::LogicalSize::new(275.0 * scale, height * scale);
+        let size = slint::LogicalSize::new(app.get_wa_w(), app.get_wa_h());
         app.window().set_size(size);
         // no-frame reaches the native window on the next turn of the event loop; sized before that, the
         // old caption and borders stayed as a black margin. Size it again once they're gone.

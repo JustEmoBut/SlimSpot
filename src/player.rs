@@ -1001,6 +1001,12 @@ pub async fn run(
         });
     }
     loop {
+        // After the command that hit it, so its own status doesn't overwrite this.
+        if let Some(w) = web.as_mut() {
+            if std::mem::take(&mut w.quota_switch) {
+                set_status(&ui, "Your Spotify app's quota is used up; using the shared app until the next start.");
+            }
+        }
         tokio::select! {
             Some(cmd) = rx.recv() => match cmd {
                 // Album/artist rows in search results and on artist pages open their page.

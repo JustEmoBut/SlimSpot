@@ -29,6 +29,9 @@ const WEB_SCOPES: &[&str] = &[
     "ugc-image-upload",
 ];
 pub const WEB_TOKEN_FILE: &str = "web_refresh_token";
+/// The shared app's token, kept apart so falling back to it on a quota 429 doesn't drop the
+/// personal app's grant (one browser consent the first time, silent afterwards).
+const SHARED_TOKEN_FILE: &str = "web_refresh_token.shared";
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(60);
 // Same limits Spotifast uses for Web API 429s.
 const RATE_LIMIT_RETRIES: u32 = 3;
@@ -74,6 +77,8 @@ pub struct WebApi {
     grant_key: String,
     /// A personal Client ID Spotify rejected ("invalid_client") at this login; the shared app is used.
     pub gone_client: Option<String>,
+    /// Set when this run switched to the shared app over a quota 429; the command loop reports it.
+    pub quota_switch: bool,
 }
 
 impl WebApi {
@@ -85,12 +90,7 @@ impl WebApi {
         let saved = std::fs::read_to_string(&token_path).unwrap_or_default();
         let saved = saved.split_once('\n');
         let mut client_id = pick_client_id(std::env::var(WEB_CLIENT_ID_ENV).ok(), configured, saved.map(|(key, _)| key));
-        let build = |id: &str| {
-            OAuthClientBuilder::new(id, WEB_REDIRECT_URI, WEB_SCOPES.to_vec())
-                .open_in_browser()
-                .build()
-                .map_err(|e| format!("Web OAuth setup failed: {e}"))
-        };
+        let build = oauth_client;
         let mut client = build(&client_id)?;
         let mut grant_key = format!("{client_id} {}", WEB_SCOPES.join(","));
         let mut gone_client = None;
@@ -120,9 +120,28 @@ impl WebApi {
                     .map_err(|e| format!("Web login failed: {e}"))?
             }
         };
-        let api = Self { client, token, token_path, grant_key, gone_client };
+        let api = Self { client, token, token_path, grant_key, gone_client, quota_switch: false };
         api.save()?;
         Ok(api)
+    }
+
+    /// Switches this run to the shared app after the personal app hit its quota; the next start
+    /// tries the personal app again. Reuses the shared token if saved, else asks the browser once.
+    async fn use_shared_app(&mut self) -> Result<(), String> {
+        let client = oauth_client(DEFAULT_WEB_CLIENT_ID)?;
+        let grant_key = format!("{DEFAULT_WEB_CLIENT_ID} {}", WEB_SCOPES.join(","));
+        let token_path = self.token_path.with_file_name(SHARED_TOKEN_FILE);
+        let saved = std::fs::read_to_string(&token_path).unwrap_or_default();
+        let refreshed = match saved.split_once('\n') {
+            Some((key, rt)) if key == grant_key => refresh(&client, rt.trim()).await.ok(),
+            _ => None,
+        };
+        let token = match refreshed {
+            Some(t) => t,
+            None => client.get_access_token_async().await.map_err(|e| format!("Web login failed: {e}"))?,
+        };
+        *self = Self { client, token, token_path, grant_key, gone_client: self.gone_client.take(), quota_switch: true };
+        self.save()
     }
 
     fn save(&self) -> Result<(), String> {
@@ -166,7 +185,8 @@ impl WebApi {
         payload: bytes::Bytes,
         content_type: &str,
     ) -> Result<serde_json::Value, String> {
-        for attempt in 0..=RATE_LIMIT_RETRIES {
+        let mut attempt = 0;
+        loop {
             let token = self.access_token().await?;
             let req = http::Request::builder()
                 .method(method.clone())
@@ -196,7 +216,16 @@ impl WebApi {
                 200..=299 if method != http::Method::GET => return Ok(serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null)),
                 200..=299 => return serde_json::from_slice(&body).map_err(|e| format!("Response parse failed: {e}")),
                 429 => match retry_after.filter(|d| *d <= MAX_RETRY_AFTER) {
-                    Some(wait) if attempt < RATE_LIMIT_RETRIES => tokio::time::sleep(wait).await,
+                    Some(wait) if attempt < RATE_LIMIT_RETRIES => {
+                        attempt += 1;
+                        tokio::time::sleep(wait).await
+                    }
+                    // A long wait is the personal app's quota penalty: carry on with the shared app.
+                    None if retry_after.is_some() && !self.grant_key.starts_with(DEFAULT_WEB_CLIENT_ID) => {
+                        log::warn!("web client quota exceeded (Retry-After {retry_after:?}); using the shared app");
+                        self.use_shared_app().await?;
+                        attempt = 0;
+                    }
                     _ => return Err(rate_limit_message(retry_after, self.grant_key.starts_with(DEFAULT_WEB_CLIENT_ID))),
                 },
                 // Spotify-owned/editorial playlists are often closed to third-party apps.
@@ -204,7 +233,6 @@ impl WebApi {
                 _ => return Err(format!("HTTP {status}: {}", String::from_utf8_lossy(&body))),
             }
         }
-        unreachable!("the last attempt always returns")
     }
 
     /// Follows `next` links until the paging object ends, collecting `items`.
@@ -536,6 +564,13 @@ fn rate_limit_message(retry_after: Option<Duration>, shared_app: bool) -> String
         "your Spotify app's quota is used up"
     };
     format!("Spotify rate limit: {app}. Search and library work again in {wait}; playback still works.")
+}
+
+fn oauth_client(id: &str) -> Result<OAuthClient, String> {
+    OAuthClientBuilder::new(id, WEB_REDIRECT_URI, WEB_SCOPES.to_vec())
+        .open_in_browser()
+        .build()
+        .map_err(|e| format!("Web OAuth setup failed: {e}"))
 }
 
 fn pick_client_id(env: Option<String>, configured: &str, saved_key: Option<&str>) -> String {
