@@ -1,5 +1,6 @@
 //! Spotify Web API: its own OAuth grant, search, playlists and Liked Songs.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -49,6 +50,8 @@ const SEARCH_ARTISTS: usize = 3;
 const SEARCH_ALBUMS: usize = 6;
 const CONTAINS_LIMIT: usize = 40;
 pub const PAGE_LIMIT: u32 = 50;
+/// Home's "Recently played" shelf; ten 160 px covers are ~1 MB decoded.
+const SHELF_CARDS: usize = 10;
 pub const LIKED_SONGS: &str = "liked";
 /// Sidebar row for saved podcast episodes (Spotify's "Your Episodes").
 pub const YOUR_EPISODES: &str = "episodes";
@@ -69,6 +72,27 @@ pub struct Item {
     pub liked: bool,
 }
 
+impl Item {
+    /// For the on-disk caches (library, Home's new release); every field but `liked`.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "title": self.title, "artist": self.artist, "uri": self.uri, "cover_url": self.cover_url,
+            "artist_uri": self.artist_uri, "album_uri": self.album_uri, "duration_ms": self.duration_ms,
+        })
+    }
+
+    pub fn from_json(v: &serde_json::Value) -> Option<Self> {
+        let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+        Some(Item {
+            uri: v["uri"].as_str().filter(|u| !u.is_empty())?.to_string(),
+            title: s("title"), artist: s("artist"), cover_url: s("cover_url"),
+            artist_uri: s("artist_uri"), album_uri: s("album_uri"),
+            duration_ms: v["duration_ms"].as_u64().unwrap_or(0) as u32,
+            liked: false,
+        })
+    }
+}
+
 pub struct WebApi {
     client: OAuthClient,
     token: OAuthToken,
@@ -79,6 +103,11 @@ pub struct WebApi {
     pub gone_client: Option<String>,
     /// Set when this run switched to the shared app over a quota 429; the command loop reports it.
     pub quota_switch: bool,
+    /// `/me/library/contains` answers, kept current by `set_saved`; read only in low API mode.
+    /// ponytail: saves made in another client show stale until Refresh or restart.
+    saved: HashMap<String, bool>,
+    /// Settings -> "Low API usage": answer `contains` from `saved` where possible.
+    pub low_api: bool,
 }
 
 impl WebApi {
@@ -120,7 +149,7 @@ impl WebApi {
                     .map_err(|e| format!("Web login failed: {e}"))?
             }
         };
-        let api = Self { client, token, token_path, grant_key, gone_client, quota_switch: false };
+        let api = Self { client, token, token_path, grant_key, gone_client, quota_switch: false, saved: HashMap::new(), low_api: false };
         api.save()?;
         Ok(api)
     }
@@ -140,7 +169,7 @@ impl WebApi {
             Some(t) => t,
             None => client.get_access_token_async().await.map_err(|e| format!("Web login failed: {e}"))?,
         };
-        *self = Self { client, token, token_path, grant_key, gone_client: self.gone_client.take(), quota_switch: true };
+        *self = Self { client, token, token_path, grant_key, gone_client: self.gone_client.take(), quota_switch: true, saved: std::mem::take(&mut self.saved), low_api: self.low_api };
         self.save()
     }
 
@@ -289,27 +318,33 @@ impl WebApi {
     /// Liked Songs membership for each URI, in order. `/me/library/contains` takes at most 40 URIs
     /// per request ("Too many uris requested" at 50, verified 2026-10-03).
     pub async fn contains(&mut self, session: &Session, uris: &[String]) -> Result<Vec<bool>, String> {
-        let mut found = Vec::with_capacity(uris.len());
-        for chunk in uris.chunks(CONTAINS_LIMIT) {
-            let json = self.get_json(session, &format!("{API}/me/library/contains?uris={}", chunk.join(","))).await?;
+        let unknown: Vec<&String> = uris.iter().filter(|u| !self.low_api || !self.saved.contains_key(*u)).collect();
+        for chunk in unknown.chunks(CONTAINS_LIMIT) {
+            let joined = chunk.iter().map(|u| u.as_str()).collect::<Vec<_>>().join(",");
+            let json = self.get_json(session, &format!("{API}/me/library/contains?uris={joined}")).await?;
             let flags = json.as_array().map(Vec::as_slice).unwrap_or_default();
-            found.extend((0..chunk.len()).map(|i| flags.get(i).and_then(|f| f.as_bool()).unwrap_or(false)));
+            for (i, uri) in chunk.iter().enumerate() {
+                self.saved.insert((*uri).clone(), flags.get(i).and_then(|f| f.as_bool()).unwrap_or(false));
+            }
         }
-        Ok(found)
+        Ok(uris.iter().map(|u| self.saved[u]).collect())
     }
 
-    /// Recently played tracks, newest first, each once.
-    pub async fn recently_played(&mut self, session: &Session) -> Result<Vec<Item>, String> {
+    /// Recently played tracks (no repeats) and their albums (no repeats, at most `SHELF_CARDS`),
+    /// newest first. The play history's `context` isn't used: it names no playlist, and every
+    /// entry seen came from the same Spotify-made playlist (2026-10-08).
+    pub async fn recently_played(&mut self, session: &Session) -> Result<(Vec<Item>, Vec<Item>), String> {
         let json = self.get_json(session, &format!("{API}/me/player/recently-played?limit={PAGE_LIMIT}")).await?;
+        let history = json["items"].as_array().map(Vec::as_slice).unwrap_or_default();
         let mut seen = std::collections::HashSet::new();
-        Ok(json["items"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default()
+        let tracks = history.iter().filter_map(|i| track_row(&i["track"])).filter(|t| seen.insert(t.uri.clone())).collect();
+        let albums = history
             .iter()
-            .filter_map(|i| track_row(&i["track"]))
-            .filter(|t| seen.insert(t.uri.clone()))
-            .collect())
+            .filter_map(|i| album_row(&i["track"]["album"]))
+            .filter(|a| seen.insert(a.uri.clone()))
+            .take(SHELF_CARDS)
+            .collect();
+        Ok((tracks, albums))
     }
 
     /// A new private playlist owned by the user (`POST /me/playlists`).
@@ -443,13 +478,19 @@ impl WebApi {
     /// Whether a track is in Liked Songs. `/me/tracks/contains` is 403 for this app; the unified
     /// `/me/library` endpoints take URIs and work (verified 2026-10-03).
     pub async fn is_saved(&mut self, session: &Session, uri: &str) -> Result<bool, String> {
-        let json = self.get_json(session, &format!("{API}/me/library/contains?uris={uri}")).await?;
-        Ok(json[0].as_bool().unwrap_or(false))
+        Ok(self.contains(session, &[uri.to_string()]).await?[0])
+    }
+
+    /// Drops the cached library answers (Refresh).
+    pub fn forget_saved(&mut self) {
+        self.saved.clear();
     }
 
     pub async fn set_saved(&mut self, session: &Session, uri: &str, saved: bool) -> Result<(), String> {
         let method = if saved { http::Method::PUT } else { http::Method::DELETE };
-        self.send(session, method, &format!("{API}/me/library?uris={uri}"), None).await.map(|_| ())
+        self.send(session, method, &format!("{API}/me/library?uris={uri}"), None).await?;
+        self.saved.insert(uri.to_string(), saved);
+        Ok(())
     }
 
     /// Spotify Connect devices of this account, as rows: `uri` holds the device id.

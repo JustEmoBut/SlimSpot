@@ -17,11 +17,14 @@ const MAX_LOADED_COVERS: usize = 300;
 const COVER_FETCHES_IN_FLIGHT: usize = 6;
 // Now-playing panel and page header covers (kinds 3 and 4): 300 px is Spotify's middle size.
 const BIG_COVER_PX: u32 = 300;
+// Home shelf cards (kind 8) are drawn 120 px wide; 160 px keeps them sharp at 1.25x scaling.
+const SHELF_COVER_PX: u32 = 160;
 // Corner radius baked into non-artist covers, in thumbnail pixels (~4 px on a 48 px row at 1x).
 const CORNER_PX: f32 = 6.0;
 
 /// kind: 0 = track list, 1 = sidebar, 2 = now-playing bar, 3 = now-playing panel, 4 = page header,
-/// 5 = "Add songs" results, 6/7 = Home tiles (top/bottom row)
+/// 5 = "Add songs" results, 6/7 = Home tiles (left/right column), 8 = Home shelf cards,
+/// 9 = right panel (queue/recent)
 /// (matches the Slint callback).
 /// Cover uploads are scaled to this square; a JPEG at JPEG_QUALITY stays far below Spotify's
 /// 256 KB (base64) limit.
@@ -62,7 +65,11 @@ pub async fn worker(session: Session, ui: slint::Weak<App>, mut rx: mpsc::Unboun
             // A missing cover leaves the grey placeholder; nothing else depends on it.
             // Artists are shown round, like Spotify.
             let round = req.uri.starts_with("spotify:artist:");
-            let (url, px) = if req.kind >= 3 { (larger_cover(&req.url), BIG_COVER_PX) } else { (req.url.clone(), COVER_PX) };
+            let (url, px) = match req.kind {
+                3 | 4 => (larger_cover(&req.url), BIG_COVER_PX),
+                8 => (larger_cover(&req.url), SHELF_COVER_PX),
+                _ => (req.url.clone(), COVER_PX),
+            };
             if let Ok(pixels) = fetch_thumbnail(&session, &url, round, px).await {
                 let _ = ui.upgrade_in_event_loop(move |app| set_cover(&app, req, pixels));
             }
@@ -168,6 +175,8 @@ fn row_model(app: &App, kind: i32) -> ModelRc<Row> {
         5 => app.get_add_results(),
         6 => app.get_quick_top(),
         7 => app.get_quick_bottom(),
+        8 => app.get_shelf(),
+        9 => app.get_side_rows(),
         _ => app.get_tracks(),
     }
 }

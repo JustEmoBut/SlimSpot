@@ -1,6 +1,0 @@
-[Text]
-Normal=#A3A8C3
-Current=#22D3EE
-NormalBG=#08081A
-SelectedBG=#2C2C5E
-Font=Poppins

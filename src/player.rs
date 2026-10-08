@@ -43,6 +43,12 @@ const QUICK_TILES: usize = 8;
 // "New release": followed artists checked per run (one request each) and how recent counts.
 const NEW_RELEASE_ARTISTS: usize = 10;
 const NEW_RELEASE_DAYS: i64 = 60;
+/// In low API mode the sidebar library is read from `library.json` when younger than this, instead
+/// of paging four Web API lists at every start. Changes made in this app rewrite the file.
+const LIBRARY_CACHE_SECS: u64 = 6 * 3600;
+const LIBRARY_CACHE_FILE: &str = "library.json";
+/// In low API mode the Home button reuses Recently played fetched within this window.
+const HOME_TTL: Duration = Duration::from_secs(60);
 // The now-playing panel shows the start of the artist's biography.
 const NOW_ABOUT_CHARS: usize = 400;
 // Spotify took a few seconds to serve an uploaded cover (2026-10-05); poll for up to ~30 s.
@@ -75,9 +81,20 @@ pub enum Command {
     WebClientId(String),
     /// Settings → GPU renderer; applies on the next start.
     Gpu(bool),
-    /// Winamp skin: the chosen .wsz path and whether the skin is showing (remembered for the next start).
-    Skin { path: String, mode: bool },
-    /// Winamp EQ window: the sink already uses it (`eq::set`); this remembers it.
+    /// Settings -> "Low API usage".
+    LowApi(bool),
+    /// Settings -> "Compact track list".
+    Compact(bool),
+    /// Reloads the library and drops the Web API caches.
+    Refresh,
+    /// Songs (track URIs) to add to a playlist, or to save when it is Liked Songs; "" = the open
+    /// own playlist (Ctrl+V).
+    AddUris { list: String, uris: Vec<String> },
+    /// Songs to remove from the open own playlist, every occurrence (Delete, Ctrl+X).
+    RemoveUris(Vec<String>),
+    /// A message for the status line from the UI thread.
+    Status(String),
+    /// Settings EQ: the sink already uses it (`eq::set`); this remembers it.
     Eq(crate::eq::EqState),
     /// Save the session, disconnect the Connect device and end the UI event loop.
     Quit,
@@ -93,6 +110,10 @@ pub enum Command {
     Forward,
     /// Show what the active device plays next.
     Queue,
+    /// Right panel's Recent tab: the recently played tracks.
+    Recent,
+    /// A row of the right panel's queue: skip ahead to it.
+    SkipTo(String),
     /// Open the page the playing track came from and scroll to it.
     GoToPlaying,
     /// Recently played tracks.
@@ -352,6 +373,24 @@ async fn show_publisher(session: &Session, show_uri: &str) -> String {
             log::warn!("show lookup for {show_uri} failed: {e}");
             String::new()
         }
+    }
+}
+
+/// "1 song", "3 songs".
+fn songs(n: usize) -> String {
+    format!("{n} song{}", if n == 1 { "" } else { "s" })
+}
+
+/// Home's heading, by the local hour like Spotify's.
+fn greeting() -> &'static str {
+    #[cfg(windows)]
+    let hour = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() }.wHour;
+    #[cfg(not(windows))]
+    let hour = 12;
+    match hour {
+        5..=11 => "Good morning",
+        12..=17 => "Good afternoon",
+        _ => "Good evening",
     }
 }
 
@@ -640,7 +679,7 @@ fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<S
     set_status(ui, page_summary(nav));
     let editable = page.editable;
     // Spotify numbers the rows of track lists, not of mixed pages like an artist's or search.
-    let numbered = matches!(page.kind, "Playlist" | "Album" | "Radio" | "Up next" | "Podcast");
+    let numbered = matches!(page.kind, "Playlist" | "Album" | "Radio" | "Podcast");
     let playable = page.rows.iter().any(|r| is_playable(&r.uri));
     let cover = page.cover_url.clone();
     let liked_upto = page.liked_upto as i32;
@@ -677,8 +716,53 @@ fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<S
     });
 }
 
+/// The cached library of `user` if it was written within `LIBRARY_CACHE_SECS`.
+fn load_library_cache(user: &str) -> Option<Vec<Item>> {
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(cache_dir().join(LIBRARY_CACHE_FILE)).ok()?).ok()?;
+    if json["user"].as_str() != Some(user) {
+        return None;
+    }
+    let age = unix_now().checked_sub(json["saved_at"].as_u64()?)?;
+    (age < LIBRARY_CACHE_SECS).then(|| json["items"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter_map(Item::from_json).collect())
+}
+
+fn save_library_cache(user: &str, library: &[Item]) {
+    let json = serde_json::json!({ "user": user, "saved_at": unix_now(), "items": library.iter().map(Item::to_json).collect::<Vec<_>>() });
+    if let Err(e) = std::fs::write(cache_dir().join(LIBRARY_CACHE_FILE), json.to_string()) {
+        log::warn!("Saving the library cache failed: {e}");
+    }
+}
+
+/// The whole library from the Web API, in sidebar order, and the last error if a part failed.
+async fn fetch_library(w: &mut WebApi, session: &Session) -> (Vec<Item>, Option<String>) {
+    let mut lists = vec![
+        Item { title: "Liked Songs".into(), uri: LIKED_SONGS.into(), ..Default::default() },
+        Item { title: "Your Episodes".into(), artist: "Saved episodes".into(), uri: YOUR_EPISODES.into(), ..Default::default() },
+    ];
+    let mut failed = None;
+    match w.playlists(session).await {
+        Ok(p) => lists.extend(p),
+        Err(e) => failed = Some(format!("Playlists failed: {e}")),
+    }
+    // Saved albums and followed artists follow the playlists; their rows open album/artist pages.
+    match w.saved_albums(session).await {
+        Ok(a) => lists.extend(a),
+        Err(e) => failed = Some(format!("Saved albums failed: {e}")),
+    }
+    match w.followed_artists(session).await {
+        Ok(a) => lists.extend(a),
+        Err(e) => failed = Some(format!("Followed artists failed: {e}")),
+    }
+    match w.saved_shows(session).await {
+        Ok(s) => lists.extend(s),
+        Err(e) => failed = Some(format!("Saved podcasts failed: {e}")),
+    }
+    (lists, failed)
+}
+
 /// Pushes the sidebar and the "Add to playlist" targets after the library changed.
-fn refresh_library(ui: &slint::Weak<App>, library: &[Item], own_lists: &[Item]) {
+fn refresh_library(ui: &slint::Weak<App>, user: &str, library: &[Item], own_lists: &[Item]) {
+    save_library_cache(user, library);
     set_rows(ui, library.to_vec(), App::set_lists);
     set_rows(ui, own_lists.to_vec(), App::set_targets);
     // The full list goes back in library order, so the filter and sort chips reset too.
@@ -837,9 +921,11 @@ pub async fn run(
     crate::eq::set(settings.eq);
     push_settings(&ui, &settings);
     // Once only: later settings pushes (Spotify volume/shuffle events) mustn't move EQ sliders mid-drag.
-    let (gpu, eq) = (settings.gpu, settings.eq);
+    let (gpu, eq, low_api, compact) = (settings.gpu, settings.eq, settings.low_api, settings.compact);
     let _ = ui.upgrade_in_event_loop(move |app| {
         app.set_gpu(gpu);
+        app.set_low_api(low_api);
+        app.set_compact(compact);
         crate::ui::set_eq(&app, eq);
     });
 
@@ -900,7 +986,10 @@ pub async fn run(
     let client_id_text = settings.web_client_id.clone();
     let _ = ui.upgrade_in_event_loop(move |app| app.set_web_client_id(client_id_text.into()));
     let mut web = match WebApi::login(&dir, &settings.web_client_id, move || set_status(&browser_ui, "Opening browser for Web API login...")).await {
-        Ok(w) => Some(w),
+        Ok(mut w) => {
+            w.low_api = settings.low_api;
+            Some(w)
+        }
         Err(e) => {
             set_status(&ui, format!("{e} — search/library disabled, links still work."));
             None
@@ -928,8 +1017,12 @@ pub async fn run(
     let mut add_results: Vec<Item> = Vec::new();
     // Artist page tab to switch to once it has opened ("More by" opens Albums).
     let mut open_tab: Option<i32> = None;
-    // Home's "New release" tile, looked up once per run (None = not yet).
+    // Home's "New release" tile, looked up once a day (None = not yet this run; `settings.new_release`).
     let mut new_release: Option<Option<Item>> = None;
+    // Recently played and when it was fetched, reused by Home within HOME_TTL.
+    let mut recent_rows: Option<(Instant, (Vec<Item>, Vec<Item>))> = None;
+    // The right panel's queue as last loaded, minus rows skipped past since.
+    let mut queue_rows: Vec<Item> = Vec::new();
     // Artist whose biography the now-playing panel shows.
     let mut about_artist = String::new();
     // Set by GoToPlaying: scroll to this track once its page has loaded.
@@ -944,28 +1037,20 @@ pub async fn run(
     // and Spirc ignores `play` while inactive, so Play loads the track again instead.
     let mut paused_here = false;
     if let Some(w) = web.as_mut() {
-        set_status(&ui, "Loading playlists...");
-        let mut lists = vec![
-            Item { title: "Liked Songs".into(), uri: LIKED_SONGS.into(), ..Default::default() },
-            Item { title: "Your Episodes".into(), artist: "Saved episodes".into(), uri: YOUR_EPISODES.into(), ..Default::default() },
-        ];
-        match w.playlists(&session).await {
-            Ok(p) => lists.extend(p),
-            Err(e) => set_status(&ui, format!("Playlists failed: {e}")),
-        }
-        // Saved albums and followed artists follow the playlists; their rows open album/artist pages.
-        match w.saved_albums(&session).await {
-            Ok(a) => lists.extend(a),
-            Err(e) => set_status(&ui, format!("Saved albums failed: {e}")),
-        }
-        match w.followed_artists(&session).await {
-            Ok(a) => lists.extend(a),
-            Err(e) => set_status(&ui, format!("Followed artists failed: {e}")),
-        }
-        match w.saved_shows(&session).await {
-            Ok(s) => lists.extend(s),
-            Err(e) => set_status(&ui, format!("Saved podcasts failed: {e}")),
-        }
+        let user = session.username();
+        let lists = match load_library_cache(&user).filter(|_| settings.low_api) {
+            Some(lists) => lists,
+            None => {
+                set_status(&ui, "Loading playlists...");
+                let (lists, failed) = fetch_library(w, &session).await;
+                // A partial library would stick for hours; only a complete one is cached.
+                match failed {
+                    Some(e) => set_status(&ui, e),
+                    None => save_library_cache(&user, &lists),
+                }
+                lists
+            }
+        };
         library = lists.clone();
         let me = format!("spotify:user:{}", session.username());
         own_lists = lists.iter().filter(|l| l.uri.starts_with("spotify:playlist:") && l.artist_uri == me).cloned().collect();
@@ -1138,27 +1223,34 @@ pub async fn run(
                 }
                 Command::Queue => {
                     let Some(w) = web.as_mut() else { continue };
-                    set_status(&ui, "Loading queue...");
                     match w.queue(&session).await {
                         Ok(rows) => {
-                            let uris = rows.iter().map(|r| r.uri.clone()).collect();
-                            open_page(&ui, &mut nav, &mut shown, Page { title: "Queue".into(), rows, shown: Shown::Tracks(uris), list: String::new(), more: None, search: None, about: String::new(), editable: false, kind: "Up next", info: String::new(), saved: false, cover_url: String::new(), liked_upto: 0 });
-                            mark_liked(&ui, w, &session, &mut nav).await;
+                            queue_rows = rows.clone();
+                            set_rows(&ui, rows, App::set_side_rows);
                         }
                         Err(e) => set_status(&ui, e),
                     }
                 }
+                Command::Recent => {
+                    let Some(w) = web.as_mut() else { continue };
+                    let rows = match recent_rows.as_ref().filter(|(at, _)| settings.low_api && at.elapsed() < HOME_TTL) {
+                        Some((_, rows)) => Ok(rows.clone()),
+                        None => w.recently_played(&session).await.inspect(|rows| recent_rows = Some((Instant::now(), rows.clone()))),
+                    };
+                    match rows {
+                        Ok((tracks, _)) => set_rows(&ui, tracks, App::set_side_rows),
+                        Err(e) => set_status(&ui, e),
+                    }
+                }
                 // A queue row: skip ahead to it, so the playing context carries on afterwards.
-                Command::PlayUri(uri) if nav.current().is_some_and(|p| p.kind == "Up next") => {
-                    let ahead = nav.current().and_then(|p| p.rows.iter().position(|r| r.uri == uri)).unwrap_or(0);
+                Command::SkipTo(uri) => {
+                    let ahead = queue_rows.iter().position(|r| r.uri == uri).unwrap_or(0);
                     for _ in 0..=ahead {
                         spirc_result(&ui, spirc.next());
                     }
                     // Spotify's queue endpoint lags behind the skip; drop the passed rows locally instead.
-                    if let Some(page) = nav.current_mut() {
-                        page.rows.drain(..=ahead.min(page.rows.len().saturating_sub(1)));
-                    }
-                    show_current(&ui, &nav, &mut shown);
+                    queue_rows.drain(..=ahead.min(queue_rows.len().saturating_sub(1)));
+                    set_rows(&ui, queue_rows.clone(), App::set_side_rows);
                 }
                 Command::PlayUri(uri) => {
                     set_status(&ui, "Loading...");
@@ -1378,7 +1470,7 @@ pub async fn run(
                                     Ok(()) => {
                                         if !library.iter().any(|i| i.uri == uri) {
                                             library.push(item.clone());
-                                            refresh_library(&ui, &library, &own_lists);
+                                            refresh_library(&ui, &session.username(), &library, &own_lists);
                                         }
                                         set_page_saved(&ui, &mut nav, &uri, true);
                                         set_status(&ui, format!("Added \"{}\" to Your Library", item.title));
@@ -1402,7 +1494,7 @@ pub async fn run(
                                         library.retain(|i| i.uri != uri);
                                         own_lists.retain(|i| i.uri != uri);
                                         set_page_saved(&ui, &mut nav, &uri, false);
-                                        refresh_library(&ui, &library, &own_lists);
+                                        refresh_library(&ui, &session.username(), &library, &own_lists);
                                         // Its page would show a playlist that no longer exists.
                                         if nav.current().is_some_and(|p| p.list == uri) {
                                             let _ = tx.send(Command::Home);
@@ -1466,11 +1558,16 @@ pub async fn run(
                 }
                 Command::Home => {
                     let Some(w) = web.as_mut() else { continue };
-                    match w.recently_played(&session).await {
-                        Ok(rows) => {
+                    let rows = match recent_rows.as_ref().filter(|(at, _)| settings.low_api && at.elapsed() < HOME_TTL) {
+                        Some((_, rows)) => Ok(rows.clone()),
+                        None => w.recently_played(&session).await.inspect(|rows| recent_rows = Some((Instant::now(), rows.clone()))),
+                    };
+                    match rows {
+                        Ok((rows, albums)) => {
+                            set_rows(&ui, albums, App::set_shelf);
                             let uris = rows.iter().map(|r| r.uri.clone()).collect();
                             open_page(&ui, &mut nav, &mut shown, Page {
-                                title: "Recently played".into(),
+                                title: greeting().into(),
                                 rows,
                                 shown: Shown::Tracks(uris),
                                 list: String::new(),
@@ -1488,11 +1585,14 @@ pub async fn run(
                     }
                     // Spotify's "New release from <artist>": once per run, newest release of the
                     // most recently opened followed artists, if it is recent.
+                    let today = (unix_now() / 86_400) as i64;
+                    if new_release.is_none() && settings.low_api && settings.new_release_day == today {
+                        new_release = Some(settings.new_release.clone());
+                    }
                     if new_release.is_none() {
                         let mut artists: Vec<&Item> = library.iter().filter(|i| i.uri.starts_with("spotify:artist:")).collect();
                         artists.sort_by_key(|i| std::cmp::Reverse(settings.opened.get(&i.uri).copied().unwrap_or(0)));
                         let artists: Vec<Item> = artists.into_iter().take(NEW_RELEASE_ARTISTS).cloned().collect();
-                        let today = (unix_now() / 86_400) as i64;
                         let mut newest: Option<(Item, String)> = None;
                         for artist in &artists {
                             if let Ok(Some((album, date))) = w.newest_release(&session, &artist.uri).await {
@@ -1503,6 +1603,9 @@ pub async fn run(
                             }
                         }
                         new_release = Some(newest.map(|n| n.0));
+                        settings.new_release_day = today;
+                        settings.new_release = new_release.clone().flatten();
+                        save_settings(&ui, &settings);
                     }
                     let mut tiles: Vec<Item> = new_release.clone().flatten().into_iter().collect();
                     let mut recent: Vec<&Item> = library.iter().filter(|i| settings.opened.contains_key(&i.uri)).collect();
@@ -1601,7 +1704,7 @@ pub async fn run(
                             // New playlists come first, below Liked Songs and Your Episodes, as in Spotify.
                             library.insert(2.min(library.len()), item.clone());
                             own_lists.insert(0, item.clone());
-                            refresh_library(&ui, &library, &own_lists);
+                            refresh_library(&ui, &session.username(), &library, &own_lists);
                             let _ = tx.send(Command::OpenList(item.uri));
                         }
                         Err(e) => set_status(&ui, e),
@@ -1624,7 +1727,7 @@ pub async fn run(
                                 page.info = description.clone();
                             }
                             let _ = ui.upgrade_in_event_loop(move |app| app.set_page_info(description.into()));
-                            refresh_library(&ui, &library, &own_lists);
+                            refresh_library(&ui, &session.username(), &library, &own_lists);
                             set_page_header(&ui, nav.current().map(|p| p.kind).unwrap_or(""), name, nav.can_back(), nav.can_forward());
                         }
                         Err(e) => set_status(&ui, e),
@@ -1665,7 +1768,7 @@ pub async fn run(
                     for item in library.iter_mut().chain(own_lists.iter_mut()).filter(|i| i.uri == list) {
                         item.cover_url = url.clone();
                     }
-                    refresh_library(&ui, &library, &own_lists);
+                    refresh_library(&ui, &session.username(), &library, &own_lists);
                     if let Some(page) = nav.current_mut().filter(|p| p.list == list) {
                         page.cover_url = url.clone();
                         let _ = ui.upgrade_in_event_loop(move |app| {
@@ -1688,7 +1791,7 @@ pub async fn run(
                             set_status(&ui, format!("Saved \"{}\" ({} songs)", item.title, uris.len()));
                             library.insert(2.min(library.len()), item.clone());
                             own_lists.insert(0, item);
-                            refresh_library(&ui, &library, &own_lists);
+                            refresh_library(&ui, &session.username(), &library, &own_lists);
                         }
                         Err(e) => set_status(&ui, e),
                     }
@@ -1815,14 +1918,136 @@ pub async fn run(
                     settings.theme = palette;
                     save_settings(&ui, &settings);
                 }
+                Command::Status(text) => set_status(&ui, text),
+                Command::AddUris { list, uris } => {
+                    let Some(w) = web.as_mut() else { continue };
+                    let list = if list.is_empty() {
+                        match nav.current().filter(|p| p.editable) {
+                            Some(page) => page.list.clone(),
+                            None => {
+                                set_status(&ui, "Open one of your playlists to paste songs into it");
+                                continue;
+                            }
+                        }
+                    } else {
+                        list
+                    };
+                    if list == LIKED_SONGS {
+                        let mut saved = Vec::new();
+                        for uri in uris {
+                            match w.set_saved(&session, &uri, true).await {
+                                Ok(()) => saved.push(uri),
+                                Err(e) => {
+                                    set_status(&ui, e);
+                                    break;
+                                }
+                            }
+                        }
+                        set_status(&ui, format!("Saved {} to Liked Songs", songs(saved.len())));
+                        set_liked_rows(&ui, saved, true);
+                        continue;
+                    }
+                    let Some(name) = own_lists.iter().find(|l| l.uri == list).map(|l| l.title.clone()) else {
+                        set_status(&ui, "Songs can only be added to your own playlists");
+                        continue;
+                    };
+                    match w.add_tracks(&session, &list, &uris).await {
+                        Ok(()) => {
+                            set_status(&ui, format!("Added {} to \"{name}\"", songs(uris.len())));
+                            if nav.current().is_some_and(|p| p.list == list) {
+                                // Dragged rows are already known; pasted links are looked up.
+                                let known: Vec<Item> = uris
+                                    .iter()
+                                    .filter_map(|u| nav.current().and_then(|p| p.rows.iter().find(|r| r.uri == *u).cloned()))
+                                    .collect();
+                                let rows = if known.len() == uris.len() {
+                                    known
+                                } else {
+                                    track_items(&session, uris.iter().filter_map(|u| SpotifyUri::from_uri(u).ok()).collect()).await
+                                };
+                                if let Some(page) = nav.current_mut() {
+                                    page.rows.extend(rows);
+                                }
+                                show_current(&ui, &nav, &mut shown);
+                            }
+                        }
+                        Err(e) => set_status(&ui, e),
+                    }
+                }
+                Command::RemoveUris(uris) => {
+                    let list = nav.current().filter(|p| p.editable).map(|p| p.list.clone());
+                    let (Some(w), Some(list)) = (web.as_mut(), list) else {
+                        set_status(&ui, "Songs can only be removed from your own playlists");
+                        continue;
+                    };
+                    let mut removed = 0;
+                    let unique: std::collections::BTreeSet<String> = uris.into_iter().collect();
+                    // ponytail: one request per song; DELETE /items takes 100 at once if large cuts get slow.
+                    for uri in unique {
+                        match w.remove_from_playlist(&session, &list, &uri).await {
+                            Ok(()) => {
+                                removed += 1;
+                                if let Some(page) = nav.current_mut() {
+                                    page.rows.retain(|r| r.uri != uri);
+                                }
+                            }
+                            Err(e) => {
+                                set_status(&ui, e);
+                                break;
+                            }
+                        }
+                    }
+                    show_current(&ui, &nav, &mut shown);
+                    if removed > 0 {
+                        set_status(&ui, format!("Removed {}", songs(removed)));
+                    }
+                }
+                Command::Compact(on) => {
+                    settings.compact = on;
+                    save_settings(&ui, &settings);
+                }
+                Command::LowApi(on) => {
+                    settings.low_api = on;
+                    save_settings(&ui, &settings);
+                    if let Some(w) = web.as_mut() {
+                        w.low_api = on;
+                    }
+                }
+                Command::Refresh => {
+                    let Some(w) = web.as_mut() else { continue };
+                    set_status(&ui, "Refreshing...");
+                    w.forget_saved();
+                    recent_rows = None;
+                    new_release = None;
+                    settings.new_release_day = 0;
+                    let user = session.username();
+                    let (lists, failed) = fetch_library(w, &session).await;
+                    library = lists;
+                    let me = format!("spotify:user:{user}");
+                    own_lists = library.iter().filter(|l| l.uri.starts_with("spotify:playlist:") && l.artist_uri == me).cloned().collect();
+                    match failed {
+                        // Keep the old cache rather than a partial library.
+                        Some(e) => {
+                            set_rows(&ui, library.clone(), App::set_lists);
+                            set_rows(&ui, own_lists.clone(), App::set_targets);
+                            set_status(&ui, e);
+                        }
+                        None => {
+                            refresh_library(&ui, &user, &library, &own_lists);
+                            set_status(&ui, "Refreshed");
+                        }
+                    }
+                    if nav.current().is_some_and(|p| p.kind == "Home") {
+                        let _ = tx.send(Command::Home);
+                    } else if let Some(page) = nav.current_mut() {
+                        page.liked_upto = 0;
+                        mark_liked(&ui, w, &session, &mut nav).await;
+                    }
+                }
                 Command::Gpu(on) => {
                     settings.gpu = on;
                     save_settings(&ui, &settings);
                     set_status(&ui, "Renderer saved. Restart SlimSpot to switch.");
-                }
-                Command::Skin { path, mode } => {
-                    (settings.skin, settings.skin_mode) = (path, mode);
-                    save_settings(&ui, &settings);
                 }
                 Command::Eq(state) => {
                     crate::eq::set(state);

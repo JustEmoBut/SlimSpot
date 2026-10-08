@@ -12,11 +12,12 @@ A minimal-RAM native Spotify client for Windows, written in Rust with [Slint](ht
 - Artist pages (Popular, Albums, Singles, Compilations, Appears On, About), album and podcast pages
 - Playlist editing: create, rename, description, cover upload, add songs, drag to reorder, remove
 - Radio from a song, playlist, album or artist, saved as a playlist if you like it
-- Queue, synced lyrics, track credits, find in page, sleep timer, mini player
-- Themes (Indigo, Nord, Tokyo Night, Catppuccin Mocha, Rosé Pine, Dark)
-- Winamp mode (Ctrl+W): the classic main window, equalizer and playlist, with SlimSpot's own skin or any classic `.wsz` skin; right-click a title bar for its menu
-- 10-band equalizer, preamp and balance that really shape the sound
-- Optional GPU rendering (Settings → Appearance; uses far more memory, ~100 MB)
+- Queue and recently played in the right panel, synced lyrics (click a line to jump, full screen), track credits, find in page, sleep timer, mini player
+- Select several songs (Ctrl/Shift-click, Ctrl+A), copy and paste song links, drag songs onto a playlist or Liked Songs in the sidebar
+- Keyboard shortcuts for nearly everything; press `?` for the list
+- Themes (Spotifast, Indigo, Nord, Tokyo Night, Catppuccin Mocha, Rosé Pine, Dark), compact track list, searchable settings
+- 10-band equalizer and preamp that really shape the sound (Settings → Playback)
+- Optional GPU rendering (Settings → Display; uses far more memory, ~100 MB)
 - Updates itself from GitHub Releases: an "Update to vX" button appears when a new version is out
 - Windows integration: media keys and overlay, taskbar buttons and progress, tray, start with Windows
 
@@ -50,7 +51,7 @@ Apps in Spotify's Development Mode only accept the users added to them in the da
 
 ## Files
 
-Everything lives in `%APPDATA%\SlimSpot`: sign-in tokens, `settings.json`, the audio cache and `slimspot.log` (warnings and errors only).
+Everything lives in `%APPDATA%\SlimSpot`: sign-in tokens, `settings.json`, a library cache (`library.json`), the audio cache and `slimspot.log` (warnings and errors only).
 
 ## License
 

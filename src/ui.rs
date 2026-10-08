@@ -9,31 +9,29 @@ slint::slint! {
     // Poppins (SIL OFL, assets/fonts/OFL.txt), embedded in the exe: ~160 KB per weight.
     import "../assets/fonts/Poppins-Regular.ttf";
     import "../assets/fonts/Poppins-SemiBold.ttf";
-    export struct Row { title: string, artist: string, uri: string, cover-url: string, cover: image, duration: string, liked: bool }
+    export struct Row { title: string, artist: string, uri: string, cover-url: string, cover: image, duration: string, liked: bool, marked: bool }
 
-    // Spotify-like dark palette. Colors whose hex starts with a digit and `e` are written as rgb():
-    // inside slint! the Rust tokenizer reads them as float exponents.
-    // "Midnight Indigo": deep navy surfaces, violet accent fading into cyan (ui-ux-pro-max music
-    // palette, accent swapped away from Spotify green). Every color is rgb(): inside slint! a hex
-    // like #5eead4 tokenizes as a Rust float exponent.
-    // Palettes (settings → Theme): 0 Midnight Indigo (default), 1 Nord, 2 Tokyo Night,
-    // 3 Catppuccin Mocha, 4 Rosé Pine, 5 Dark (neutral black/grey surfaces, Indigo's accents).
-    // Values from each palette's published colors.
+    // Palettes (settings → Theme), values from each palette's published colors. Every color is
+    // rgb(): inside slint! a hex like #5eead4 tokenizes as a Rust float exponent.
     export global Theme {
-        in-out property <int> palette;
-        out property <color> base: [rgb(8, 8, 26), rgb(46, 52, 64), rgb(26, 27, 38), rgb(17, 17, 27), rgb(25, 23, 36), rgb(0, 0, 0)][palette];
-        out property <color> panel: [rgb(16, 16, 42), rgb(59, 66, 82), rgb(31, 35, 53), rgb(30, 30, 46), rgb(31, 29, 46), rgb(18, 18, 18)][palette];
-        out property <color> raised: [rgb(27, 27, 56), rgb(67, 76, 94), rgb(41, 46, 66), rgb(49, 50, 68), rgb(38, 35, 58), rgb(31, 31, 31)][palette];
-        out property <color> hover: [rgb(35, 35, 74), rgb(76, 86, 106), rgb(52, 59, 88), rgb(69, 71, 90), rgb(57, 53, 82), rgb(42, 42, 42)][palette];
-        out property <color> selected: [rgb(44, 44, 94), rgb(86, 95, 118), rgb(61, 70, 110), rgb(88, 91, 112), rgb(82, 79, 103), rgb(51, 51, 51)][palette];
-        out property <color> field: [rgb(27, 27, 56), rgb(67, 76, 94), rgb(41, 46, 66), rgb(49, 50, 68), rgb(38, 35, 58), rgb(36, 36, 36)][palette];
+        // 0-5: Midnight Indigo, Nord, Tokyo Night, Catppuccin Mocha, Rosé Pine, Dark; 6: Spotifast
+        // (its dark palette, src/theme.rs of crmne/spotifast), the default.
+        in-out property <int> palette: 6;
+        out property <color> base: [rgb(8, 8, 26), rgb(46, 52, 64), rgb(26, 27, 38), rgb(17, 17, 27), rgb(25, 23, 36), rgb(0, 0, 0), rgb(15, 17, 20)][palette];
+        out property <color> panel: [rgb(16, 16, 42), rgb(59, 66, 82), rgb(31, 35, 53), rgb(30, 30, 46), rgb(31, 29, 46), rgb(18, 18, 18), rgb(21, 24, 28)][palette];
+        out property <color> raised: [rgb(27, 27, 56), rgb(67, 76, 94), rgb(41, 46, 66), rgb(49, 50, 68), rgb(38, 35, 58), rgb(31, 31, 31), rgb(29, 33, 39)][palette];
+        out property <color> hover: [rgb(35, 35, 74), rgb(76, 86, 106), rgb(52, 59, 88), rgb(69, 71, 90), rgb(57, 53, 82), rgb(42, 42, 42), rgb(38, 43, 51)][palette];
+        out property <color> selected: [rgb(44, 44, 94), rgb(86, 95, 118), rgb(61, 70, 110), rgb(88, 91, 112), rgb(82, 79, 103), rgb(51, 51, 51), rgb(47, 53, 63)][palette];
+        out property <color> field: [rgb(27, 27, 56), rgb(67, 76, 94), rgb(41, 46, 66), rgb(49, 50, 68), rgb(38, 35, 58), rgb(36, 36, 36), rgb(29, 33, 39)][palette];
         out property <color> border: rgba(255, 255, 255, 0.08);
-        out property <color> text: [rgb(248, 250, 252), rgb(236, 239, 244), rgb(192, 202, 245), rgb(205, 214, 244), rgb(224, 222, 244), rgb(255, 255, 255)][palette];
-        out property <color> subdued: [rgb(163, 168, 195), rgb(180, 188, 204), rgb(169, 177, 214), rgb(166, 173, 200), rgb(144, 140, 170), rgb(179, 179, 179)][palette];
-        out property <color> muted: [rgb(107, 111, 142), rgb(129, 138, 158), rgb(86, 95, 137), rgb(127, 132, 156), rgb(110, 106, 134), rgb(114, 114, 114)][palette];
-        out property <color> track: [rgb(46, 46, 90), rgb(76, 86, 106), rgb(59, 66, 97), rgb(69, 71, 90), rgb(57, 53, 82), rgb(77, 77, 77)][palette];
-        out property <color> accent: [rgb(139, 92, 246), rgb(136, 192, 208), rgb(122, 162, 247), rgb(203, 166, 247), rgb(196, 167, 231), rgb(139, 92, 246)][palette];
-        out property <color> accent2: [rgb(34, 211, 238), rgb(163, 190, 140), rgb(187, 154, 247), rgb(137, 220, 235), rgb(235, 188, 186), rgb(34, 211, 238)][palette];
+        out property <color> text: [rgb(248, 250, 252), rgb(236, 239, 244), rgb(192, 202, 245), rgb(205, 214, 244), rgb(224, 222, 244), rgb(255, 255, 255), rgb(242, 244, 246)][palette];
+        out property <color> subdued: [rgb(163, 168, 195), rgb(180, 188, 204), rgb(169, 177, 214), rgb(166, 173, 200), rgb(144, 140, 170), rgb(179, 179, 179), rgb(169, 177, 188)][palette];
+        out property <color> muted: [rgb(107, 111, 142), rgb(129, 138, 158), rgb(86, 95, 137), rgb(127, 132, 156), rgb(110, 106, 134), rgb(114, 114, 114), rgb(110, 119, 132)][palette];
+        out property <color> track: [rgb(46, 46, 90), rgb(76, 86, 106), rgb(59, 66, 97), rgb(69, 71, 90), rgb(57, 53, 82), rgb(77, 77, 77), rgb(47, 53, 63)][palette];
+        out property <color> accent: [rgb(139, 92, 246), rgb(136, 192, 208), rgb(122, 162, 247), rgb(203, 166, 247), rgb(196, 167, 231), rgb(139, 92, 246), rgb(30, 215, 96)][palette];
+        // Icons and labels drawn on an accent background (dark on Spotifast's bright green).
+        out property <color> on-accent: [text, text, text, text, text, text, rgb(10, 20, 14)][palette];
+        out property <color> accent2: [rgb(34, 211, 238), rgb(163, 190, 140), rgb(187, 154, 247), rgb(137, 220, 235), rgb(235, 188, 186), rgb(34, 211, 238), rgb(60, 232, 122)][palette];
         // Progress fill only: the software renderer ignores border-radius on gradient backgrounds,
         // so rounded things (buttons, chips, badges) use the solid accent.
         out property <brush> glow: @linear-gradient(135deg, accent 0%, accent2 100%);
@@ -46,6 +44,7 @@ slint::slint! {
         out property <string> next: "M5.5 5.5 L15 12 L5.5 18.5 Z M16 5 H18.5 V19 H16 Z";
         out property <string> prev: "M18.5 5.5 L9 12 L18.5 18.5 Z M5.5 5 H8 V19 H5.5 Z";
         out property <string> shuffle: "M3 7 H7 L15 17 H20 M3 17 H7 L9.6 13.8 M14.4 10.2 L15 7 H20 M17 4 L20 7 L17 10 M17 14 L20 17 L17 20";
+        out property <string> refresh: "M19.5 12 A7.5 7.5 0 1 1 17 6.4 M17.5 2.5 V6.8 H13.2";
         out property <string> repeat: "M4 12 V10 C4 8 5.5 6.5 7.5 6.5 H18 M15 3.5 L18 6.5 L15 9.5 M20 12 V14 C20 16 18.5 17.5 16.5 17.5 H6 M9 20.5 L6 17.5 L9 14.5";
         out property <string> heart: "M12 20 C12 20 3 14.5 3 8.8 C3 6 5.1 4 7.6 4 C9.4 4 11 5 12 6.6 C13 5 14.6 4 16.4 4 C18.9 4 21 6 21 8.8 C21 14.5 12 20 12 20 Z";
         out property <string> lyrics: "M9.5 3.5 H14.5 V11.5 C14.5 14 9.5 14 9.5 11.5 Z M6 11 C6 18 18 18 18 11 M12 16.5 V21 M8.5 21 H15.5";
@@ -57,6 +56,7 @@ slint::slint! {
         out property <string> settings: "M4 7 H20 M4 12 H20 M4 17 H20 M9 5 V9 M15 10 V14 M7 15 V19";
         out property <string> back: "M15 5 L8 12 L15 19";
         out property <string> forward: "M9 5 L16 12 L9 19";
+        out property <string> library: "M4 4 V20 M8.5 4 V20 M13 5 L17.5 19.5";
         out property <string> home: "M4 11 L12 4 L20 11 V20 H14.5 V14 H9.5 V20 H4 Z";
         out property <string> more: "M5 10.5 H8 V13.5 H5 Z M10.5 10.5 H13.5 V13.5 H10.5 Z M16 10.5 H19 V13.5 H16 Z";
         out property <string> check: "M6.5 12.5 L10.5 16.5 L17.5 8.5";
@@ -138,7 +138,7 @@ slint::slint! {
                 height: 18px;
                 shape: root.playing ? Icons.pause : Icons.play;
                 filled: true;
-                tint: Theme.text;
+                tint: Theme.on-accent;
             }
         }
     }
@@ -196,6 +196,17 @@ slint::slint! {
     component RowItem inherits TouchArea {
         in property <Row> data;
         in property <bool> selected;
+        // Part of the track list's multi-selection (Ctrl/Shift-click, arrows, Ctrl+A).
+        in property <bool> marked;
+        // One line, no cover (Settings → Compact track list).
+        in property <bool> compact;
+        // Sidebar: the play button over the cover on hover.
+        callback play-cover();
+        // Ctrl/Shift-click: changes the selection instead of playing (`select(ctrl, shift)`).
+        callback select(bool, bool);
+        out property <bool> modifier-click;
+        // Reordering within the list (own playlist, unsorted): shows the drop marker line.
+        in property <bool> reorder;
         // Playing rows show their title in green, like Spotify.
         in property <bool> playing;
         // The current row is actually sounding (not paused): hover shows pause instead of play.
@@ -207,9 +218,9 @@ slint::slint! {
         in property <int> number;
         // Sidebar rows can be removed from the library.
         in property <bool> sidebar;
-        // Rows of an own playlist can be dragged; `dropped(n)` reports the drop n rows down (negative: up).
+        // Draggable rows report the drop n rows down (negative: up) and the window position it ended at.
         in property <bool> draggable;
-        callback dropped(int);
+        callback dropped(int, length, length);
         // Set while a drag is under way, so the release isn't taken as a click.
         out property <bool> dragged;
         property <length> drag-start;
@@ -221,9 +232,9 @@ slint::slint! {
         callback open-menu(length, length);
         // Fired whenever this (possibly recycled) row instance shows a row without a loaded cover.
         callback need-cover();
-        init => { if (data.cover-url != "" && data.cover.width == 0) { need-cover() } }
-        changed data => { if (data.cover-url != "" && data.cover.width == 0) { need-cover() } }
-        height: root.cover-size + 16px;
+        init => { if (!compact && data.cover-url != "" && data.cover.width == 0) { need-cover() } }
+        changed data => { if (!compact && data.cover-url != "" && data.cover.width == 0) { need-cover() } }
+        height: root.compact ? 36px : root.cover-size + 16px;
         mouse-cursor: pointer;
         pointer-event(event) => {
             if (root.menu && event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
@@ -232,9 +243,11 @@ slint::slint! {
             if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
                 root.dragged = false;
                 root.drag-start = self.mouse-y;
+                root.modifier-click = event.modifiers.control || event.modifiers.shift;
+                if (root.modifier-click) { root.select(event.modifiers.control, event.modifiers.shift); }
             }
             if (root.dragged && event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
-                root.dropped(root.drop-offset);
+                root.dropped(root.drop-offset, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
             }
         }
         moved => {
@@ -243,7 +256,7 @@ slint::slint! {
         }
         Rectangle {
             border-radius: 8px;
-            background: root.dragged && root.pressed ? Theme.selected : root.selected ? Theme.selected : root.has-hover ? Theme.hover : transparent;
+            background: root.dragged && root.pressed ? Theme.selected : root.selected || root.marked ? Theme.selected : root.has-hover ? Theme.hover : transparent;
             animate background { duration: 120ms; }
             // Selected sidebar entry: a short accent bar on the left edge.
             if root.selected : Rectangle {
@@ -267,7 +280,7 @@ slint::slint! {
                     font-size: 14px;
                     color: root.playing ? Theme.accent : Theme.subdued;
                 }
-                Rectangle {
+                if !root.compact : Rectangle {
                     width: root.cover-size;
                     height: root.cover-size;
                     y: (parent.height - self.height) / 2;
@@ -292,13 +305,28 @@ slint::slint! {
                             tint: root.playing ? Theme.accent : Theme.text;
                         }
                     }
+                    // Sidebar: play the entry without opening it (Spotifast's cover play button).
+                    if root.sidebar && root.has-hover && !data.uri.starts-with("slimspot:") : cover-play := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.play-cover(); }
+                        Rectangle {
+                            background: #00000099;
+                            Icon { width: parent.width * 0.5; height: self.width; shape: Icons.play; filled: true; tint: cover-play.has-hover ? Theme.accent : Theme.text; }
+                        }
+                    }
                 }
-                VerticalLayout {
+                if !root.compact : VerticalLayout {
                     alignment: center;
                     spacing: 2px;
                     horizontal-stretch: 1;
                     Text { text: data.title; overflow: elide; font-size: 14px; color: root.playing ? Theme.accent : Theme.text; }
                     Text { text: data.artist; overflow: elide; font-size: 12px; color: Theme.subdued; }
+                }
+                if root.compact : HorizontalLayout {
+                    spacing: 12px;
+                    horizontal-stretch: 1;
+                    Text { text: data.title; overflow: elide; vertical-alignment: center; horizontal-alignment: left; font-size: 13px; horizontal-stretch: 1; color: root.playing ? Theme.accent : Theme.text; }
+                    Text { text: data.artist; overflow: elide; vertical-alignment: center; horizontal-alignment: left; font-size: 13px; horizontal-stretch: 1; color: Theme.subdued; }
                 }
                 // Spotify's green circle with a dark tick; a filled path would hide the tick, so two layers.
                 if data.liked : Rectangle {
@@ -307,7 +335,7 @@ slint::slint! {
                     y: (parent.height - self.height) / 2;
                     border-radius: 8px;
                     background: Theme.accent;
-                    Icon { width: 14px; height: 14px; shape: Icons.check; tint: Theme.text; }
+                    Icon { width: 14px; height: 14px; shape: Icons.check; tint: Theme.on-accent; }
                 }
                 if data.duration != "" : Text {
                     width: 40px;
@@ -321,7 +349,7 @@ slint::slint! {
         }
         // Drop marker: an accent line where the dragged row will land (below the target row
         // when moving down, above it when moving up).
-        if root.dragged && root.pressed && root.drop-offset != 0 : Rectangle {
+        if root.reorder && root.dragged && root.pressed && root.drop-offset != 0 : Rectangle {
             x: 8px;
             width: parent.width - 16px;
             height: 2px;
@@ -343,17 +371,24 @@ slint::slint! {
     // On/off switch for settings (replaces std-widgets' CheckBox, which follows the Fluent look).
     component Switch inherits TouchArea {
         in property <string> label;
+        in property <string> desc;
         in-out property <bool> on;
         callback toggled(bool);
-        height: 34px;
+        // A TouchArea isn't a layout: take the height of the (wrapped) label and description.
+        min-height: max(34px, content.preferred-height);
         mouse-cursor: pointer;
         clicked => {
             root.on = !root.on;
             root.toggled(root.on);
         }
-        HorizontalLayout {
+        content := HorizontalLayout {
             spacing: 12px;
-            Text { text: root.label; vertical-alignment: center; horizontal-stretch: 1; font-size: 13px; color: Theme.text; }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                Text { text: root.label; font-size: 13px; color: Theme.text; wrap: word-wrap; }
+                if root.desc != "" : Text { text: root.desc; font-size: 11px; color: Theme.subdued; wrap: word-wrap; }
+            }
             Rectangle {
                 width: 38px;
                 height: 22px;
@@ -382,6 +417,114 @@ slint::slint! {
         height: 24px;
         Icon { width: 16px; height: 16px; y: (parent.height - self.height) / 2; shape: root.shape; tint: Theme.accent2; }
         Text { text: root.text; vertical-alignment: center; font-size: 12px; font-weight: 600; color: Theme.subdued; }
+    }
+
+    // Settings page: bold section heading (Spotify's settings layout).
+    component SettingsHeading inherits Text {
+        font-size: 16px;
+        font-weight: 600;
+        color: Theme.text;
+        height: 40px;
+        vertical-alignment: bottom;
+    }
+
+    // Settings page row: label (and description) on the left, the control on the right.
+    component SettingRow inherits HorizontalLayout {
+        in property <string> label;
+        in property <string> desc;
+        spacing: 16px;
+        min-height: 34px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            Text { text: root.label; font-size: 13px; color: Theme.text; wrap: word-wrap; }
+            if root.desc != "" : Text { text: root.desc; font-size: 11px; color: Theme.subdued; wrap: word-wrap; }
+        }
+        @children
+    }
+
+    // One vertical EQ slider, value -1..1 (±12 dB); moved while dragging, released at the end.
+    component EqBand inherits VerticalLayout {
+        in property <string> label;
+        in-out property <float> value;
+        callback moved(float);
+        callback released();
+        spacing: 6px;
+        width: 34px;
+        area := TouchArea {
+            height: 120px;
+            mouse-cursor: pointer;
+            function set-from(y: length) {
+                root.value = max(-1, min(1, 1 - 2 * y / self.height));
+                root.moved(root.value);
+            }
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) { self.set-from(self.mouse-y); }
+                if (e.kind == PointerEventKind.up) { root.released(); }
+            }
+            moved => { if (self.pressed) { self.set-from(self.mouse-y); } }
+            double-clicked => { root.value = 0; root.moved(0); root.released(); }
+            Rectangle { x: (parent.width - 4px) / 2; width: 4px; border-radius: 2px; background: Theme.track; }
+            Rectangle { x: (parent.width - 12px) / 2; y: (parent.height - 1px) / 2; width: 12px; height: 1px; background: Theme.border; }
+            Rectangle {
+                x: (parent.width - 4px) / 2;
+                y: root.value >= 0 ? (1 - root.value) * parent.height / 2 : parent.height / 2;
+                width: 4px;
+                height: abs(root.value) * parent.height / 2;
+                background: Theme.accent;
+            }
+            Rectangle {
+                x: (parent.width - 14px) / 2;
+                y: (1 - root.value) * (parent.height - 14px) / 2;
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                background: area.has-hover || area.pressed ? Theme.accent2 : Theme.text;
+            }
+        }
+        Text { text: root.label; font-size: 10px; color: Theme.subdued; horizontal-alignment: center; }
+    }
+
+    // Home / Search at the top of the sidebar (Spotifast's sidebar).
+    component NavEntry inherits TouchArea {
+        in property <string> label;
+        in property <string> shape;
+        in property <bool> chosen;
+        height: 40px;
+        mouse-cursor: pointer;
+        HorizontalLayout {
+            padding-left: 12px;
+            spacing: 16px;
+            Icon { width: 24px; height: 24px; y: (parent.height - self.height) / 2; shape: root.shape; filled: root.chosen; tint: root.chosen || root.has-hover ? Theme.text : Theme.subdued; }
+            Text { text: root.label; vertical-alignment: center; font-size: 15px; font-weight: 700; color: root.chosen || root.has-hover ? Theme.text : Theme.subdued; }
+        }
+    }
+
+    // Home's "Recently played" shelf: a cover card (Spotifast's Home shelves).
+    component ShelfCard inherits TouchArea {
+        in property <Row> data;
+        callback need-cover();
+        init => { if (data.cover-url != "" && data.cover.width == 0) { need-cover() } }
+        changed data => { if (data.cover-url != "" && data.cover.width == 0) { need-cover() } }
+        width: 136px;
+        height: 188px;
+        mouse-cursor: pointer;
+        Rectangle {
+            border-radius: 8px;
+            background: root.has-hover ? Theme.hover : transparent;
+            VerticalLayout {
+                padding: 8px;
+                spacing: 6px;
+                Rectangle {
+                    height: 120px;
+                    border-radius: 6px;
+                    background: Theme.selected;
+                    Image { source: root.data.cover; width: parent.width; height: parent.height; image-fit: cover; }
+                }
+                Text { text: root.data.title; font-size: 12px; font-weight: 600; color: Theme.text; overflow: elide; }
+                Text { text: root.data.artist; font-size: 11px; color: Theme.subdued; overflow: elide; }
+            }
+        }
     }
 
     // One Spotify Connect device in the devices popup.
@@ -444,41 +587,6 @@ slint::slint! {
     }
 
     // One line per row at a fixed height, so the current line can be centered by arithmetic.
-    component LyricsView inherits Rectangle {
-        in property <[string]> lines;
-        in property <int> current: -1;
-        in property <string> note;
-        // Two text lines per slot: long lines wrap instead of being cut, and every slot keeps the
-        // same height so the sung line can still be centered arithmetically.
-        property <length> line-height: 64px;
-        // Keep the sung line in the middle; the user can still scroll in between line changes.
-        changed current => {
-            if (current >= 0) {
-                lv.content-y = min(0px, -(current * line-height) + lv.visible-height / 2 - line-height / 2);
-            }
-        }
-        if lines.length == 0 : Text {
-            text: note;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            font-size: 18px;
-            color: Theme.subdued;
-        }
-        lv := ListView {
-            for line[i] in lines : Text {
-                text: line;
-                height: line-height;
-                vertical-alignment: center;
-                wrap: word-wrap;
-                overflow: elide;
-                font-size: 22px;
-                font-weight: 700;
-                // Sung and current lines are white, upcoming ones dimmed.
-                color: current < 0 || i <= current ? Theme.text : #ffffff66;
-            }
-        }
-    }
-
     // A pill-shaped choice used in the settings popup.
     component Chip inherits TouchArea {
         in property <string> label;
@@ -493,9 +601,82 @@ slint::slint! {
             background: root.chosen ? Theme.accent : root.has-hover ? Theme.hover : Theme.raised;
             border-width: root.chosen ? 0px : 1px;
             border-color: Theme.border;
-            t := Text { text: root.label; font-size: 12px; font-weight: 600; color: Theme.text; }
+            t := Text { text: root.label; font-size: 12px; font-weight: 600; color: root.chosen ? Theme.on-accent : Theme.text; }
         }
     }
+
+    component LyricsView inherits Rectangle {
+        in property <[string]> lines;
+        // Line start times (ms) when Spotify synced every line; empty otherwise.
+        in property <[int]> times;
+        in property <int> current: -1;
+        in property <string> note;
+        // Full screen: bigger text.
+        in property <bool> full;
+        // A synced line was clicked: jump there (ms).
+        callback seek(int);
+        callback toggle-full();
+        // Two text lines per slot: long lines wrap instead of being cut, and every slot keeps the
+        // same height so the sung line can still be centered arithmetically.
+        property <length> line-height: full ? 96px : 64px;
+        // Follows the sung line until the user scrolls; "Follow" turns it back on (Spotifast's).
+        property <bool> following: true;
+        property <length> auto-y;
+        function recenter() {
+            if (current >= 0) {
+                self.auto-y = min(0px, -(current * line-height) + lv.visible-height / 2 - line-height / 2);
+                lv.content-y = self.auto-y;
+            }
+        }
+        changed current => { if (following) { self.recenter(); } }
+        changed lines => { self.following = true; }
+        if lines.length == 0 : Text {
+            text: note;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            font-size: 18px;
+            color: Theme.subdued;
+        }
+        lv := ListView {
+            // A scroll the follow logic didn't make stops following.
+            changed content-y => { if (abs(self.content-y - root.auto-y) > 2px) { root.following = false; } }
+            for line[i] in lines : TouchArea {
+                height: line-height;
+                mouse-cursor: root.times.length > i ? pointer : default;
+                clicked => { if (root.times.length > i) { root.following = true; root.seek(root.times[i]); } }
+                Text {
+                    text: line;
+                    width: 100%;
+                    height: 100%;
+                    vertical-alignment: center;
+                    horizontal-alignment: root.full ? center : left;
+                    wrap: word-wrap;
+                    overflow: elide;
+                    font-size: root.full ? 34px : 22px;
+                    font-weight: 700;
+                    // Sung and current lines are white, upcoming ones dimmed; hover shows a clickable line.
+                    color: current < 0 || i <= current || parent.has-hover ? Theme.text : #ffffff66;
+                }
+            }
+        }
+        HorizontalLayout {
+            x: parent.width - self.width - 8px;
+            y: 8px;
+            spacing: 6px;
+            if !root.following && root.times.length > 0 : Chip {
+                label: "Follow";
+                chosen: true;
+                pad: 14px;
+                clicked => { root.following = true; root.recenter(); }
+            }
+            if root.lines.length > 0 : Chip {
+                label: root.full ? "Exit full screen" : "Full screen";
+                pad: 14px;
+                clicked => { root.toggle-full(); }
+            }
+        }
+    }
+
 
     // Home quick-access tile: cover and title, like Spotify's grid at the top of Home.
     component QuickTile inherits TouchArea {
@@ -527,137 +708,7 @@ slint::slint! {
         }
     }
 
-    // ---- Winamp classic skin (src/skin.rs loads the .wsz; sprite coordinates are Winamp's / webamp's) ----
-    export struct Glyph { x: int, y: int }
-    export struct WaSkin {
-        main: image, cbuttons: image, titlebar: image, posbar: image, volume: image, balance: image,
-        shufrep: image, numbers: image, nums-ex: bool, text: image, playpaus: image, monoster: image,
-        eqmain: image, pledit: image,
-        pl-normal: color, pl-current: color, pl-normal-bg: color, pl-selected-bg: color, pl-font: string,
-        loaded: bool,
-    }
     export struct EqPreset { name: string, bands: [float] }
-
-    // A (sx, sy, w, h) cut of a sprite sheet drawn at skin pixel (px, py), scaled by `s`.
-    component Sprite inherits Rectangle {
-        in property <image> src;
-        in property <length> s: 1px;
-        in property <int> px;
-        in property <int> py;
-        in property <int> sx;
-        in property <int> sy;
-        in property <int> w;
-        in property <int> h;
-        x: px * s;
-        y: py * s;
-        width: w * s;
-        height: h * s;
-        Image {
-            width: 100%;
-            height: 100%;
-            source: root.src;
-            source-clip-x: root.sx;
-            source-clip-y: root.sy;
-            source-clip-width: root.w;
-            source-clip-height: root.h;
-            image-fit: fill;
-            image-rendering: pixelated;
-        }
-    }
-
-    // Shows (nx, ny) normally and (ax, ay) while pressed.
-    component SkinButton inherits Rectangle {
-        in property <image> src;
-        in property <length> s: 1px;
-        in property <int> px;
-        in property <int> py;
-        in property <int> w;
-        in property <int> h;
-        in property <int> nx;
-        in property <int> ny;
-        in property <int> ax;
-        in property <int> ay;
-        callback clicked();
-        x: px * s;
-        y: py * s;
-        width: w * s;
-        height: h * s;
-        Sprite { src: root.src; s: root.s; w: root.w; h: root.h; sx: ta.pressed ? root.ax : root.nx; sy: ta.pressed ? root.ay : root.ny; }
-        ta := TouchArea { clicked => { root.clicked(); } }
-    }
-
-    // Horizontal skin slider: draws only the thumb; the caller draws the track. value 0..1.
-    component SkinSlider inherits Rectangle {
-        in property <image> src;
-        in property <length> s: 1px;
-        in property <int> px;
-        in property <int> py;
-        in property <int> w;
-        in property <int> h;
-        in property <int> tw;
-        in property <int> th;
-        in property <int> ty;
-        in property <int> nx;
-        in property <int> ny;
-        in property <int> ax;
-        in property <int> ay;
-        in property <bool> enabled: true;
-        in-out property <float> value;
-        out property <bool> dragging: ta.pressed;
-        callback moved(float);
-        callback released(float);
-        x: px * s;
-        y: py * s;
-        width: w * s;
-        height: h * s;
-        function at(mx: length) -> float { return clamp((mx / root.s - root.tw / 2) / (root.w - root.tw), 0, 1); }
-        if root.enabled : Sprite {
-            src: root.src;
-            s: root.s;
-            px: round(root.value * (root.w - root.tw));
-            py: root.ty;
-            w: root.tw;
-            h: root.th;
-            sx: ta.pressed ? root.ax : root.nx;
-            sy: ta.pressed ? root.ay : root.ny;
-        }
-        ta := TouchArea {
-            enabled: root.enabled;
-            pointer-event(e) => {
-                if (e.button != PointerEventButton.left) { return; }
-                if (e.kind == PointerEventKind.down) { root.value = at(self.mouse-x); root.moved(root.value); }
-                if (e.kind == PointerEventKind.up) { root.released(root.value); }
-            }
-            moved => { if (self.pressed) { root.value = at(self.mouse-x); root.moved(root.value); } }
-        }
-    }
-
-    // EQ band slider (14x63, +12 dB at the top); value -1..1.
-    component EqSlider inherits Rectangle {
-        in property <image> src;
-        in property <length> s: 1px;
-        in property <int> px;
-        in property <int> py;
-        in-out property <float> value;
-        callback moved(float);
-        callback released(float);
-        x: px * s;
-        y: py * s;
-        width: 14 * s;
-        height: 63 * s;
-        property <int> frame: round((root.value + 1) / 2 * 27);
-        function at(my: length) -> float { return clamp(1 - (my / root.s - 5.5) / (63 - 11) * 2, -1, 1); }
-        Sprite { src: root.src; s: root.s; w: 14; h: 63; sx: 13 + Math.mod(root.frame, 14) * 15; sy: 164 + floor(root.frame / 14) * 65; }
-        Sprite { src: root.src; s: root.s; px: 1; py: round((1 - root.value) / 2 * (63 - 11)); w: 11; h: 11; sx: 0; sy: ta.pressed ? 176 : 164; }
-        ta := TouchArea {
-            pointer-event(e) => {
-                if (e.button != PointerEventButton.left) { return; }
-                if (e.kind == PointerEventKind.down) { root.value = at(self.mouse-y); root.moved(root.value); }
-                if (e.kind == PointerEventKind.up) { root.released(root.value); }
-            }
-            moved => { if (self.pressed) { root.value = at(self.mouse-y); root.moved(root.value); } }
-        }
-    }
 
     export component App inherits Window {
         title: "SlimSpot";
@@ -669,58 +720,23 @@ slint::slint! {
         callback quit();
         preferred-width: 1040px;
         preferred-height: 680px;
-        min-width: root.skin-mode ? root.wa-w : root.mini ? 480px : 760px;
-        min-height: root.skin-mode ? root.wa-h : root.mini ? 72px : 480px;
-        max-width: root.skin-mode ? root.wa-w : 100000px;
-        max-height: root.skin-mode ? root.wa-h : 100000px;
-        always-on-top: root.mini || (root.skin-mode && root.wa-on-top);
-        // The skin draws its own title bars (moved by `instance::start_move`).
-        no-frame: root.skin-mode;
+        min-width: root.mini ? 480px : 760px;
+        min-height: root.mini ? 72px : 480px;
+        always-on-top: root.mini;
         // Settings → GPU renderer (applies on restart).
         in-out property <bool> gpu;
         callback set-gpu(bool);
+        in-out property <bool> low-api;
+        callback set-low-api(bool);
+        callback refresh();
         // Set when GitHub has a newer release.
         in property <string> update-version;
         callback install-update();
-        // Winamp skin mode: the window becomes the skin's main (+ EQ + playlist) windows, stacked.
-        in-out property <bool> skin-mode;
-        in property <WaSkin> skin;
-        // Free scale (Ctrl+drag on the playlist's corner grip); "Double size" toggles 1x/2x.
-        in-out property <float> wa-scale: 1;
-        property <bool> wa-double: root.wa-scale >= 2;
-        // Extra playlist height in 29 px steps (drag on the corner grip, like Winamp).
-        in-out property <int> wa-pl-ex;
-        in-out property <bool> wa-on-top;
-        in-out property <bool> wa-eq: true;
-        in-out property <bool> wa-pl: true;
-        in-out property <bool> wa-remaining;
-        in-out property <bool> wa-auto;
-        in-out property <int> wa-sel: -1;
-        in-out property <length> wa-pl-y;
-        // Scrolling song title and the playlist's time readouts, in text.bmp cells (from Rust).
-        in property <[Glyph]> wa-title;
-        in property <[Glyph]> wa-pl-time;
-        in property <[Glyph]> wa-mini-time;
-        property <bool> wa-blink;
-        property <length> wa-s: root.wa-scale * 1px;
-        out property <length> wa-w: 275 * root.wa-s;
-        property <int> wa-eq-y: 116;
-        property <int> wa-pl-top: root.wa-eq ? 232 : 116;
-        out property <length> wa-h: (116 + (root.wa-eq ? 116 : 0) + (root.wa-pl ? 232 + root.wa-pl-ex * 29 : 0)) * root.wa-s;
-        changed wa-h => { if (root.skin-mode) { root.skin-resize(root.wa-w, root.wa-h); } }
-        changed wa-w => { if (root.skin-mode) { root.skin-resize(root.wa-w, root.wa-h); } }
-        callback skin-toggle();
-        callback skin-choose();
-        callback skin-builtin();
-        callback skin-resize(length, length);
-        callback wa-drag();
-        callback wa-minimize();
-        callback wa-close();
-        // EQ window state; bands and preamp -1..1 (±12 dB), balance -1..1. eq-changed(save).
+        // Settings EQ; bands and preamp -1..1 (±12 dB), balance -1..1. eq-changed(save).
         in-out property <bool> eq-on;
         in-out property <float> eq-preamp;
         in-out property <[float]> eq-bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        in-out property <float> wa-balance;
+        in-out property <float> eq-balance;
         callback eq-changed(bool);
         // Winamp's built-in presets, in dB / 12.
         property <[EqPreset]> eq-presets: [
@@ -774,6 +790,26 @@ slint::slint! {
         callback transfer(string);
         callback start-radio();
         callback show-queue();
+        // Right panel tab: 0 = now playing, 1 = queue, 2 = recent (Spotifast's Queue/Recent panel).
+        in-out property <int> side-tab;
+        // Track list keyboard cursor (arrow keys), -1 = none; reset when a new page's rows arrive.
+        in-out property <int> kb-row: -1;
+        changed tracks => { root.kb-row = -1; }
+        // Multi-selection lives in the rows (`Row.marked`), changed from Rust on the UI thread.
+        callback select-row(int, bool, bool);
+        callback select-all();
+        callback copy-selection();
+        // Ctrl+X cuts (copy + remove), Delete only removes.
+        callback remove-selection(bool);
+        callback paste-links();
+        // A dragged row (and the selection it belongs to) dropped on a sidebar entry: (list, row).
+        callback drop-on-list(string, string);
+        in-out property <bool> show-sidebar: true;
+        property <float> unmuted-volume: 50;
+        in property <[Row]> side-rows;
+        callback side-recent();
+        // A queue row: skip ahead to it.
+        callback skip-to(string);
         callback go-to-playing();
         callback go-home();
         // Row menu: what it was opened on and where.
@@ -830,6 +866,8 @@ slint::slint! {
         // Home tiles, two rows (Spotify's quick-access grid).
         in property <[Row]> quick-top;
         in property <[Row]> quick-bottom;
+        // Home: albums of the recently played tracks, newest first.
+        in property <[Row]> shelf;
         // Now-playing panel: start of the artist's biography.
         in property <string> now-about;
         // Track credits popup.
@@ -875,7 +913,7 @@ slint::slint! {
         in-out property <int> liked-checked;
         callback check-liked-more();
         changed list-y => {
-            if (root.liked-checked < root.tracks.length && (-root.list-y + root.list-height) / 56px > root.liked-checked - 20) {
+            if (root.liked-checked < root.tracks.length && (-root.list-y + root.list-height) / root.row-h > root.liked-checked - 20) {
                 // Moved ahead at once (by the backend's batch size) so further scrolling doesn't queue
                 // the same batch again; the backend sets the real value when the batch is done.
                 root.liked-checked += 200;
@@ -885,8 +923,8 @@ slint::slint! {
         public function reveal(index: int) {
             // RowItem height in the track list: 40px cover + 16px padding. Puts the row about a third
             // down, but never scrolls past the end of the list.
-            let end = max(0px, root.tracks.length * 56px - root.list-height);
-            root.list-y = -min(end, max(0px, index * 56px - root.list-height / 3));
+            let end = max(0px, root.tracks.length * root.row-h - root.list-height);
+            root.list-y = -min(end, max(0px, index * root.row-h - root.list-height / 3));
         }
         // Dark shade of the playing cover's average color; tints the top of the main panel.
         in property <color> now-tint: Theme.panel;
@@ -898,10 +936,30 @@ slint::slint! {
         callback cycle-repeat();
         // Lyrics pane replaces the track list while `show-lyrics` is on.
         in-out property <bool> show-lyrics;
+        // The Settings page covers the main panel's content (header row stays); navigating closes it.
+        in-out property <bool> show-settings;
+        in-out property <string> settings-query;
+        // Case-insensitive substring match ("" matches everything); Slint strings have no `contains`.
+        pure callback text-matches(string, string) -> bool;
+        // Settings → Compact track list: one-line rows without covers (Spotifast's).
+        in-out property <bool> compact;
+        callback set-compact(bool);
+        out property <length> row-h: root.compact ? 36px : 56px;
+        changed page-title => { root.show-settings = false; }
+        changed page-uri => { root.show-settings = false; }
         in property <[string]> lyric-lines;
         // Start time per line in ms; empty when the lyrics aren't synced.
         in property <[int]> lyric-times;
         in property <int> lyric-index: -1;
+        // Full-screen lyrics: the window goes full screen with only the lyrics and the player bar.
+        in-out property <bool> lyrics-full;
+        callback set-fullscreen(bool);
+        function toggle-lyrics-full() {
+            root.lyrics-full = !root.lyrics-full;
+            if (root.lyrics-full) { root.show-lyrics = true; root.show-settings = false; }
+            root.set-fullscreen(root.lyrics-full);
+        }
+        changed show-lyrics => { if (!root.show-lyrics && root.lyrics-full) { root.toggle-lyrics-full(); } }
         in property <string> lyrics-note: "No track playing";
         // kind: 0 = track list, 1 = sidebar, 2 = now playing.
         callback need-cover(int, int, string, string);
@@ -932,17 +990,36 @@ slint::slint! {
         // The std widgets left (ListView scrollbars) follow the dark palette.
         init => { Palette.color-scheme = ColorScheme.dark; }
 
-        // Winamp's Stop: pause and go back to the start.
-        function wa-stop() {
-            if (root.playing) { root.toggle(); }
-            root.position = 0;
-            root.seek(0);
+        function toggle-mute() {
+            if (root.volume > 0) { root.unmuted-volume = root.volume; root.volume = 0; } else { root.volume = root.unmuted-volume; }
+            root.set-volume(root.volume, true);
         }
-        // Time display: elapsed, or remaining after a click on it.
-        property <float> wa-ms: root.wa-remaining && root.duration > 0 ? max(0, root.duration - root.position) : root.position;
-        property <int> wa-min: min(99, floor(root.wa-ms / 60000));
-        property <int> wa-sec: Math.mod(floor(root.wa-ms / 1000), 60);
-        property <int> wa-kbps: root.quality == 0 ? 96 : root.quality == 1 ? 160 : 320;
+        // Moves the keyboard cursor and keeps it on screen.
+        function move-cursor(to: int, extend: bool) {
+            if (root.tracks.length == 0) { return; }
+            root.kb-row = max(0, min(root.tracks.length - 1, to));
+            root.select-row(root.kb-row, false, extend);
+            if (root.kb-row * root.row-h < -root.list-y) { root.list-y = -root.kb-row * root.row-h; }
+            if ((root.kb-row + 1) * root.row-h > -root.list-y + root.list-height) { root.list-y = -((root.kb-row + 1) * root.row-h - root.list-height); }
+        }
+        // A track row dropped over the sidebar: add it to the entry under the pointer. True when
+        // the drop was on the sidebar (handled), false to let the list reorder.
+        function drop-on-sidebar(uri: string, x: length, y: length) -> bool {
+            if (!root.show-sidebar || x < lib-list.absolute-position.x || x > lib-list.absolute-position.x + lib-list.width
+                || y < lib-list.absolute-position.y || y > lib-list.absolute-position.y + lib-list.height) { return false; }
+            // Sidebar rows are 64 px (48 px cover + 16).
+            let i = floor((y - lib-list.absolute-position.y - lib-list.content-y) / 64px);
+            if (i >= 0 && i < root.lists.length) { root.drop-on-list(root.lists[i].uri, uri); }
+            return true;
+        }
+        // Opens the right panel on a tab (-1 closes it); Queue and Recent load their rows.
+        function open-side(tab: int) {
+            root.show-now-panel = tab >= 0;
+            if (tab < 0) { return; }
+            root.side-tab = tab;
+            if (tab == 1) { root.show-queue(); }
+            if (tab == 2) { root.side-recent(); }
+        }
 
         pure function fmt(ms: float) -> string {
             let s = floor(ms / 1000);
@@ -968,480 +1045,37 @@ slint::slint! {
                     if (event.text == "q") { root.quit(); return accept; }
                     if (event.text == "y") { root.show-lyrics = !root.show-lyrics; return accept; }
                     if (event.text == "e") { root.start-radio(); return accept; }
-                    if (event.text == "u") { root.show-lyrics = false; root.show-queue(); return accept; }
-                    if (event.text == "w") { root.skin-toggle(); return accept; }
+                    if (event.text == "u") { root.open-side(1); return accept; }
+                    if (event.text == "a") { root.select-all(); return accept; }
+                    if (event.text == "c") { root.copy-selection(); return accept; }
+                    if (event.text == "x") { root.remove-selection(true); return accept; }
+                    if (event.text == "v") { root.paste-links(); return accept; }
+                    if (event.text == "b") { root.show-sidebar = !root.show-sidebar; return accept; }
+                    if (event.text == "h") { root.show-settings = false; root.go-home(); return accept; }
+                    if (event.text == ",") { root.show-settings = !root.show-settings; return accept; }
                 }
-                if (root.skin-mode && !event.modifiers.control && !event.modifiers.alt) {
-                    if (event.text == "z") { root.prev(); return accept; }
-                    if (event.text == "x") { if (!root.playing) { root.toggle(); } return accept; }
-                    if (event.text == "c") { root.toggle(); return accept; }
-                    if (event.text == "v") { root.wa-stop(); return accept; }
-                    if (event.text == "b") { root.next(); return accept; }
+                if (event.modifiers.shift && event.text == Key.LeftArrow) { root.position = max(0, root.position - 10000); root.seek(root.position); return accept; }
+                if (event.modifiers.shift && event.text == Key.RightArrow) { root.position = min(root.duration, root.position + 10000); root.seek(root.position); return accept; }
+                if (event.text == Key.UpArrow) { root.move-cursor(root.kb-row < 0 ? 0 : root.kb-row - 1, event.modifiers.shift); return accept; }
+                if (event.text == Key.DownArrow) { root.move-cursor(root.kb-row + 1, event.modifiers.shift); return accept; }
+                if (event.text == Key.Return && root.kb-row >= 0 && root.kb-row < root.tracks.length) { root.play-uri(root.tracks[root.kb-row].uri); return accept; }
+                if (event.text == Key.Delete) { root.remove-selection(false); return accept; }
+                if (!event.modifiers.control && !event.modifiers.alt) {
+                    if (event.text == "m") { root.toggle-mute(); return accept; }
+                    if (event.text == "b" && root.now.uri != "") { root.toggle-like(); return accept; }
+                    if (event.text == "q") { root.open-side(root.show-now-panel && root.side-tab == 1 ? -1 : 1); return accept; }
+                    if (event.text == "/") { query.focus(); return accept; }
+                    if (event.text == "?") { shortcuts-popup.show(); return accept; }
                 }
                 if (event.modifiers.alt && event.text == Key.LeftArrow) { root.go-back(); return accept; }
                 if (event.modifiers.alt && event.text == Key.RightArrow) { root.go-forward(); return accept; }
                 if (event.text == " ") { root.toggle(); return accept; }
-                if (event.text == Key.Escape) { self.focus(); return accept; }
+                if (event.text == Key.Escape) { if (root.lyrics-full) { root.toggle-lyrics-full(); } root.show-settings = false; self.focus(); return accept; }
                 reject
             }
-        if root.skin-mode : wa := Rectangle {
-            property <length> s: root.wa-s;
-            property <length> menu-x;
-            property <length> menu-y;
-            // Menus open where they were asked for, kept inside the (small) window.
-            function open-menu(x: length, y: length) {
-                self.menu-x = max(0px, min(x, self.width - 150px));
-                self.menu-y = max(0px, min(y, self.height - 130px));
-                options-menu.show();
-            }
-            // ADD / REM / SEL / MISC under the playlist: one popup, items picked by `pl-kind`.
-            property <string> pl-kind;
-            // The selected row, else the playing track.
-            property <string> pl-uri: root.wa-sel >= 0 && root.wa-sel < root.tracks.length ? root.tracks[root.wa-sel].uri : root.current-track;
-            property <bool> pl-track: self.pl-uri.starts-with("spotify:track:");
-            property <bool> pl-chosen: root.wa-sel >= 0 && root.wa-sel < root.tracks.length;
-            function open-pl(kind: string, x: length, y: length) {
-                self.pl-kind = kind;
-                self.menu-x = max(0px, min(x, self.width - 190px));
-                self.menu-y = max(0px, min(y - 150px, self.height - 150px));
-                pl-menu.show();
-            }
-            function pl-act(act: string) {
-                if (act == "search") { root.skin-toggle(); query.focus(); }
-                if (act == "liked") { root.wa-sel = -1; root.open-list("liked"); }
-                if (act == "home") { root.wa-sel = -1; root.go-home(); }
-                if (act == "queue-view") { root.wa-sel = -1; root.show-queue(); }
-                if (act == "sel-none") { root.wa-sel = -1; }
-                if (act == "sel-first" && root.tracks.length > 0) { root.wa-sel = 0; root.wa-pl-y = 0; }
-                if (act == "sel-last" && root.tracks.length > 0) { root.wa-sel = root.tracks.length - 1; root.wa-pl-y = -max(0px, root.tracks.length * 13 * self.s - 174 * self.s); }
-                if (act == "remove" || act == "queue" || act == "like" || act == "radio" || act == "album" || act == "artist" || act == "copy") {
-                    // These change the page (or its rows): the old selection index means nothing there.
-                    if (act == "remove" || act == "radio" || act == "album" || act == "artist") { root.wa-sel = -1; }
-                    root.row-action(act, self.pl-uri);
-                }
-            }
-            function open-lists(x: length, y: length) {
-                self.menu-x = max(0px, min(x - 200px, self.width - 220px));
-                self.menu-y = max(0px, min(y - 240px, self.height - 240px));
-                lists-menu.show();
-            }
-            background: black;
-            // Winamp blinks the time while paused.
-            Timer {
-                interval: 1s;
-                running: !root.playing && root.now.uri != "";
-                triggered => { root.wa-blink = !root.wa-blink; }
-            }
-            // ---------- Main window ----------
-            Sprite { src: root.skin.main; s: parent.s; w: 275; h: 116; }
-            Sprite { src: root.skin.titlebar; s: parent.s; w: 275; h: 14; sx: 27; sy: 0; }
-            TouchArea { x: 0; y: 0; width: 240 * parent.s; height: 14 * parent.s; pointer-event(e) => {
-                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) { root.wa-drag(); }
-                if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) { wa.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y); }
-            } }
-            // Options button: the options menu (also right click on any title bar).
-            SkinButton { src: root.skin.titlebar; s: parent.s; px: 6; py: 3; w: 9; h: 9; nx: 0; ny: 0; ax: 0; ay: 9; clicked => { wa.open-menu(6 * wa.s, 12 * wa.s); } }
-            SkinButton { src: root.skin.titlebar; s: parent.s; px: 244; py: 3; w: 9; h: 9; nx: 9; ny: 0; ax: 9; ay: 9; clicked => { root.wa-minimize(); } }
-            SkinButton { src: root.skin.titlebar; s: parent.s; px: 254; py: 3; w: 9; h: 9; nx: 0; ny: 18; ax: 9; ay: 18; clicked => { root.skin-toggle(); } }
-            SkinButton { src: root.skin.titlebar; s: parent.s; px: 264; py: 3; w: 9; h: 9; nx: 18; ny: 0; ax: 18; ay: 9; clicked => { root.wa-close(); } }
-            // Clutter bar: O = options menu, A = always on top, D = double size.
-            Sprite { src: root.skin.titlebar; s: parent.s; px: 10; py: 22; w: 8; h: 43; sx: 304; sy: 0; }
-            if root.wa-on-top : Sprite { src: root.skin.titlebar; s: root.wa-s; px: 10; py: 33; w: 8; h: 7; sx: 312; sy: 55; }
-            if root.wa-double : Sprite { src: root.skin.titlebar; s: root.wa-s; px: 10; py: 47; w: 8; h: 8; sx: 328; sy: 69; }
-            TouchArea { x: 10 * parent.s; y: 25 * parent.s; width: 8 * parent.s; height: 8 * parent.s; clicked => { wa.open-menu(18 * wa.s, 25 * wa.s); } }
-            TouchArea { x: 10 * parent.s; y: 33 * parent.s; width: 8 * parent.s; height: 7 * parent.s; clicked => { root.wa-on-top = !root.wa-on-top; } }
-            TouchArea { x: 10 * parent.s; y: 47 * parent.s; width: 8 * parent.s; height: 8 * parent.s; clicked => { root.wa-scale = root.wa-double ? 1 : 2; } }
-            // Play state, time, title, bitrate, stereo.
-            Sprite { src: root.skin.playpaus; s: parent.s; px: 26; py: 28; w: 9; h: 9; sx: root.playing ? 0 : root.position > 0 ? 9 : 18; sy: 0; }
-            Rectangle {
-                visible: root.now.uri != "" && (root.playing || !root.wa-blink);
-                if root.wa-remaining && !root.skin.nums-ex : Sprite { src: root.skin.numbers; s: root.wa-s; px: 39; py: 32; w: 5; h: 1; sx: 20; sy: 6; }
-                if root.wa-remaining && root.skin.nums-ex : Sprite { src: root.skin.numbers; s: root.wa-s; px: 36; py: 26; w: 9; h: 13; sx: 99; sy: 0; }
-                Sprite { src: root.skin.numbers; s: root.wa-s; px: 48; py: 26; w: 9; h: 13; sx: floor(root.wa-min / 10) * 9; }
-                Sprite { src: root.skin.numbers; s: root.wa-s; px: 60; py: 26; w: 9; h: 13; sx: Math.mod(root.wa-min, 10) * 9; }
-                Sprite { src: root.skin.numbers; s: root.wa-s; px: 78; py: 26; w: 9; h: 13; sx: floor(root.wa-sec / 10) * 9; }
-                Sprite { src: root.skin.numbers; s: root.wa-s; px: 90; py: 26; w: 9; h: 13; sx: Math.mod(root.wa-sec, 10) * 9; }
-            }
-            TouchArea { x: 36 * parent.s; y: 26 * parent.s; width: 63 * parent.s; height: 13 * parent.s; clicked => { root.wa-remaining = !root.wa-remaining; } }
-            for g[i] in root.wa-title : Sprite { src: root.skin.text; s: root.wa-s; px: 111 + i * 5; py: 27; w: 5; h: 6; sx: g.x; sy: g.y; }
-            if root.now.uri != "" : Rectangle {
-                for i in 3 : Sprite {
-                    property <int> place: i == 0 ? 100 : i == 1 ? 10 : 1;
-                    src: root.skin.text;
-                    s: root.wa-s;
-                    px: 111 + i * 5;
-                    py: 43;
-                    w: 5;
-                    h: 6;
-                    sx: root.wa-kbps < self.place && i < 2 ? 150 : Math.mod(floor(root.wa-kbps / self.place), 10) * 5;
-                    sy: root.wa-kbps < self.place && i < 2 ? 0 : 6;
-                }
-                // librespot always decodes to 44.1 kHz stereo.
-                Sprite { src: root.skin.text; s: root.wa-s; px: 156; py: 43; w: 5; h: 6; sx: 20; sy: 6; }
-                Sprite { src: root.skin.text; s: root.wa-s; px: 161; py: 43; w: 5; h: 6; sx: 20; sy: 6; }
-            }
-            Sprite { src: root.skin.monoster; s: parent.s; px: 212; py: 41; w: 27; h: 12; sx: 29; sy: 12; }
-            Sprite { src: root.skin.monoster; s: parent.s; px: 239; py: 41; w: 29; h: 12; sx: 0; sy: root.now.uri != "" ? 0 : 12; }
-            // Volume and balance: the track is one of 28 frames picked by the value.
-            Sprite { src: root.skin.volume; s: parent.s; px: 107; py: 57; w: 68; h: 13; sy: round(root.volume / 100 * 27) * 15; }
-            SkinSlider {
-                src: root.skin.volume; s: parent.s; px: 107; py: 57; w: 68; h: 13;
-                tw: 14; th: 11; ty: 1; nx: 15; ny: 422; ax: 0; ay: 422;
-                value: root.volume / 100;
-                moved(v) => { root.volume = v * 100; root.set-volume(root.volume, false); }
-                released(v) => { root.set-volume(v * 100, true); }
-            }
-            Sprite { src: root.skin.balance; s: parent.s; px: 177; py: 57; w: 38; h: 13; sx: 9; sy: round(abs(root.wa-balance) * 27) * 15; }
-            SkinSlider {
-                src: root.skin.balance; s: parent.s; px: 177; py: 57; w: 38; h: 13;
-                tw: 14; th: 11; ty: 1; nx: 15; ny: 422; ax: 0; ay: 422;
-                value: (root.wa-balance + 1) / 2;
-                // Snaps to the centre like Winamp's.
-                moved(v) => { root.wa-balance = abs(v * 2 - 1) < 0.08 ? 0 : v * 2 - 1; root.eq-changed(false); }
-                released(v) => { root.eq-changed(true); }
-            }
-            SkinButton { src: root.skin.shufrep; s: parent.s; px: 219; py: 58; w: 23; h: 12; nx: 0; ny: root.wa-eq ? 73 : 61; ax: 46; ay: root.wa-eq ? 73 : 61; clicked => { root.wa-eq = !root.wa-eq; } }
-            SkinButton { src: root.skin.shufrep; s: parent.s; px: 242; py: 58; w: 23; h: 12; nx: 23; ny: root.wa-pl ? 73 : 61; ax: 69; ay: root.wa-pl ? 73 : 61; clicked => { root.wa-pl = !root.wa-pl; } }
-            // Seek bar.
-            Sprite { src: root.skin.posbar; s: parent.s; px: 16; py: 72; w: 248; h: 10; }
-            SkinSlider {
-                src: root.skin.posbar; s: parent.s; px: 16; py: 72; w: 248; h: 10;
-                tw: 29; th: 10; ty: 0; nx: 248; ny: 0; ax: 278; ay: 0;
-                enabled: root.duration > 0;
-                value: root.position / max(root.duration, 1);
-                moved(v) => { root.seeking = true; root.position = v * root.duration; }
-                released(v) => { root.seeking = false; root.seek(v * root.duration); }
-            }
-            // Transport.
-            SkinButton { src: root.skin.cbuttons; s: parent.s; px: 16; py: 88; w: 23; h: 18; nx: 0; ny: 0; ax: 0; ay: 18; clicked => { root.prev(); } }
-            SkinButton { src: root.skin.cbuttons; s: parent.s; px: 39; py: 88; w: 23; h: 18; nx: 23; ny: 0; ax: 23; ay: 18; clicked => { if (!root.playing) { root.toggle(); } } }
-            SkinButton { src: root.skin.cbuttons; s: parent.s; px: 62; py: 88; w: 23; h: 18; nx: 46; ny: 0; ax: 46; ay: 18; clicked => { root.toggle(); } }
-            SkinButton { src: root.skin.cbuttons; s: parent.s; px: 85; py: 88; w: 23; h: 18; nx: 69; ny: 0; ax: 69; ay: 18; clicked => { root.wa-stop(); } }
-            SkinButton { src: root.skin.cbuttons; s: parent.s; px: 108; py: 88; w: 22; h: 18; nx: 92; ny: 0; ax: 92; ay: 18; clicked => { root.next(); } }
-            // Eject ("open"): back to the normal window to pick something to play.
-            SkinButton { src: root.skin.cbuttons; s: parent.s; px: 136; py: 89; w: 22; h: 16; nx: 114; ny: 0; ax: 114; ay: 16; clicked => { root.skin-toggle(); } }
-            SkinButton { src: root.skin.shufrep; s: parent.s; px: 164; py: 89; w: 47; h: 15; nx: 28; ny: root.shuffle ? 30 : 0; ax: 28; ay: root.shuffle ? 45 : 15; clicked => { root.toggle-shuffle(); } }
-            SkinButton { src: root.skin.shufrep; s: parent.s; px: 210; py: 89; w: 28; h: 15; nx: 0; ny: root.repeat != 0 ? 30 : 0; ax: 0; ay: root.repeat != 0 ? 45 : 15; clicked => { root.cycle-repeat(); } }
-
-            // ---------- Equalizer ----------
-            if root.wa-eq : Rectangle {
-                property <length> s: root.wa-s;
-                x: 0;
-                y: root.wa-eq-y * self.s;
-                width: 275 * self.s;
-                height: 116 * self.s;
-                Sprite { src: root.skin.eqmain; s: parent.s; w: 275; h: 116; }
-                Sprite { src: root.skin.eqmain; s: parent.s; w: 275; h: 14; sx: 0; sy: 134; }
-                TouchArea { x: 0; y: 0; width: 260 * parent.s; height: 14 * parent.s; pointer-event(e) => {
-                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) { root.wa-drag(); }
-                if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) { wa.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y); }
-            } }
-                SkinButton { src: root.skin.eqmain; s: parent.s; px: 264; py: 3; w: 9; h: 9; nx: 0; ny: 116; ax: 0; ay: 125; clicked => { root.wa-eq = false; } }
-                SkinButton {
-                    src: root.skin.eqmain; s: parent.s; px: 14; py: 18; w: 26; h: 12;
-                    nx: root.eq-on ? 69 : 10; ny: 119; ax: root.eq-on ? 187 : 128; ay: 119;
-                    clicked => { root.eq-on = !root.eq-on; root.eq-changed(true); }
-                }
-                // AUTO (per-file presets) has nothing to load here; it only toggles like Winamp's.
-                SkinButton {
-                    src: root.skin.eqmain; s: parent.s; px: 40; py: 18; w: 32; h: 12;
-                    nx: root.wa-auto ? 95 : 36; ny: 119; ax: root.wa-auto ? 213 : 154; ay: 119;
-                    clicked => { root.wa-auto = !root.wa-auto; }
-                }
-                Sprite { src: root.skin.eqmain; s: parent.s; px: 86; py: 17; w: 113; h: 19; sx: 0; sy: 294; }
-                SkinButton { src: root.skin.eqmain; s: parent.s; px: 217; py: 18; w: 44; h: 12; nx: 224; ny: 164; ax: 224; ay: 176; clicked => { presets-popup.show(); } }
-                EqSlider {
-                    src: root.skin.eqmain; s: parent.s; px: 21; py: 38;
-                    value: root.eq-preamp;
-                    moved(v) => { root.eq-preamp = v; root.eq-changed(false); }
-                    released(v) => { root.eq-changed(true); }
-                }
-                for band[i] in root.eq-bands : EqSlider {
-                    src: root.skin.eqmain; s: root.wa-s; px: 78 + i * 18; py: 38;
-                    value: band;
-                    moved(v) => { root.eq-bands[i] = v; root.eq-changed(false); }
-                    released(v) => { root.eq-changed(true); }
-                }
-                presets-popup := PopupWindow {
-                    x: 217 * parent.s;
-                    y: 31 * parent.s;
-                    width: 110px;
-                    Rectangle {
-                        background: #d4d0c8;
-                        border-width: 1px;
-                        border-color: #404040;
-                        VerticalLayout {
-                            padding: 2px;
-                            for p in root.eq-presets : Rectangle {
-                                height: 18px;
-                                background: pa.has-hover ? #0a246a : transparent;
-                                Text { x: 8px; text: p.name; font-size: 11px; vertical-alignment: center; color: pa.has-hover ? white : black; }
-                                pa := TouchArea {
-                                    clicked => {
-                                        root.eq-bands = p.bands;
-                                        root.eq-on = true;
-                                        root.eq-changed(true);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ---------- Playlist ----------
-            if root.wa-pl : Rectangle {
-                property <length> s: root.wa-s;
-                // Scroll handle position over the list's scroll range.
-                // Extra height from the corner grip; the list and side borders grow, the bottom bar moves down.
-                property <int> ex: root.wa-pl-ex * 29;
-                property <length> pl-range: max(1px, root.tracks.length * 13 * self.s - (174 + self.ex) * self.s);
-                property <float> pl-pos: clamp(-root.wa-pl-y / self.pl-range, 0, 1);
-                x: 0;
-                y: root.wa-pl-top * self.s;
-                width: 275 * self.s;
-                height: (232 + self.ex) * self.s;
-                Rectangle { x: 12 * parent.s; y: 20 * parent.s; width: 243 * parent.s; height: (174 + parent.ex) * parent.s; background: root.skin.pl-normal-bg; }
-                for i in 11 : Sprite { src: root.skin.pledit; s: root.wa-s; px: i * 25; w: 25; h: 20; sx: 127; sy: 0; }
-                Sprite { src: root.skin.pledit; s: parent.s; w: 25; h: 20; sx: 0; sy: 0; }
-                Sprite { src: root.skin.pledit; s: parent.s; px: 87; w: 100; h: 20; sx: 26; sy: 0; }
-                Sprite { src: root.skin.pledit; s: parent.s; px: 250; w: 25; h: 20; sx: 153; sy: 0; }
-                TouchArea { x: 0; y: 0; width: 260 * parent.s; height: 20 * parent.s; pointer-event(e) => {
-                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) { root.wa-drag(); }
-                if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) { wa.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y); }
-            } }
-                TouchArea { x: 264 * parent.s; y: 3 * parent.s; width: 9 * parent.s; height: 9 * parent.s; clicked => { root.wa-pl = false; } }
-                for i in 6 + root.wa-pl-ex : Sprite { src: root.skin.pledit; s: root.wa-s; py: 20 + i * 29; w: 12; h: 29; sx: 0; sy: 42; }
-                for i in 6 + root.wa-pl-ex : Sprite { src: root.skin.pledit; s: root.wa-s; px: 255; py: 20 + i * 29; w: 20; h: 29; sx: 31; sy: 42; }
-                Sprite { src: root.skin.pledit; s: parent.s; py: 194 + parent.ex; w: 125; h: 38; sx: 0; sy: 72; }
-                Sprite { src: root.skin.pledit; s: parent.s; px: 125; py: 194 + parent.ex; w: 150; h: 38; sx: 126; sy: 72; }
-                // The page's tracks; double-click plays (the normal list plays on a single click).
-                ListView {
-                    x: 12 * parent.s;
-                    y: 20 * parent.s;
-                    width: 243 * parent.s;
-                    height: (174 + parent.ex) * parent.s;
-                    vertical-scrollbar-policy: always-off;
-                    horizontal-scrollbar-policy: always-off;
-                    content-y <=> root.wa-pl-y;
-                    for row[i] in root.tracks : Rectangle {
-                        property <length> s: root.wa-s;
-                        property <color> ink: row.uri == root.current-track ? root.skin.pl-current : root.skin.pl-normal;
-                        height: 13 * self.s;
-                        background: i == root.wa-sel ? root.skin.pl-selected-bg : transparent;
-                        Text {
-                            x: 2 * parent.s;
-                            width: parent.width - 40 * parent.s;
-                            height: parent.height;
-                            text: (row.uri.starts-with("slimspot:") ? "" : (i + 1) + ". ") + (row.artist == "" ? "" : row.artist + " - ") + row.title;
-                            font-family: root.skin.pl-font;
-                            font-size: 9 * parent.s;
-                            color: parent.ink;
-                            vertical-alignment: center;
-                            overflow: elide;
-                        }
-                        Text {
-                            x: parent.width - 36 * parent.s;
-                            width: 34 * parent.s;
-                            height: parent.height;
-                            text: row.duration;
-                            font-family: root.skin.pl-font;
-                            font-size: 9 * parent.s;
-                            color: parent.ink;
-                            horizontal-alignment: right;
-                            vertical-alignment: center;
-                        }
-                        TouchArea {
-                            clicked => { root.wa-sel = i; }
-                            double-clicked => { root.play-uri(row.uri); }
-                        }
-                    }
-                }
-                Sprite { src: root.skin.pledit; s: parent.s; px: 260; py: 20 + round(parent.pl-pos * (174 + parent.ex - 18)); w: 8; h: 18; sx: handle.pressed ? 61 : 52; sy: 53; }
-                handle := TouchArea {
-                    x: 260 * parent.s;
-                    y: 20 * parent.s;
-                    width: 8 * parent.s;
-                    height: (174 + parent.ex) * parent.s;
-                    moved => {
-                        if (self.pressed) {
-                            root.wa-pl-y = -clamp((self.mouse-y / parent.s - 9) / (174 + parent.ex - 18), 0, 1) * parent.pl-range;
-                        }
-                    }
-                }
-                // Running time and mini transport in the bottom-right corner.
-                for g[i] in root.wa-pl-time : Sprite { src: root.skin.text; s: root.wa-s; px: 132 + i * 5; py: 204 + root.wa-pl-ex * 29; w: 5; h: 6; sx: g.x; sy: g.y; }
-                for g[i] in root.wa-mini-time : Sprite { src: root.skin.text; s: root.wa-s; px: 191 + i * 5; py: 217 + root.wa-pl-ex * 29; w: 5; h: 6; sx: g.x; sy: g.y; }
-                for kind[i] in ["add", "rem", "sel", "misc"] : TouchArea {
-                    x: (11 + i * 29) * root.wa-s;
-                    y: (204 + root.wa-pl-ex * 29) * root.wa-s;
-                    width: 25 * root.wa-s;
-                    height: 18 * root.wa-s;
-                    clicked => { wa.open-pl(kind, self.absolute-position.x, self.absolute-position.y); }
-                }
-                TouchArea {
-                    x: 230 * parent.s;
-                    y: (204 + parent.ex) * parent.s;
-                    width: 22 * parent.s;
-                    height: 18 * parent.s;
-                    clicked => { wa.open-lists(self.absolute-position.x, self.absolute-position.y); }
-                }
-                TouchArea { x: 130 * parent.s; y: (216 + parent.ex) * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.prev(); } }
-                TouchArea { x: 139 * parent.s; y: (216 + parent.ex) * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { if (!root.playing) { root.toggle(); } } }
-                TouchArea { x: 148 * parent.s; y: (216 + parent.ex) * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.toggle(); } }
-                TouchArea { x: 157 * parent.s; y: (216 + parent.ex) * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.wa-stop(); } }
-                TouchArea { x: 166 * parent.s; y: (216 + parent.ex) * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.next(); } }
-                TouchArea { x: 175 * parent.s; y: (216 + parent.ex) * parent.s; width: 9 * parent.s; height: 8 * parent.s; clicked => { root.skin-toggle(); } }
-                // Corner grip: the horizontal drag scales the whole skin (1-3x), the vertical one grows the
-                // playlist in 29 px steps, so a diagonal drag does both. Measured in window coordinates from
-                // the press, since the grip itself moves as the window resizes (its top-left stays put).
-                TouchArea {
-                    property <float> s0;
-                    property <length> ax;
-                    property <length> ay;
-                    property <float> oy;
-                    x: 255 * parent.s;
-                    y: (212 + parent.ex) * parent.s;
-                    width: 20 * parent.s;
-                    height: 20 * parent.s;
-                    mouse-cursor: nwse-resize;
-                    pointer-event(e) => {
-                        if (e.kind == PointerEventKind.down) {
-                            self.s0 = root.wa-scale;
-                            self.ax = self.absolute-position.x + self.mouse-x;
-                            self.ay = self.absolute-position.y + self.mouse-y;
-                            self.oy = self.mouse-y / parent.s;
-                        }
-                    }
-                    moved => {
-                        if (!self.pressed) { return; }
-                        // The grip's x is 255 * scale, so this keeps it under the pointer.
-                        root.wa-scale = clamp(self.s0 + (self.absolute-position.x + self.mouse-x - self.ax) / 255px, 1, 3);
-                        // Pointer y in skin units, minus where the grip sits with no extra rows.
-                        root.wa-pl-ex = max(0, round(((self.absolute-position.y + self.mouse-y) / (root.wa-scale * 1px) - self.oy - root.wa-pl-top - 212) / 29));
-                    }
-                }
-            }
-
-            // ---------- Menus, in the playlist's colors like Spotifast's ----------
-            options-menu := PopupWindow {
-                x: wa.menu-x;
-                y: wa.menu-y;
-                width: 150px;
-                Rectangle {
-                    background: root.skin.pl-normal-bg;
-                    border-width: 1px;
-                    border-color: root.skin.pl-normal;
-                    VerticalLayout {
-                        padding: 3px;
-                        for item[i] in [
-                            { label: "Big window (Ctrl+W)", on: false },
-                            { label: "Choose skin...", on: false },
-                            { label: "Built-in skin", on: false },
-                            { label: "Double size", on: root.wa-double },
-                            { label: "Always on top", on: root.wa-on-top },
-                            { label: "Quit", on: false },
-                        ] : Rectangle {
-                            height: 20px;
-                            background: oa.has-hover ? root.skin.pl-selected-bg : transparent;
-                            Text { x: 8px; text: (item.on ? "✓ " : "") + item.label; font-size: 11px; vertical-alignment: center; color: root.skin.pl-normal; }
-                            oa := TouchArea {
-                                clicked => {
-                                    if (i == 0) { root.skin-toggle(); }
-                                    if (i == 1) { root.skin-choose(); }
-                                    if (i == 2) { root.skin-builtin(); }
-                                    if (i == 3) { root.wa-scale = root.wa-double ? 1 : 2; }
-                                    if (i == 4) { root.wa-on-top = !root.wa-on-top; }
-                                    if (i == 5) { root.quit(); }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            pl-menu := PopupWindow {
-                x: wa.menu-x;
-                y: wa.menu-y;
-                width: 190px;
-                Rectangle {
-                    background: root.skin.pl-normal-bg;
-                    border-width: 1px;
-                    border-color: root.skin.pl-normal;
-                    VerticalLayout {
-                        padding: 3px;
-                        for item in (wa.pl-kind == "add" ? [
-                            { label: "Search Spotify...", act: "search", on: true },
-                            { label: "Liked Songs", act: "liked", on: true },
-                            { label: "Recently played", act: "home", on: true },
-                            { label: "Queue", act: "queue-view", on: true },
-                        ] : wa.pl-kind == "rem" ? [
-                            { label: "Remove from this playlist", act: "remove", on: root.editable && wa.pl-chosen && wa.pl-track },
-                            { label: "Clear selection", act: "sel-none", on: wa.pl-chosen },
-                        ] : wa.pl-kind == "sel" ? [
-                            { label: "Select first", act: "sel-first", on: root.tracks.length > 0 },
-                            { label: "Select last", act: "sel-last", on: root.tracks.length > 0 },
-                            { label: "Select none", act: "sel-none", on: wa.pl-chosen },
-                        ] : [
-                            { label: "Add to queue", act: "queue", on: wa.pl-track },
-                            { label: "Save to Liked Songs", act: "like", on: wa.pl-track },
-                            { label: "Start radio", act: "radio", on: wa.pl-track },
-                            { label: "Go to album", act: "album", on: wa.pl-track },
-                            { label: "Go to artist", act: "artist", on: wa.pl-track },
-                            { label: "Copy link", act: "copy", on: wa.pl-uri != "" },
-                        ]) : Rectangle {
-                            height: 20px;
-                            background: item.on && pm.has-hover ? root.skin.pl-selected-bg : transparent;
-                            Text {
-                                x: 8px;
-                                text: item.label;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                color: root.skin.pl-normal;
-                                opacity: item.on ? 1 : 0.4;
-                            }
-                            pm := TouchArea {
-                                enabled: item.on;
-                                clicked => { wa.pl-act(item.act); }
-                            }
-                        }
-                    }
-                }
-            }
-            lists-menu := PopupWindow {
-                x: wa.menu-x;
-                y: wa.menu-y;
-                width: 220px;
-                height: 240px;
-                Rectangle {
-                    background: root.skin.pl-normal-bg;
-                    border-width: 1px;
-                    border-color: root.skin.pl-normal;
-                    VerticalLayout {
-                        padding: 3px;
-                        Text { text: "Your Library"; font-size: 11px; font-weight: 600; color: root.skin.pl-current; height: 18px; vertical-alignment: center; }
-                        ListView {
-                            vertical-stretch: 1;
-                            for list in root.lists : Rectangle {
-                                height: 20px;
-                                background: la.has-hover ? root.skin.pl-selected-bg : transparent;
-                                Text { x: 6px; width: parent.width - 12px; text: list.title; font-size: 11px; vertical-alignment: center; overflow: elide; color: list.uri == root.current-list ? root.skin.pl-current : root.skin.pl-normal; }
-                                la := TouchArea {
-                                    clicked => {
-                                        root.wa-pl = true;
-                                        root.wa-sel = -1;
-                                        root.open-list(list.uri);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
         VerticalLayout {
             padding: 8px;
             spacing: 8px;
-            visible: !root.skin-mode;
             // Collapsed rather than removed in mini mode: ids inside (the search box) stay reachable.
             HorizontalLayout {
                 spacing: 8px;
@@ -1450,94 +1084,114 @@ slint::slint! {
                 // Explicit bounds override the children's minimum, which would push the bar out of a mini window.
                 min-height: 0px;
                 max-height: root.mini ? 0px : 100000px;
-                // Your Library
-                Rectangle {
-                    width: 280px;
-                    border-radius: 12px;
-                    background: Theme.panel;
-                    border-width: 1px;
-                    border-color: Theme.border;
-                    VerticalLayout {
-                        padding: 8px;
-                        spacing: 8px;
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            height: 32px;
-                            Text {
-                                text: "Your Library";
-                                font-size: 16px;
-                                font-weight: 700;
-                                color: Theme.text;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                            IconButton { y: (parent.height - self.height) / 2; shape: Icons.plus; dot: false; size: 18px; clicked => {
-                                // Like editing, but nothing exists until Save (Spotify creates at once).
-                                root.creating = true;
-                                root.rename-text = "My Playlist #" + (root.targets.length + 1);
-                                root.desc-text = "";
-                                rename-popup.show();
-                            } }
+                // Home / Search, then Your Library
+                VerticalLayout {
+                    visible: root.show-sidebar && !root.lyrics-full;
+                    width: self.visible ? 280px : 0px;
+                    spacing: 8px;
+                    Rectangle {
+                        border-radius: 12px;
+                        background: Theme.panel;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        VerticalLayout {
+                            padding: 8px;
+                            NavEntry { label: "Home"; shape: Icons.home; chosen: root.page-kind == "Home" && !root.show-settings; clicked => { root.show-settings = false; root.go-home(); } }
+                            NavEntry { label: "Search"; shape: Icons.search; chosen: query.has-focus || root.search-tab >= 0; clicked => { root.show-settings = false; query.focus(); } }
                         }
-                        HorizontalLayout {
-                            spacing: 4px;
-                            alignment: start;
-                            // Like Spotify: no "All" chip; clicking the chosen filter again clears it.
-                            for label[i] in ["Playlists", "Albums", "Artists", "Podcasts"] : Chip {
-                                label: label;
-                                pad: 14px;
-                                chosen: root.library-kind == i + 1;
-                                clicked => {
-                                    root.library-kind = root.library-kind == i + 1 ? 0 : i + 1;
-                                    root.filter-library(root.library-kind, lib-filter.text, root.library-sort);
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        border-radius: 12px;
+                        background: Theme.panel;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        VerticalLayout {
+                            padding: 8px;
+                            spacing: 8px;
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                height: 32px;
+                                Icon { width: 22px; height: 22px; y: (parent.height - self.height) / 2; shape: Icons.library; tint: Theme.subdued; }
+                                Text {
+                                    text: "Your Library";
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                IconButton { y: (parent.height - self.height) / 2; shape: Icons.refresh; dot: false; size: 18px; clicked => { root.refresh(); } }
+                                IconButton { y: (parent.height - self.height) / 2; shape: Icons.plus; dot: false; size: 18px; clicked => {
+                                    // Like editing, but nothing exists until Save (Spotify creates at once).
+                                    root.creating = true;
+                                    root.rename-text = "My Playlist #" + (root.targets.length + 1);
+                                    root.desc-text = "";
+                                    rename-popup.show();
+                                } }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                alignment: start;
+                                // Like Spotify: no "All" chip; clicking the chosen filter again clears it.
+                                for label[i] in ["Playlists", "Albums", "Artists", "Podcasts"] : Chip {
+                                    label: label;
+                                    pad: 14px;
+                                    chosen: root.library-kind == i + 1;
+                                    clicked => {
+                                        root.library-kind = root.library-kind == i + 1 ? 0 : i + 1;
+                                        root.filter-library(root.library-kind, lib-filter.text, root.library-sort);
+                                    }
                                 }
                             }
-                        }
-                        // The sort chip sits next to the search field, like Spotify's sort control.
-                        HorizontalLayout {
-                            spacing: 4px;
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            height: 32px;
-                            border-radius: 6px;
-                            background: lib-filter.has-focus ? Theme.hover : Theme.field;
-                            Icon { x: 8px; width: 16px; height: 16px; y: (parent.height - 16px) / 2; shape: Icons.search; tint: Theme.subdued; }
-                            lib-filter := TextInput {
-                                x: 32px;
-                                width: parent.width - 40px;
-                                height: parent.height;
-                                vertical-alignment: center;
-                                single-line: true;
-                                font-size: 13px;
-                                color: Theme.text;
-                                edited => { root.filter-library(root.library-kind, self.text, root.library-sort); }
+                            // The sort chip sits next to the search field, like Spotify's sort control.
+                            HorizontalLayout {
+                                spacing: 4px;
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 32px;
+                                border-radius: 6px;
+                                background: lib-filter.has-focus ? Theme.hover : Theme.field;
+                                Icon { x: 8px; width: 16px; height: 16px; y: (parent.height - 16px) / 2; shape: Icons.search; tint: Theme.subdued; }
+                                lib-filter := TextInput {
+                                    x: 32px;
+                                    width: parent.width - 40px;
+                                    height: parent.height;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                    font-size: 13px;
+                                    color: Theme.text;
+                                    edited => { root.filter-library(root.library-kind, self.text, root.library-sort); }
+                                }
+                                if lib-filter.text == "" : Text {
+                                    x: 32px;
+                                    height: parent.height;
+                                    vertical-alignment: center;
+                                    text: "Search in Your Library";
+                                    font-size: 13px;
+                                    color: Theme.muted;
+                                }
                             }
-                            if lib-filter.text == "" : Text {
-                                x: 32px;
-                                height: parent.height;
-                                vertical-alignment: center;
-                                text: "Search in Your Library";
-                                font-size: 13px;
-                                color: Theme.muted;
+                                Chip {
+                                    y: 1px;
+                                    label: ["Sort", "Recents", "A-Z"][root.library-sort];
+                                    pad: 14px;
+                                    chosen: root.library-sort != 0;
+                                    clicked => { root.library-sort = mod(root.library-sort + 1, 3); root.filter-library(root.library-kind, lib-filter.text, root.library-sort); }
+                                }
                             }
-                        }
-                            Chip {
-                                y: 1px;
-                                label: ["Sort", "Recents", "A-Z"][root.library-sort];
-                                pad: 14px;
-                                chosen: root.library-sort != 0;
-                                clicked => { root.library-sort = mod(root.library-sort + 1, 3); root.filter-library(root.library-kind, lib-filter.text, root.library-sort); }
-                            }
-                        }
-                        ListView {
-                            for row[i] in lists: RowItem {
-                                data: row;
-                                cover-size: 48px;
-                                selected: row.uri == root.current-list;
-                                sidebar: true;
-                                open-menu(x, y) => { root.open-row-menu(row, x, y, true); }
-                                clicked => { root.open-list(row.uri); }
-                                need-cover => { root.need-cover(1, i, row.uri, row.cover-url); }
+                            lib-list := ListView {
+                                for row[i] in lists: RowItem {
+                                    data: row;
+                                    cover-size: 48px;
+                                    selected: row.uri == root.current-list;
+                                    sidebar: true;
+                                    open-menu(x, y) => { root.open-row-menu(row, x, y, true); }
+                                    clicked => { root.show-settings = false; root.open-list(row.uri); }
+                                    double-clicked => { root.play-uri(row.uri); }
+                                    play-cover => { root.play-uri(row.uri); }
+                                    need-cover => { root.need-cover(1, i, row.uri, row.cover-url); }
+                                }
                             }
                         }
                     }
@@ -1561,9 +1215,8 @@ slint::slint! {
                         HorizontalLayout {
                             spacing: 8px;
                             height: 44px;
-                            IconButton { y: (parent.height - self.height) / 2; shape: Icons.home; filled: root.page-kind == "Home"; dot: false; clicked => { root.go-home(); } }
-                            IconButton { y: (parent.height - self.height) / 2; shape: Icons.back; dot: false; enabled: root.can-back; clicked => { root.go-back(); } }
-                            IconButton { y: (parent.height - self.height) / 2; shape: Icons.forward; dot: false; enabled: root.can-forward; clicked => { root.go-forward(); } }
+                            IconButton { y: (parent.height - self.height) / 2; shape: Icons.back; dot: false; enabled: root.can-back || root.show-settings; clicked => { if (root.show-settings) { root.show-settings = false; } else { root.go-back(); } } }
+                            IconButton { y: (parent.height - self.height) / 2; shape: Icons.forward; dot: false; enabled: root.can-forward; clicked => { root.show-settings = false; root.go-forward(); } }
                             // Search pill
                             Rectangle {
                                 max-width: 420px;
@@ -1612,10 +1265,11 @@ slint::slint! {
                             settings-button := IconButton {
                                 y: (parent.height - self.height) / 2;
                                 shape: Icons.settings;
-                                clicked => { settings-popup.show(); }
+                                active: root.show-settings;
+                                clicked => { root.show-settings = !root.show-settings; }
                             }
                         }
-                        if !root.show-lyrics : HorizontalLayout {
+                        if !root.show-lyrics && root.page-kind != "Home" : HorizontalLayout {
                             spacing: 16px;
                             if root.page-cover-url != "" : Rectangle {
                                 width: 96px;
@@ -1639,7 +1293,7 @@ slint::slint! {
                                     drop-shadow-blur: parent.has-hover ? 22px : 12px;
                                     drop-shadow-color: Theme.accent.transparentize(40%);
                                     animate drop-shadow-blur { duration: 150ms; }
-                                    Icon { width: 26px; height: 26px; shape: Icons.play; filled: true; tint: Theme.text; }
+                                    Icon { width: 26px; height: 26px; shape: Icons.play; filled: true; tint: Theme.on-accent; }
                                 }
                             }
                             // Like Spotify's page shuffle: the same shuffle state as the player bar.
@@ -1675,7 +1329,7 @@ slint::slint! {
                                     border-width: root.page-saved ? 0px : 1.5px;
                                     border-color: parent.has-hover ? Theme.text : Theme.subdued;
                                     background: root.page-saved ? Theme.accent : transparent;
-                                    Icon { width: 20px; height: 20px; shape: root.page-saved ? Icons.check : Icons.plus; tint: Theme.text; }
+                                    Icon { width: 20px; height: 20px; shape: root.page-saved ? Icons.check : Icons.plus; tint: root.page-saved ? Theme.on-accent : Theme.text; }
                                 }
                             }
                             VerticalLayout {
@@ -1734,12 +1388,12 @@ slint::slint! {
                             spacing: 6px;
                             Text { text: root.status; font-size: 12px; color: Theme.subdued; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
                             // Find and sort within the page (Ctrl+F); backend filters, no request.
-                            if root.page-playable && !root.show-lyrics : Chip {
+                            if root.page-playable && !root.show-lyrics && root.page-kind != "Home" : Chip {
                                 label: ["Custom order", "Title", "Artist", "Duration"][root.page-sort];
                                 clicked => { root.page-sort = mod(root.page-sort + 1, 4); root.filter-page(page-filter.text, root.page-sort); }
                             }
                             Rectangle {
-                                visible: root.page-playable && !root.show-lyrics;
+                                visible: root.page-playable && !root.show-lyrics && root.page-kind != "Home";
                                 width: self.visible ? 180px : 0px;
                                 height: 30px;
                                 border-radius: 6px;
@@ -1770,8 +1424,12 @@ slint::slint! {
                         if root.show-lyrics : LyricsView {
                             vertical-stretch: 1;
                             lines: root.lyric-lines;
+                            times: root.lyric-times;
                             current: root.lyric-index;
                             note: root.lyrics-note;
+                            full: root.lyrics-full;
+                            seek(ms) => { root.position = ms; root.seek(ms); }
+                            toggle-full => { root.toggle-lyrics-full(); }
                         }
                         if !root.show-lyrics && root.editable && root.tracks.length == 0 : HorizontalLayout {
                             alignment: center;
@@ -1790,18 +1448,59 @@ slint::slint! {
                                 color: Theme.subdued;
                             }
                         }
-                        if !root.show-lyrics && root.page-kind == "Home" && root.quick-top.length > 0 : VerticalLayout {
-                            spacing: 6px;
-                            HorizontalLayout {
-                                spacing: 6px;
-                                for q[i] in root.quick-top : QuickTile { data: q; clicked => { root.play-uri(q.uri); } need-cover => { root.need-cover(6, i, q.uri, q.cover-url); } }
-                            }
-                            HorizontalLayout {
-                                spacing: 6px;
-                                for q[i] in root.quick-bottom : QuickTile { data: q; clicked => { root.play-uri(q.uri); } need-cover => { root.need-cover(7, i, q.uri, q.cover-url); } }
+                        if !root.show-lyrics && root.page-kind == "Home" : home-scroll := ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                width: home-scroll.visible-width;
+                                spacing: 12px;
+                                alignment: start;
+                                Text { text: root.page-title; font-size: 28px; font-weight: 700; color: Theme.text; }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 8px;
+                                        for q[i] in root.quick-top : QuickTile { data: q; clicked => { root.play-uri(q.uri); } need-cover => { root.need-cover(6, i, q.uri, q.cover-url); } }
+                                    }
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 8px;
+                                        for q[i] in root.quick-bottom : QuickTile { data: q; clicked => { root.play-uri(q.uri); } need-cover => { root.need-cover(7, i, q.uri, q.cover-url); } }
+                                    }
+                                }
+                                if root.shelf.length > 0 : Text { text: "Recently played"; font-size: 18px; font-weight: 700; color: Theme.text; }
+                                // Scrolls sideways (horizontal scrollbar or Shift+wheel) while the page scrolls down.
+                                if root.shelf.length > 0 : ScrollView {
+                                    height: 200px;
+                                    content-width: root.shelf.length * 136px;
+                                    content-height: 188px;
+                                    HorizontalLayout {
+                                        for card[i] in root.shelf : ShelfCard {
+                                            data: card;
+                                            clicked => { root.open-list(card.uri); }
+                                            need-cover => { root.need-cover(8, i, card.uri, card.cover-url); }
+                                        }
+                                    }
+                                }
+                                if root.tracks.length > 0 : Text { text: "Recent tracks"; font-size: 18px; font-weight: 700; color: Theme.text; }
+                                for row[i] in tracks: RowItem {
+                                    data: row;
+                                    playing: row.uri == root.current-track;
+                                    audible: self.playing && root.playing;
+                                    menu: true;
+                                    marked: row.marked || i == root.kb-row;
+                                    draggable: true;
+                                    index: i;
+                                    count: root.tracks.length;
+                                    select(ctrl, shift) => { root.kb-row = i; root.select-row(i, ctrl, shift); }
+                                    dropped(n, x, y) => { root.drop-on-sidebar(row.uri, x, y); }
+                                    clicked => { if (!self.dragged && !self.modifier-click) { if (self.playing) { root.toggle(); } else { root.play-uri(row.uri); } } }
+                                    open-menu(x, y) => { root.open-row-menu(row, x, y, false); }
+                                    need-cover => { root.need-cover(0, i, row.uri, row.cover-url); }
+                                }
                             }
                         }
-                        if !root.show-lyrics : ListView {
+                        if !root.show-lyrics && root.page-kind != "Home" : ListView {
                             visible: root.page-about == "";
                             vertical-stretch: 1;
                             content-y <=> root.list-y;
@@ -1814,19 +1513,186 @@ slint::slint! {
                                 audible: self.playing && root.playing;
                                 // "Show more" and similar app rows have no menu.
                                 menu: !row.uri.starts-with("slimspot:");
-                                draggable: root.editable && root.page-sort == 0 && root.page-filter-text == "";
+                                marked: row.marked || i == root.kb-row;
+                                compact: root.compact;
+                                // Any track can be dragged onto a sidebar playlist; only an own, unsorted playlist reorders.
+                                draggable: row.uri.starts-with("spotify:track:");
+                                reorder: root.editable && root.page-sort == 0 && root.page-filter-text == "";
                                 index: i;
                                 count: root.tracks.length;
+                                select(ctrl, shift) => { root.kb-row = i; root.select-row(i, ctrl, shift); }
                                 // Like Spotify: the playing row pauses/resumes instead of restarting.
-                                clicked => { if (!self.dragged) { if (self.playing) { root.toggle(); } else { root.play-uri(row.uri); } } }
-                                dropped(n) => { root.move-row(i, i + n); }
+                                clicked => { if (!self.dragged && !self.modifier-click) { if (self.playing) { root.toggle(); } else { root.play-uri(row.uri); } } }
+                                dropped(n, x, y) => { if (!root.drop-on-sidebar(row.uri, x, y) && self.reorder) { root.move-row(i, i + n); } }
                                 open-menu(x, y) => { root.open-row-menu(row, x, y, false); }
                                 need-cover => { root.need-cover(0, i, row.uri, row.cover-url); }
                             }
                         }
                     }
+                    if root.show-settings : Rectangle {
+                        // Below the header row (padding 16 + 44 + spacing 12).
+                        x: 1px;
+                        y: 72px;
+                        width: parent.width - 2px;
+                        height: parent.height - self.y - 1px;
+                        border-radius: 12px;
+                        background: Theme.panel;
+                        ScrollView {
+                            VerticalLayout {
+                                padding-left: max(24px, (parent.width - 680px) / 2);
+                                padding-right: max(24px, (parent.width - 680px) / 2);
+                                padding-bottom: 24px;
+                                spacing: 4px;
+                                alignment: start;
+                                Text { text: "Settings"; font-size: 28px; font-weight: 700; color: Theme.text; }
+                                // Narrows the page to matching rows; sections without matches disappear.
+                                Rectangle {
+                                    height: 34px;
+                                    border-radius: 17px;
+                                    background: settings-filter.has-focus ? Theme.hover : Theme.field;
+                                    Icon { x: 12px; width: 16px; height: 16px; y: (parent.height - 16px) / 2; shape: Icons.search; tint: Theme.subdued; }
+                                    settings-filter := TextInput {
+                                        x: 36px;
+                                        width: parent.width - 48px;
+                                        height: parent.height;
+                                        vertical-alignment: center;
+                                        single-line: true;
+                                        font-size: 13px;
+                                        color: Theme.text;
+                                        text <=> root.settings-query;
+                                    }
+                                    if settings-filter.text == "" : Text { x: 36px; height: parent.height; vertical-alignment: center; text: "Search settings"; font-size: 13px; color: Theme.muted; }
+                                }
+                                if root.text-matches(root.settings-query, "Audio quality Streaming quality kbps bitrate Normalize volume loudness") : SettingsHeading { text: "Audio quality"; }
+                                if root.text-matches(root.settings-query, "Streaming quality kbps bitrate") : VerticalLayout {
+                                    SettingRow {
+                                        label: "Streaming quality";
+                                        for label[i] in ["96 kbps", "160 kbps", "320 kbps"] : Chip {
+                                            y: (parent.height - self.height) / 2;
+                                            label: label;
+                                            chosen: root.quality == i;
+                                            clicked => { root.quality = i; root.set-quality(i); }
+                                        }
+                                    }
+                                }
+                                if root.text-matches(root.settings-query, "Normalize volume loudness") : VerticalLayout {
+                                    Switch { label: "Normalize volume"; desc: "Set the same volume level for all songs and podcasts"; on <=> root.normalize; toggled(v) => { root.set-normalize(v); } }
+                                }
+                                if root.text-matches(root.settings-query, "Playback Equalizer EQ presets bass treble preamp Sleep timer") : SettingsHeading { text: "Playback"; }
+                                if root.text-matches(root.settings-query, "Equalizer EQ presets bass treble preamp") : VerticalLayout {
+                                    Switch { label: "Equalizer"; desc: "Double-click a slider to reset it"; on <=> root.eq-on; toggled(v) => { root.eq-changed(true); } }
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        alignment: start;
+                                        for p in root.eq-presets : Chip {
+                                            label: p.name;
+                                            pad: 10px;
+                                            clicked => { root.eq-bands = p.bands; root.eq-on = true; root.eq-changed(true); }
+                                        }
+                                    }
+                                    Rectangle {
+                                        height: 170px;
+                                        border-radius: 8px;
+                                        background: Theme.raised;
+                                        HorizontalLayout {
+                                            padding: 12px;
+                                            alignment: space-between;
+                                            EqBand {
+                                                label: "Pre";
+                                                value: root.eq-preamp;
+                                                moved(v) => { root.eq-preamp = v; root.eq-changed(false); }
+                                                released => { root.eq-changed(true); }
+                                            }
+                                            for band[i] in root.eq-bands : EqBand {
+                                                label: ["60", "170", "310", "600", "1K", "3K", "6K", "12K", "14K", "16K"][i];
+                                                value: band;
+                                                moved(v) => { root.eq-bands[i] = v; root.eq-changed(false); }
+                                                released => { root.eq-changed(true); }
+                                            }
+                                        }
+                                    }
+                                }
+                                if root.text-matches(root.settings-query, "Sleep timer") : VerticalLayout {
+                                    SettingRow {
+                                        label: "Sleep timer";
+                                        for choice[i] in [{ label: "Off", m: 0 }, { label: "15 min", m: 15 }, { label: "30 min", m: 30 }, { label: "1 hr", m: 60 }, { label: "End of track", m: -1 }] : Chip {
+                                            y: (parent.height - self.height) / 2;
+                                            label: choice.label;
+                                            pad: 10px;
+                                            chosen: root.sleep-minutes == choice.m;
+                                            clicked => { root.sleep-minutes = choice.m; root.set-sleep(choice.m); }
+                                        }
+                                    }
+                                }
+                                if root.text-matches(root.settings-query, "Display Theme palette colors Compact track list GPU acceleration renderer memory") : SettingsHeading { text: "Display"; }
+                                if root.text-matches(root.settings-query, "Theme palette colors") : VerticalLayout {
+                                    SettingRow {
+                                        label: "Theme";
+                                        for t in [{ name: "Spotifast", i: 6 }, { name: "Indigo", i: 0 }, { name: "Nord", i: 1 }, { name: "Tokyo", i: 2 }, { name: "Mocha", i: 3 }, { name: "Rosé", i: 4 }, { name: "Dark", i: 5 }] : Chip {
+                                            y: (parent.height - self.height) / 2;
+                                            label: t.name;
+                                            pad: 10px;
+                                            chosen: Theme.palette == t.i;
+                                            clicked => { Theme.palette = t.i; root.set-theme(t.i); }
+                                        }
+                                    }
+                                }
+                                if root.text-matches(root.settings-query, "Compact track list") : VerticalLayout {
+                                    Switch { label: "Compact track list"; desc: "One line per song, no covers (also saves memory)"; on <=> root.compact; toggled(v) => { root.set-compact(v); } }
+                                }
+                                if root.text-matches(root.settings-query, "GPU acceleration renderer memory") : VerticalLayout {
+                                    Switch { label: "GPU acceleration"; desc: "Smoother on some PCs, but uses about 90 MB more memory. Applies on restart."; on <=> root.gpu; toggled(v) => { root.set-gpu(v); } }
+                                }
+                                if root.text-matches(root.settings-query, "Spotify API Low API usage quota requests cache Your own Spotify app Client ID developer") : SettingsHeading { text: "Spotify API"; }
+                                if root.text-matches(root.settings-query, "Low API usage quota requests cache") : VerticalLayout {
+                                    Switch {
+                                        label: "Low API usage";
+                                        desc: "Fewer Spotify requests, for apps near their quota. When on: the library loads from a cache up to 6 hours old, liked marks are asked once per run, Home reuses Recently played for 60 s and checks new releases once a day. Changes made in other Spotify apps show up later; the refresh button next to Your Library reloads everything.";
+                                        on <=> root.low-api;
+                                        toggled(v) => { root.set-low-api(v); }
+                                    }
+                                }
+                                if root.text-matches(root.settings-query, "Your own Spotify app Client ID developer") : VerticalLayout {
+                                    // Optional own Spotify app for the Web API (like Spotifast's personal Client ID).
+                                    SettingRow {
+                                        label: "Your own Spotify app";
+                                        desc: "Client ID from developer.spotify.com (redirect URI http://127.0.0.1:8989/login). Empty uses the shared app.";
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        Rectangle {
+                                            horizontal-stretch: 1;
+                                            height: 30px;
+                                            border-radius: 6px;
+                                            background: Theme.field;
+                                            client-id-input := TextInput {
+                                                x: 8px;
+                                                width: parent.width - 16px;
+                                                height: parent.height;
+                                                vertical-alignment: center;
+                                                single-line: true;
+                                                font-size: 12px;
+                                                color: Theme.text;
+                                                // Hidden like a password field; the eye button shows it.
+                                                input-type: root.show-client-id ? InputType.text : InputType.password;
+                                                text <=> root.web-client-id;
+                                                accepted => { root.set-web-client-id(self.text); }
+                                            }
+                                            if client-id-input.text == "" : Text { x: 8px; height: parent.height; vertical-alignment: center; text: "Client ID"; font-size: 12px; color: Theme.muted; }
+                                        }
+                                        IconButton { y: (parent.height - self.height) / 2; shape: root.show-client-id ? Icons.eye-off : Icons.eye; dot: false; size: 18px; clicked => { root.show-client-id = !root.show-client-id; } }
+                                        Chip { label: "Save"; pad: 14px; clicked => { root.set-web-client-id(root.web-client-id); } }
+                                    }
+                                }
+                                if root.text-matches(root.settings-query, "Startup Start with Windows tray autostart") : SettingsHeading { text: "Startup"; }
+                                if root.text-matches(root.settings-query, "Start with Windows tray autostart") : VerticalLayout {
+                                    Switch { label: "Start with Windows"; desc: "Starts in the tray"; on <=> root.start-with-windows; toggled(v) => { root.set-autostart(v); } }
+                                }
+                            }
+                        }
+                    }
                 }
-                if root.show-now-panel : Rectangle {
+                if root.show-now-panel && !root.lyrics-full : Rectangle {
                     width: 300px;
                     border-radius: 12px;
                     background: Theme.panel;
@@ -1835,19 +1701,49 @@ slint::slint! {
                     VerticalLayout {
                         padding: 16px;
                         spacing: 12px;
-                        alignment: start;
-                        Text { text: "Now playing"; font-size: 16px; font-weight: 700; color: Theme.text; }
-                        Rectangle {
+                        // The queue/recent list takes the rest of the height; the now-playing card sits on top.
+                        alignment: root.side-tab == 0 ? LayoutAlignment.start : LayoutAlignment.stretch;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            for t[i] in ["Now playing", "Queue", "Recent"] : Chip {
+                                label: t;
+                                pad: 12px;
+                                chosen: root.side-tab == i;
+                                clicked => { root.open-side(i); }
+                            }
+                        }
+                        if root.side-tab != 0 : Text {
+                            text: root.side-tab == 1 ? (root.side-rows.length > 0 ? "Next up" : "Nothing queued") : "Recently played";
+                            font-size: 14px;
+                            font-weight: 700;
+                            color: Theme.text;
+                        }
+                        if root.side-tab != 0 : ListView {
+                            vertical-stretch: 1;
+                            for row[i] in root.side-rows : RowItem {
+                                data: row;
+                                index: i;
+                                count: root.side-rows.length;
+                                menu: true;
+                                playing: row.uri == root.current-track;
+                                audible: self.playing && root.playing;
+                                clicked => { if (root.side-tab == 1) { root.skip-to(row.uri); } else { root.play-uri(row.uri); } }
+                                open-menu(x, y) => { root.open-row-menu(row, x, y, false); }
+                                need-cover => { root.need-cover(9, i, row.uri, row.cover-url); }
+                            }
+                        }
+                        if root.side-tab == 0 : Rectangle {
                             height: self.width;
                             border-radius: 8px;
                             clip: true;
                             background: Theme.raised;
                             Image { source: root.now-big; width: parent.width; height: parent.height; image-fit: cover; }
                         }
-                        Text { text: now.title; font-size: 22px; font-weight: 700; color: Theme.text; wrap: word-wrap; }
-                        Text { text: now.artist; font-size: 14px; color: Theme.subdued; wrap: word-wrap; }
+                        if root.side-tab == 0 : Text { text: now.title; font-size: 22px; font-weight: 700; color: Theme.text; wrap: word-wrap; }
+                        if root.side-tab == 0 : Text { text: now.artist; font-size: 14px; color: Theme.subdued; wrap: word-wrap; }
                         // Spotify's "Lyrics preview": the sung line and the next two (Ctrl+Y opens all).
-                        if root.lyric-lines.length > 0 : Rectangle {
+                        if root.side-tab == 0 && root.lyric-lines.length > 0 : Rectangle {
                             border-radius: 8px;
                             background: Theme.raised;
                             VerticalLayout {
@@ -1863,7 +1759,7 @@ slint::slint! {
                                 }
                             }
                         }
-                        if root.now-about != "" : Rectangle {
+                        if root.side-tab == 0 && root.now-about != "" : Rectangle {
                             border-radius: 8px;
                             background: Theme.raised;
                             VerticalLayout {
@@ -2100,10 +1996,10 @@ slint::slint! {
                     }
                 }
             }
-            settings-popup := PopupWindow {
-                x: root.width - 420px;
-                y: 64px;
-                width: 400px;
+            shortcuts-popup := PopupWindow {
+                x: (root.width - 440px) / 2;
+                y: 80px;
+                width: 440px;
                 close-policy: close-on-click-outside;
                 Rectangle {
                     background: Theme.raised;
@@ -2114,87 +2010,34 @@ slint::slint! {
                     drop-shadow-color: rgba(0, 0, 0, 0.6);
                     VerticalLayout {
                         padding: 16px;
-                        spacing: 10px;
-                        alignment: start;
-                        Text { text: "Settings"; font-size: 16px; font-weight: 600; color: Theme.text; }
-                        SectionTitle { text: "AUDIO QUALITY"; shape: Icons.volume; }
-                        HorizontalLayout {
-                            spacing: 6px;
-                            alignment: start;
-                            for label[i] in ["96 kbps", "160 kbps", "320 kbps"] : Chip {
-                                label: label;
-                                chosen: root.quality == i;
-                                clicked => { root.quality = i; root.set-quality(i); }
-                            }
+                        spacing: 4px;
+                        Text { text: "Keyboard shortcuts"; font-size: 16px; font-weight: 700; color: Theme.text; }
+                        for k in [
+                            { keys: "Space", what: "Play or pause" },
+                            { keys: "Ctrl+← / Ctrl+→", what: "Previous / next" },
+                            { keys: "Shift+← / Shift+→", what: "Seek 10 seconds" },
+                            { keys: "Ctrl+↑ / Ctrl+↓", what: "Volume" },
+                            { keys: "M", what: "Mute" },
+                            { keys: "B", what: "Like the playing song" },
+                            { keys: "Ctrl+S / Ctrl+R", what: "Shuffle / repeat" },
+                            { keys: "Q or Ctrl+U", what: "Queue" },
+                            { keys: "/ or Ctrl+L", what: "Search" },
+                            { keys: "Ctrl+F", what: "Find in page" },
+                            { keys: "↑ / ↓, Shift to extend", what: "Move through songs" },
+                            { keys: "Enter", what: "Play the selected song" },
+                            { keys: "Ctrl+A / Ctrl+C", what: "Select all / copy links" },
+                            { keys: "Ctrl+V / Ctrl+X", what: "Paste links / cut (own playlists)" },
+                            { keys: "Delete", what: "Remove selected (own playlists)" },
+                            { keys: "Ctrl+B", what: "Show or hide the sidebar" },
+                            { keys: "Ctrl+H / Ctrl+,", what: "Home / Settings" },
+                            { keys: "Alt+← / Alt+→", what: "Back / forward" },
+                            { keys: "Ctrl+Y / Ctrl+E", what: "Lyrics / radio" },
+                            { keys: "Ctrl+Q", what: "Quit" },
+                        ] : HorizontalLayout {
+                            height: 22px;
+                            Text { text: k.keys; width: 190px; font-size: 12px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
+                            Text { text: k.what; font-size: 12px; color: Theme.subdued; vertical-alignment: center; }
                         }
-                        Switch { label: "Normalize volume"; on <=> root.normalize; toggled(v) => { root.set-normalize(v); } }
-                        Rectangle { height: 1px; background: Theme.border; }
-                        SectionTitle { text: "THEME"; shape: Icons.settings; }
-                        HorizontalLayout {
-                            spacing: 4px;
-                            alignment: start;
-                            for name[i] in ["Indigo", "Nord", "Tokyo", "Mocha", "Rosé", "Dark"] : Chip {
-                                label: name;
-                                pad: 14px;
-                                chosen: Theme.palette == i;
-                                clicked => { Theme.palette = i; root.set-theme(i); }
-                            }
-                        }
-                        SectionTitle { text: "SLEEP TIMER"; shape: Icons.pause; }
-                        HorizontalLayout {
-                            spacing: 6px;
-                            alignment: start;
-                            for choice[i] in [{ label: "Off", m: 0 }, { label: "15 min", m: 15 }, { label: "30 min", m: 30 }, { label: "1 hr", m: 60 }, { label: "End of track", m: -1 }] : Chip {
-                                label: choice.label;
-                                chosen: root.sleep-minutes == choice.m;
-                                clicked => { root.sleep-minutes = choice.m; root.set-sleep(choice.m); }
-                            }
-                        }
-                        Rectangle { height: 1px; background: Theme.border; }
-                        // Optional own Spotify app for the Web API (like Spotifast's personal Client ID).
-                        SectionTitle { text: "SPOTIFY APP"; shape: Icons.link; }
-                        Text {
-                            text: "Optional: your own app's Client ID from developer.spotify.com (redirect URI http://127.0.0.1:8989/login). Empty uses the shared app.";
-                            wrap: word-wrap;
-                            font-size: 11px;
-                            color: Theme.subdued;
-                        }
-                        HorizontalLayout {
-                            spacing: 6px;
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                height: 30px;
-                                border-radius: 6px;
-                                background: Theme.field;
-                                client-id-input := TextInput {
-                                    x: 8px;
-                                    width: parent.width - 16px;
-                                    height: parent.height;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                    font-size: 12px;
-                                    color: Theme.text;
-                                    // Hidden like a password field; the eye button shows it.
-                                    input-type: root.show-client-id ? InputType.text : InputType.password;
-                                    text <=> root.web-client-id;
-                                    accepted => { root.set-web-client-id(self.text); }
-                                }
-                                if client-id-input.text == "" : Text { x: 8px; height: parent.height; vertical-alignment: center; text: "Client ID"; font-size: 12px; color: Theme.muted; }
-                            }
-                            IconButton { y: (parent.height - self.height) / 2; shape: root.show-client-id ? Icons.eye-off : Icons.eye; dot: false; size: 18px; clicked => { root.show-client-id = !root.show-client-id; } }
-                            Chip { label: "Save"; pad: 14px; clicked => { root.set-web-client-id(root.web-client-id); } }
-                        }
-                        SectionTitle { text: "APPEARANCE"; shape: Icons.mini; }
-                        Switch { label: "GPU acceleration (applies on restart)"; on <=> root.gpu; toggled(v) => { root.set-gpu(v); } }
-                        HorizontalLayout {
-                            spacing: 6px;
-                            alignment: start;
-                            Chip { label: "Winamp skin (Ctrl+W)"; pad: 14px; clicked => { root.skin-toggle(); settings-popup.close(); } }
-                            Chip { label: "Choose skin..."; pad: 14px; clicked => { root.skin-choose(); settings-popup.close(); } }
-                            Chip { label: "Built-in"; pad: 14px; clicked => { root.skin-builtin(); settings-popup.close(); } }
-                        }
-                        SectionTitle { text: "STARTUP"; shape: Icons.home; }
-                        Switch { label: "Start with Windows"; on <=> root.start-with-windows; toggled(v) => { root.set-autostart(v); } }
                     }
                 }
             }
@@ -2319,10 +2162,10 @@ slint::slint! {
                     width: 30%;
                     spacing: 4px;
                     alignment: end;
-                    IconButton { y: (parent.height - self.height) / 2; shape: Icons.panel; active: root.show-now-panel; size: 18px; clicked => { root.show-now-panel = !root.show-now-panel; } }
+                    IconButton { y: (parent.height - self.height) / 2; shape: Icons.panel; active: root.show-now-panel && root.side-tab == 0; size: 18px; clicked => { root.open-side(root.show-now-panel && root.side-tab == 0 ? -1 : 0); } }
                     IconButton { y: (parent.height - self.height) / 2; shape: Icons.mini; active: root.mini; size: 18px; clicked => { root.toggle-mini(); } }
                     IconButton { y: (parent.height - self.height) / 2; shape: Icons.lyrics; active: root.show-lyrics; size: 18px; clicked => { root.show-lyrics = !root.show-lyrics; } }
-                    IconButton { y: (parent.height - self.height) / 2; shape: Icons.queue; size: 18px; clicked => { root.show-lyrics = false; root.show-queue(); } }
+                    IconButton { y: (parent.height - self.height) / 2; shape: Icons.queue; active: root.show-now-panel && root.side-tab == 1; size: 18px; clicked => { root.open-side(root.show-now-panel && root.side-tab == 1 ? -1 : 1); } }
                     IconButton { y: (parent.height - self.height) / 2; shape: Icons.radio; size: 18px; enabled: root.now.uri != ""; clicked => { root.start-radio(); } }
                     IconButton { y: (parent.height - self.height) / 2; shape: Icons.devices; size: 18px; clicked => { root.load-devices(); devices-popup.show(); } }
                     IconButton {
@@ -2330,7 +2173,7 @@ slint::slint! {
                         shape: root.volume <= 0 ? Icons.muted : Icons.volume;
                         size: 18px;
                         dot: false;
-                        clicked => { root.volume = root.volume > 0 ? 0 : 50; root.set-volume(root.volume, true); }
+                        clicked => { root.toggle-mute(); }
                     }
                     Bar {
                         y: (parent.height - self.height) / 2;
@@ -2382,6 +2225,7 @@ impl From<Item> for Row {
             cover: Default::default(),
             duration: if i.duration_ms > 0 { fmt_duration(i.duration_ms).into() } else { Default::default() },
             liked: i.liked,
+            marked: false,
         }
     }
 }
@@ -2468,7 +2312,7 @@ pub fn set_eq(app: &App, eq: crate::eq::EqState) {
     app.set_eq_on(eq.on);
     app.set_eq_preamp(eq.preamp / max);
     app.set_eq_bands(ModelRc::new(VecModel::from(eq.bands.iter().map(|b| b / max).collect::<Vec<_>>())));
-    app.set_wa_balance(eq.balance);
+    app.set_eq_balance(eq.balance);
 }
 
 pub fn get_eq(app: &App) -> crate::eq::EqState {
@@ -2477,7 +2321,7 @@ pub fn get_eq(app: &App) -> crate::eq::EqState {
     for (b, v) in bands.iter_mut().zip(app.get_eq_bands().iter()) {
         *b = (v * max).clamp(-max, max);
     }
-    crate::eq::EqState { on: app.get_eq_on(), preamp: app.get_eq_preamp() * max, bands, balance: app.get_wa_balance() }
+    crate::eq::EqState { on: app.get_eq_on(), preamp: app.get_eq_preamp() * max, bands, balance: app.get_eq_balance() }
 }
 
 pub fn set_page_header(ui: &slint::Weak<App>, kind: &'static str, title: String, can_back: bool, can_forward: bool) {

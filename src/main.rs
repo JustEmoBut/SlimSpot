@@ -17,12 +17,12 @@ mod nav;
 mod media_keys;
 mod player;
 mod settings;
-mod skin;
 #[cfg(windows)]
 mod taskbar;
 mod ui;
 mod update;
 mod web;
+mod zip;
 
 use std::time::Duration;
 
@@ -52,13 +52,6 @@ const QUIT_GRACE: Duration = Duration::from_secs(3);
 // The old instance saves and disconnects within QUIT_GRACE; a little more for the process to end.
 #[cfg(windows)]
 const UPDATE_WAIT: Duration = Duration::from_secs(10);
-// Winamp scrolls its song title about four characters a second.
-const MARQUEE_TICK: Duration = Duration::from_millis(250);
-/// Characters that fit the main window's title area (154 px of 5 px cells).
-const MARQUEE_CHARS: usize = 31;
-const MARQUEE_GAP: &str = "  ***  ";
-// Wait before re-sizing after the frame is dropped (one event-loop turn is enough; 50 ms is safe).
-const FRAME_SETTLE: Duration = Duration::from_millis(50);
 
 /// Tray icon, decoded from the PNG rendered off assets/icon.svg (no runtime SVG renderer).
 fn app_icon() -> slint::Image {
@@ -158,6 +151,23 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_load_devices(send(|| Command::LoadDevices));
     app.on_start_radio(send(|| Command::Radio(None)));
     app.on_show_queue(send(|| Command::Queue));
+    app.on_side_recent(send(|| Command::Recent));
+    app.on_text_matches(|query, text| query.is_empty() || text.to_lowercase().contains(&query.to_lowercase()));
+    {
+        let tx = tx.clone();
+        app.on_set_compact(move |on| {
+            let _ = tx.send(Command::Compact(on));
+        });
+    }
+    {
+        let weak = app.as_weak();
+        app.on_set_fullscreen(move |on| {
+            if let Some(app) = weak.upgrade() {
+                app.window().set_fullscreen(on);
+            }
+        });
+    }
+    app.on_skip_to(send_str(Command::SkipTo));
     app.on_go_to_playing(send(|| Command::GoToPlaying));
     app.on_go_home(send(|| Command::Home));
     app.on_check_liked_more(send(|| Command::CheckLikedMore));
@@ -187,6 +197,13 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
     {
+        let tx = tx.clone();
+        app.on_set_low_api(move |on| {
+            let _ = tx.send(Command::LowApi(on));
+        });
+    }
+    app.on_refresh(send(|| Command::Refresh));
+    {
         // The sink picks EQ changes up at once; saving waits for the slider's release.
         let (weak, tx) = (app.as_weak(), tx.clone());
         app.on_eq_changed(move |save| {
@@ -195,67 +212,6 @@ fn main() -> Result<(), slint::PlatformError> {
             eq::set(state);
             if save {
                 let _ = tx.send(Command::Eq(state));
-            }
-        });
-    }
-    let skin = SkinMode::new(&app, &tx, startup.skin.clone());
-    {
-        let skin = skin.clone();
-        app.on_skin_toggle(move || skin.toggle());
-    }
-    {
-        let skin = skin.clone();
-        app.on_skin_builtin(move || {
-            if let Some(app) = skin.ui.upgrade() {
-                app.set_skin(ui::WaSkin::default());
-            }
-            skin.enter(String::new());
-        });
-    }
-    {
-        let skin = skin.clone();
-        app.on_skin_choose(move || {
-            let skin = skin.clone();
-            // Called from a popup's click handler: open the modal dialog once the popup is gone.
-            slint::Timer::single_shot(Duration::ZERO, move || skin.choose());
-        });
-    }
-    {
-        let weak = app.as_weak();
-        app.on_skin_resize(move |w, h| {
-            if let Some(app) = weak.upgrade() {
-                app.window().set_size(slint::LogicalSize::new(w, h));
-            }
-        });
-        #[cfg(windows)]
-        {
-            let weak = app.as_weak();
-            app.on_wa_drag(move || {
-                if let Some(app) = weak.upgrade() {
-                    instance::start_move(&app);
-                }
-            });
-        }
-        let weak = app.as_weak();
-        app.on_wa_minimize(move || {
-            if let Some(app) = weak.upgrade() {
-                app.window().set_minimized(true);
-            }
-        });
-        let weak = app.as_weak();
-        app.on_wa_close(move || {
-            if let Some(app) = weak.upgrade() {
-                let _ = app.hide();
-            }
-        });
-    }
-    let marquee = slint::Timer::default();
-    {
-        let weak = app.as_weak();
-        let mut state = Marquee::default();
-        marquee.start(slint::TimerMode::Repeated, MARQUEE_TICK, move || {
-            if let Some(app) = weak.upgrade() {
-                state.tick(&app);
             }
         });
     }
@@ -279,6 +235,85 @@ fn main() -> Result<(), slint::PlatformError> {
         let tx = tx.clone();
         app.on_move_row(move |from, to| {
             let _ = tx.send(Command::MoveRow { from: from as usize, to: to as usize });
+        });
+    }
+    {
+        // Track-list multi-selection: `Row.marked`, changed here on the UI thread. Shift extends
+        // from the last plain or Ctrl click (or arrow move), like a file list.
+        let anchor = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let weak = app.as_weak();
+        app.on_select_row(move |index, ctrl, shift| {
+            let Some(app) = weak.upgrade() else { return };
+            let rows = app.get_tracks();
+            let (index, count) = (index as usize, rows.row_count());
+            if index >= count {
+                return;
+            }
+            let from = anchor.get().min(count - 1);
+            let range = if shift { from.min(index)..=from.max(index) } else { index..=index };
+            if !shift {
+                anchor.set(index);
+            }
+            for i in 0..count {
+                let Some(mut row) = rows.row_data(i) else { continue };
+                let marked = if ctrl && !shift { row.marked != (i == index) } else { range.contains(&i) };
+                if row.marked != marked {
+                    row.marked = marked;
+                    rows.set_row_data(i, row);
+                }
+            }
+        });
+        let weak = app.as_weak();
+        app.on_select_all(move || {
+            let Some(app) = weak.upgrade() else { return };
+            let rows = app.get_tracks();
+            for i in 0..rows.row_count() {
+                let Some(mut row) = rows.row_data(i) else { continue };
+                if !row.marked && row.uri.starts_with("spotify:track:") {
+                    row.marked = true;
+                    rows.set_row_data(i, row);
+                }
+            }
+        });
+        let weak = app.as_weak();
+        app.on_copy_selection(move || {
+            if let Some(app) = weak.upgrade() {
+                copy_links(&app, &selected_uris(&app));
+            }
+        });
+        let (weak, remove_tx) = (app.as_weak(), tx.clone());
+        app.on_remove_selection(move |cut| {
+            let Some(app) = weak.upgrade() else { return };
+            let uris = selected_uris(&app);
+            if cut {
+                copy_links(&app, &uris);
+            }
+            if !uris.is_empty() {
+                let _ = remove_tx.send(Command::RemoveUris(uris));
+            }
+        });
+        let paste_tx = tx.clone();
+        app.on_paste_links(move || {
+            #[cfg(windows)]
+            match clipboard::get_text().map(|t| clipboard::track_uris(&t)) {
+                Ok(uris) if !uris.is_empty() => {
+                    let _ = paste_tx.send(Command::AddUris { list: String::new(), uris });
+                }
+                Ok(_) => {
+                    let _ = paste_tx.send(Command::Status("No song links on the clipboard".into()));
+                }
+                Err(e) => {
+                    let _ = paste_tx.send(Command::Status(e));
+                }
+            }
+        });
+        let (weak, drop_tx) = (app.as_weak(), tx.clone());
+        app.on_drop_on_list(move |list, uri| {
+            let Some(app) = weak.upgrade() else { return };
+            // A row of the selection carries the whole selection; any other row goes alone.
+            let selection = selected_uris(&app);
+            let uris = if selection.iter().any(|u| *u == uri.as_str()) { selection } else { vec![uri.to_string()] };
+            let _ = drop_tx.send(Command::AddUris { list: list.into(), uris });
         });
     }
     {
@@ -449,7 +484,7 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_need_cover(move |kind, index, uri, url| {
         // Home tiles (kinds 6/7) show library entries whose sidebar cover is usually loaded already:
         // copying it skips a second download and decode (~2.9 MB private at startup, 2026-10-05).
-        if kind >= 6 {
+        if kind == 6 || kind == 7 {
             if let Some(app) = tiles_ui.upgrade() {
                 let sidebar = app.get_lists().iter().find(|r| r.uri == uri && r.cover.size().width > 0);
                 let tiles = if kind == 6 { app.get_quick_top() } else { app.get_quick_bottom() };
@@ -473,11 +508,36 @@ fn main() -> Result<(), slint::PlatformError> {
     // Shown even when starting in the tray: the media keys need the native window, which
     // exists only after a first show; it is hidden again as soon as they are attached.
     app.show()?;
-    if startup.skin_mode {
-        skin.enter(startup.skin);
-    }
     // Not `app.run()`: that ends when the last window closes, but a hidden window must keep playing.
     slint::run_event_loop_until_quit()
+}
+
+/// Track URIs of the marked rows in list order; the keyboard cursor's row when none are marked.
+fn selected_uris(app: &App) -> Vec<String> {
+    let rows = app.get_tracks();
+    let mut uris: Vec<String> = rows.iter().filter(|r| r.marked && r.uri.starts_with("spotify:track:")).map(|r| r.uri.into()).collect();
+    if uris.is_empty() {
+        let cursor = app.get_kb_row();
+        if let Some(row) = usize::try_from(cursor).ok().and_then(|i| rows.row_data(i)) {
+            uris.push(row.uri.into());
+        }
+    }
+    uris
+}
+
+/// Ctrl+C / Ctrl+X: one open.spotify.com link per line.
+fn copy_links(app: &App, uris: &[String]) {
+    #[cfg(windows)]
+    {
+        let links: Vec<String> = uris.iter().filter_map(|u| clipboard::web_link(u)).collect();
+        if links.is_empty() {
+            return;
+        }
+        match clipboard::set_text(&links.join("\n")) {
+            Ok(()) => app.set_status(format!("Copied {} link{}", links.len(), if links.len() == 1 { "" } else { "s" }).into()),
+            Err(e) => app.set_status(e.into()),
+        }
+    }
 }
 
 /// Settings → GPU acceleration: FemtoVG (OpenGL) or the software renderer. FemtoVG is Slint's
@@ -489,154 +549,5 @@ fn select_renderer(gpu: bool) {
         if let Err(e) = slint::BackendSelector::new().renderer_name("software".into()).select() {
             log::error!("software renderer unavailable: {e}");
         }
-    }
-}
-
-/// Entering and leaving the Winamp skin; the normal window size comes back on leaving.
-#[derive(Clone)]
-struct SkinMode {
-    ui: slint::Weak<App>,
-    tx: mpsc::UnboundedSender<Command>,
-    path: std::rc::Rc<std::cell::RefCell<String>>,
-    full_size: std::rc::Rc<std::cell::Cell<Option<slint::PhysicalSize>>>,
-}
-
-impl SkinMode {
-    fn new(app: &App, tx: &mpsc::UnboundedSender<Command>, path: String) -> Self {
-        SkinMode { ui: app.as_weak(), tx: tx.clone(), path: std::rc::Rc::new(path.into()), full_size: Default::default() }
-    }
-
-    fn toggle(&self) {
-        let Some(app) = self.ui.upgrade() else { return };
-        if app.get_skin_mode() {
-            app.set_skin_mode(false);
-            if let Some(size) = self.full_size.take() {
-                app.window().set_size(size);
-            }
-            // After Slint has applied the normal window's constraints (next event-loop turn).
-            #[cfg(windows)]
-            {
-                let weak = self.ui.clone();
-                slint::Timer::single_shot(FRAME_SETTLE, move || {
-                    if let Some(app) = weak.upgrade() {
-                        instance::enable_maximize(&app);
-                    }
-                });
-            }
-            let _ = self.tx.send(Command::Skin { path: self.path.borrow().clone(), mode: false });
-            return;
-        }
-        // An empty path is the built-in skin.
-        let path = self.path.borrow().clone();
-        self.enter(path);
-    }
-
-    #[cfg(windows)]
-    fn choose(&self) {
-        let Some(app) = self.ui.upgrade() else { return };
-        if let Some(path) = dialog::pick_skin(&app) {
-            // Reload even when the same file was picked again (it may have changed).
-            app.set_skin(ui::WaSkin::default());
-            self.enter(path.to_string_lossy().into_owned());
-        }
-    }
-
-    #[cfg(not(windows))]
-    fn choose(&self) {}
-
-    fn enter(&self, path: String) {
-        let Some(app) = self.ui.upgrade() else { return };
-        if !app.get_skin().loaded || *self.path.borrow() != path {
-            match skin::load(&path) {
-                Ok(s) => app.set_skin(s),
-                Err(e) => {
-                    log::warn!("skin {path}: {e}");
-                    return app.set_status(e.into());
-                }
-            }
-        }
-        if app.get_mini() {
-            app.invoke_toggle_mini();
-        }
-        if !app.get_skin_mode() {
-            self.full_size.set(Some(app.window().size()));
-        }
-        app.set_skin_mode(true);
-        let size = slint::LogicalSize::new(app.get_wa_w(), app.get_wa_h());
-        app.window().set_size(size);
-        // no-frame reaches the native window on the next turn of the event loop; sized before that, the
-        // old caption and borders stayed as a black margin. Size it again once they're gone.
-        let weak = self.ui.clone();
-        slint::Timer::single_shot(FRAME_SETTLE, move || {
-            if let Some(app) = weak.upgrade() {
-                app.window().set_size(size);
-            }
-        });
-        *self.path.borrow_mut() = path.clone();
-        let _ = self.tx.send(Command::Skin { path, mode: true });
-    }
-}
-
-/// Song title scrolling and the playlist's time readouts in the skin's bitmap font.
-#[derive(Default)]
-struct Marquee {
-    offset: usize,
-    text: String,
-    rows: usize,
-    total: String,
-}
-
-fn clock(ms: u64) -> String {
-    let s = ms / 1000;
-    format!("{}:{:02}", s / 60, s % 60)
-}
-
-/// "m:ss" or "h:mm:ss" row durations, summed in seconds.
-fn total_seconds(durations: impl Iterator<Item = slint::SharedString>) -> u64 {
-    durations
-        .map(|d| d.split(':').fold(0u64, |acc, part| acc * 60 + part.trim().parse::<u64>().unwrap_or(0)))
-        .sum()
-}
-
-impl Marquee {
-    fn tick(&mut self, app: &App) {
-        if !app.get_skin_mode() || !app.window().is_visible() {
-            return;
-        }
-        let now = app.get_now();
-        let text = match now.title.as_str() {
-            "" => "SlimSpot".to_string(),
-            title if now.artist.is_empty() => format!("{title} ({})", clock(app.get_duration() as u64)),
-            title => format!("{} - {title} ({})", now.artist, clock(app.get_duration() as u64)),
-        };
-        if text != self.text {
-            (self.text, self.offset) = (text, 0);
-        }
-        let shown: String = if self.text.chars().count() <= MARQUEE_CHARS {
-            self.text.clone()
-        } else {
-            let looped: Vec<char> = format!("{}{MARQUEE_GAP}", self.text).chars().collect();
-            self.offset = (self.offset + 1) % looped.len();
-            looped.iter().cycle().skip(self.offset).take(MARQUEE_CHARS).collect()
-        };
-        app.set_wa_title(std::rc::Rc::new(slint::VecModel::from(skin::glyphs(&shown))).into());
-        let tracks = app.get_tracks();
-        if tracks.row_count() != self.rows {
-            self.rows = tracks.row_count();
-            self.total = clock(total_seconds(tracks.iter().map(|r| r.duration)) * 1000);
-        }
-        let position = clock(app.get_position() as u64);
-        app.set_wa_pl_time(std::rc::Rc::new(slint::VecModel::from(skin::glyphs(&format!("{position}/{}", self.total)))).into());
-        app.set_wa_mini_time(std::rc::Rc::new(slint::VecModel::from(skin::glyphs(&position))).into());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn sums_row_durations() {
-        let rows = ["3:45", "1:02:03", "", "0:15"].map(slint::SharedString::from);
-        assert_eq!(super::total_seconds(rows.into_iter()), 225 + 3723 + 15);
-        assert_eq!(super::clock(3_723_000), "62:03");
     }
 }

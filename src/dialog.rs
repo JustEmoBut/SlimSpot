@@ -1,4 +1,4 @@
-//! Native "Open" dialog for choosing a playlist cover image or a Winamp skin.
+//! Native "Open" dialog for choosing a playlist cover image.
 
 use std::path::PathBuf;
 
@@ -15,11 +15,6 @@ use crate::ui::App;
 /// Blocks (modal) until the user picks a JPEG/PNG or cancels; `None` on cancel or failure.
 pub fn pick_image(app: &App) -> Option<PathBuf> {
     pick(app, w!("Images"), w!("*.jpg;*.jpeg;*.png"), w!("Choose a playlist cover"))
-}
-
-/// Same for a Winamp classic skin.
-pub fn pick_skin(app: &App) -> Option<PathBuf> {
-    pick(app, w!("Winamp skins"), w!("*.wsz;*.zip"), w!("Choose a Winamp skin"))
 }
 
 fn pick(app: &App, kind: PCWSTR, spec: PCWSTR, title: PCWSTR) -> Option<PathBuf> {

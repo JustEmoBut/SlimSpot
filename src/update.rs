@@ -132,7 +132,7 @@ pub async fn install(session: &Session, release: &Release) -> Result<PathBuf, St
         let sig = get(session, &release.sig_url).await?;
         verify(PUBLIC_KEY_PEM, &zip, &sig)?;
     }
-    let files = crate::skin::unzip(&zip, MAX_EXE)?;
+    let files = crate::zip::unzip(&zip, MAX_EXE)?;
     let new_exe = files.get(EXE_NAME).ok_or("The update has no SlimSpot.exe")?;
     let exe = std::env::current_exe().map_err(|e| format!("Can't find the running exe: {e}"))?;
     let staged = exe.with_extension("exe.new");

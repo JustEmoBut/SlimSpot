@@ -8,6 +8,8 @@ use librespot::playback::config::Bitrate;
 use crate::web::Item;
 
 const SETTINGS_FILE: &str = "settings.json";
+/// `Theme.palette` index of the Spotifast palette, the default for new installs.
+const DEFAULT_THEME: i32 = 6;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Repeat {
@@ -126,11 +128,14 @@ pub struct Settings {
     pub web_client_id: String,
     /// GPU (FemtoVG/OpenGL) renderer instead of the software one; read at startup only.
     pub gpu: bool,
-    /// Path of the chosen Winamp classic skin (.wsz), "" for none.
-    pub skin: String,
-    /// The skin is shown instead of the normal window.
-    pub skin_mode: bool,
     pub eq: crate::eq::EqState,
+    /// Home's "New release" tile and the Unix day it was looked up on (0 = never); looked up once a day.
+    pub new_release_day: i64,
+    /// Settings -> "Low API usage": the library, liked marks, Home and its new release come from caches.
+    pub low_api: bool,
+    /// Settings -> "Compact track list": one-line rows without covers.
+    pub compact: bool,
+    pub new_release: Option<Item>,
     path: PathBuf,
 }
 
@@ -153,12 +158,14 @@ impl Settings {
                 .as_object()
                 .map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_u64()?))).collect())
                 .unwrap_or_default(),
-            theme: json["theme"].as_i64().map_or(0, |t| t as i32),
+            theme: json["theme"].as_i64().map_or(DEFAULT_THEME, |t| t as i32),
             web_client_id: json["web_client_id"].as_str().unwrap_or_default().to_string(),
             gpu: json["gpu"].as_bool().unwrap_or(false),
-            skin: json["skin"].as_str().unwrap_or_default().to_string(),
-            skin_mode: json["skin_mode"].as_bool().unwrap_or(false),
             eq: crate::eq::EqState::from_json(&json["eq"]),
+            new_release_day: json["new_release_day"].as_i64().unwrap_or(0),
+            low_api: json["low_api"].as_bool().unwrap_or(false),
+            compact: json["compact"].as_bool().unwrap_or(false),
+            new_release: Item::from_json(&json["new_release"]),
             path,
         }
     }
@@ -175,9 +182,11 @@ impl Settings {
             "theme": self.theme,
             "web_client_id": self.web_client_id,
             "gpu": self.gpu,
-            "skin": self.skin,
-            "skin_mode": self.skin_mode,
             "eq": self.eq.to_json(),
+            "new_release_day": self.new_release_day,
+            "low_api": self.low_api,
+            "compact": self.compact,
+            "new_release": self.new_release.as_ref().map(Item::to_json),
         });
         std::fs::write(&self.path, json.to_string()).map_err(|e| format!("Saving settings failed: {e}"))
     }
@@ -213,7 +222,8 @@ mod tests {
             duration_ms: 200_000,
             context: Some("spotify:album:y".into()),
         };
-        let s = Settings { volume: 42.0, shuffle: true, repeat: Repeat::One, quality: Quality::Low, normalize: true, last: Some(last), ..defaults };
+        let release = Item { title: "R".into(), uri: "spotify:album:r".into(), artist_uri: "spotify:artist:a".into(), duration_ms: 5, ..Default::default() };
+        let s = Settings { volume: 42.0, shuffle: true, repeat: Repeat::One, quality: Quality::Low, normalize: true, last: Some(last), new_release_day: 20_000, low_api: true, compact: true, new_release: Some(release), ..defaults };
         s.save().unwrap();
         assert_eq!(Settings::load(&dir), s);
 
