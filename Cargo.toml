@@ -9,8 +9,8 @@ bytes = "1"
 http = "1"
 http-body-util = "0.1"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "bmp"] }
-librespot = { version = "=0.8.0", default-features = false, features = ["native-tls", "rodio-backend"] }
-librespot-oauth = { version = "=0.8.0", default-features = false, features = ["native-tls"] }
+librespot = { version = "=0.8.0", default-features = false, features = ["rustls-tls-native-roots", "rodio-backend"] }
+librespot-oauth = { version = "=0.8.0", default-features = false, features = ["rustls-tls-native-roots"] }
 log = "0.4"
 # Inflates .wsz (zip) skins; already in the tree via png.
 miniz_oxide = "0.8"
