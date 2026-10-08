@@ -4,6 +4,10 @@
 //! (checked on v0.1.0, 2026-10-05). The running exe is renamed to `.old` (Windows allows renaming a
 //! running exe, not overwriting it), the new one takes its name, and it is started with
 //! `--wait-pid` so it waits for this process to quit before taking the single-instance guard.
+//!
+//! The zip is only installed with a valid `<zip>.sig` asset: an RSA PKCS#1 v1.5 / SHA-256 signature
+//! (`openssl dgst -sha256 -sign`) checked against `assets/update-public-key.pem`. Builds made
+//! before the key existed install unverified; the first build carrying it is strict.
 
 use std::path::{Path, PathBuf};
 
@@ -11,6 +15,12 @@ use librespot::core::session::Session;
 
 const LATEST_URL: &str = "https://api.github.com/repos/JustEmoBut/SlimSpot/releases/latest";
 const ASSET_SUFFIX: &str = "-windows-x64.zip";
+const SIG_SUFFIX: &str = ".sig";
+/// SPKI PEM (`openssl pkey -pubout`); empty until the release key exists.
+const PUBLIC_KEY_PEM: &str = include_str!("../assets/update-public-key.pem");
+// Optimised builds (`fast`, release) are what gets installed and published: never without the key.
+#[cfg(not(debug_assertions))]
+const _: () = assert!(!PUBLIC_KEY_PEM.is_empty(), "assets/update-public-key.pem is empty: see the release steps in CLAUDE.md");
 const EXE_NAME: &str = "slimspot.exe";
 /// GitHub answers API calls without a User-Agent with 403.
 const USER_AGENT: &str = concat!("SlimSpot/", env!("CARGO_PKG_VERSION"));
@@ -24,6 +34,7 @@ pub const WAIT_PID_ARG: &str = "--wait-pid";
 pub struct Release {
     pub version: String,
     pub zip_url: String,
+    pub sig_url: String,
 }
 
 /// `X.Y.Z` (an optional leading `v`) as numbers; anything else is no version.
@@ -32,19 +43,37 @@ fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     Some((parts.next()??, parts.next()??, parts.next()??))
 }
 
-/// The release, if `latest` (the GitHub API's JSON) is newer than `current` and has the zip.
-fn newer(latest: &serde_json::Value, current: &str) -> Option<Release> {
+/// The release, if `latest` (the GitHub API's JSON) is newer than `current` and has the zip and,
+/// when `signed`, its signature.
+fn newer(latest: &serde_json::Value, current: &str, signed: bool) -> Option<Release> {
     let tag = latest["tag_name"].as_str()?;
     if parse_version(tag)? <= parse_version(current)? {
         return None;
     }
-    let zip_url = latest["assets"]
-        .as_array()?
-        .iter()
-        .find(|a| a["name"].as_str().is_some_and(|n| n.ends_with(ASSET_SUFFIX)))?["browser_download_url"]
-        .as_str()?
-        .to_string();
-    Some(Release { version: tag.trim_start_matches('v').to_string(), zip_url })
+    let assets = latest["assets"].as_array()?;
+    let url = |suffix: &str| {
+        assets
+            .iter()
+            .find(|a| a["name"].as_str().is_some_and(|n| n.ends_with(suffix)))
+            .and_then(|a| a["browser_download_url"].as_str())
+            .map(str::to_string)
+    };
+    let zip_url = url(ASSET_SUFFIX)?;
+    let sig_url = url(&format!("{ASSET_SUFFIX}{SIG_SUFFIX}"));
+    if signed && sig_url.is_none() {
+        log::warn!("update {tag} has no signature; not offered");
+        return None;
+    }
+    Some(Release { version: tag.trim_start_matches('v').to_string(), zip_url, sig_url: sig_url.unwrap_or_default() })
+}
+
+/// Checks `sig` (RSA PKCS#1 v1.5 over SHA-256) of `data` against the SPKI PEM `key`.
+fn verify(key: &str, data: &[u8], sig: &[u8]) -> Result<(), String> {
+    use rsa::pkcs8::DecodePublicKey;
+    use sha2::Digest;
+    let key = rsa::RsaPublicKey::from_public_key_pem(key).map_err(|e| format!("Update key: {e}"))?;
+    key.verify(rsa::Pkcs1v15Sign::new::<sha2::Sha256>(), &sha2::Sha256::digest(data), sig)
+        .map_err(|_| "The update's signature doesn't match; not installed".to_string())
 }
 
 async fn get(session: &Session, url: &str) -> Result<bytes::Bytes, String> {
@@ -77,7 +106,7 @@ async fn get(session: &Session, url: &str) -> Result<bytes::Bytes, String> {
 pub async fn check(session: &Session) -> Result<Option<Release>, String> {
     let body = get(session, LATEST_URL).await?;
     let latest: serde_json::Value = serde_json::from_slice(&body).map_err(|e| format!("Update check: {e}"))?;
-    Ok(newer(&latest, env!("CARGO_PKG_VERSION")))
+    Ok(newer(&latest, env!("CARGO_PKG_VERSION"), !PUBLIC_KEY_PEM.is_empty()))
 }
 
 fn old_path(exe: &Path) -> PathBuf {
@@ -99,6 +128,10 @@ pub fn remove_old() {
 /// Downloads the release and swaps the exe in place; the caller then starts it and quits.
 pub async fn install(session: &Session, release: &Release) -> Result<PathBuf, String> {
     let zip = get(session, &release.zip_url).await?;
+    if !PUBLIC_KEY_PEM.is_empty() {
+        let sig = get(session, &release.sig_url).await?;
+        verify(PUBLIC_KEY_PEM, &zip, &sig)?;
+    }
     let files = crate::skin::unzip(&zip, MAX_EXE)?;
     let new_exe = files.get(EXE_NAME).ok_or("The update has no SlimSpot.exe")?;
     let exe = std::env::current_exe().map_err(|e| format!("Can't find the running exe: {e}"))?;
@@ -145,22 +178,48 @@ mod tests {
     use super::*;
 
     fn release(tag: &str) -> serde_json::Value {
+        let zip = format!("SlimSpot-{}-windows-x64.zip", tag.trim_start_matches('v'));
         serde_json::json!({
             "tag_name": tag,
             "assets": [
                 { "name": "notes.txt", "browser_download_url": "x" },
-                { "name": format!("SlimSpot-{}-windows-x64.zip", tag.trim_start_matches('v')), "browser_download_url": "https://example/z.zip" },
+                { "name": zip, "browser_download_url": "https://example/z.zip" },
+                { "name": format!("{zip}.sig"), "browser_download_url": "https://example/z.zip.sig" },
             ]
         })
     }
 
     #[test]
     fn offers_only_newer_releases_with_the_zip() {
-        assert_eq!(newer(&release("v0.2.0"), "0.1.0"), Some(Release { version: "0.2.0".into(), zip_url: "https://example/z.zip".into() }));
-        assert_eq!(newer(&release("v0.10.0"), "0.9.3").map(|r| r.version), Some("0.10.0".into()));
-        assert_eq!(newer(&release("v0.1.0"), "0.1.0"), None);
-        assert_eq!(newer(&release("v0.0.9"), "0.1.0"), None);
-        assert_eq!(newer(&release("nightly"), "0.1.0"), None);
-        assert_eq!(newer(&serde_json::json!({ "tag_name": "v9.0.0", "assets": [] }), "0.1.0"), None);
+        let r = Release { version: "0.2.0".into(), zip_url: "https://example/z.zip".into(), sig_url: "https://example/z.zip.sig".into() };
+        assert_eq!(newer(&release("v0.2.0"), "0.1.0", true), Some(r));
+        assert_eq!(newer(&release("v0.10.0"), "0.9.3", true).map(|r| r.version), Some("0.10.0".into()));
+        assert_eq!(newer(&release("v0.1.0"), "0.1.0", true), None);
+        assert_eq!(newer(&release("v0.0.9"), "0.1.0", true), None);
+        assert_eq!(newer(&release("nightly"), "0.1.0", true), None);
+        assert_eq!(newer(&serde_json::json!({ "tag_name": "v9.0.0", "assets": [] }), "0.1.0", true), None);
+    }
+
+    #[test]
+    fn unsigned_releases_are_offered_only_without_a_key() {
+        let mut unsigned = release("v0.2.0");
+        unsigned["assets"].as_array_mut().unwrap().pop();
+        assert_eq!(newer(&unsigned, "0.1.0", true), None);
+        assert_eq!(newer(&unsigned, "0.1.0", false).map(|r| r.sig_url), Some(String::new()));
+    }
+
+    // Test key pair made with openssl; only its public half is kept.
+    const TEST_KEY: &str = include_str!("../testdata/update/test-key.pub.pem");
+    const PAYLOAD: &[u8] = include_bytes!("../testdata/update/payload.bin");
+    const SIG: &[u8] = include_bytes!("../testdata/update/payload.bin.sig");
+
+    #[test]
+    fn verifies_openssl_signatures() {
+        assert_eq!(verify(TEST_KEY, PAYLOAD, SIG), Ok(()));
+        let mut tampered = PAYLOAD.to_vec();
+        tampered[0] ^= 1;
+        assert!(verify(TEST_KEY, &tampered, SIG).is_err());
+        assert!(verify(TEST_KEY, PAYLOAD, &SIG[1..]).is_err());
+        assert!(verify("not a key", PAYLOAD, SIG).is_err());
     }
 }
