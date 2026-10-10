@@ -1,6 +1,29 @@
-# SlimSpot
+<p align="center">
+  <img src="assets/icon-256.png" width="128" height="128" alt="SlimSpot logo">
+</p>
 
-A minimal-RAM native Spotify client for Windows, written in Rust with [Slint](https://slint.dev) (software renderer) and [librespot](https://github.com/librespot-org/librespot). No browser engine, software rendering by default: around 15 MB of private memory at startup and about 23 MB while playing.
+<h1 align="center">SlimSpot</h1>
+
+<p align="center">
+  <b>A tiny, native Spotify client for Windows.</b><br>
+  Rust · Slint (software renderer) · librespot — no browser engine, no webview.
+</p>
+
+<p align="center">
+  <a href="https://github.com/JustEmoBut/SlimSpot/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/JustEmoBut/SlimSpot"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
+  <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue">
+</p>
+
+## Why SlimSpot?
+
+Memory is the whole point. SlimSpot uses about **19 MB of private memory at startup** and stays well under **50 MB while playing**, even with a large playlist open. For comparison, Electron/Tauri/egui clients typically use 100–250 MB.
+
+| Client | Private memory |
+|---|---|
+| **SlimSpot** (idle / playing) | ~19 MB / ~25 MB |
+| Spotifast (egui, claimed) | 100–250 MB |
+| A Tauri-based client (measured) | ~194 MB |
 
 > **Unofficial.** SlimSpot is not affiliated with or endorsed by Spotify. Playback goes through librespot, which signs in like Spotify's own desktop client; this is against Spotify's terms of use and your account could be restricted. Use it at your own risk. Playback needs **Spotify Premium**.
 
@@ -27,7 +50,7 @@ Requirements: Windows 10/11, a Spotify Premium account.
 
 **Download:** get the zip from [Releases](https://github.com/JustEmoBut/SlimSpot/releases), unzip it and run `SlimSpot.exe`. The exe isn't code-signed, so SmartScreen may warn ("More info" → "Run anyway").
 
-**From source:** needs the Rust toolchain; the exe icon needs the Windows SDK (`rc.exe`), without it the build only skips the icon.
+**From source:** see [Building from source](#building-from-source) below, or just run:
 
 ```powershell
 git clone https://github.com/JustEmoBut/SlimSpot.git
@@ -35,9 +58,89 @@ cd SlimSpot
 .\install.ps1
 ```
 
-`install.ps1` builds SlimSpot, copies it to `%LOCALAPPDATA%\Programs\SlimSpot`, adds a Start menu shortcut and turns on start with Windows (switch that off in Settings). `.\install.ps1 -Uninstall` removes it.
+`install.ps1` builds SlimSpot, copies it to `%LOCALAPPDATA%\Programs\SlimSpot`, adds a Start menu shortcut and turns on start with Windows (switch that off in Settings). Options: `-Release` (fully optimised LTO build), `-NoAutostart`, `-Uninstall`. A running SlimSpot is stopped first, so it also works for updating.
 
 On the first start the browser opens twice: once to sign in for playback, once for the Web API (library and search).
+
+## Keyboard shortcuts
+
+Press `?` in the app for the full list. The most used ones:
+
+| Keys | Action |
+|---|---|
+| `Space` | Play / pause |
+| `Shift` + `←` / `→` | Seek 10 s |
+| `M` | Mute / unmute |
+| `B` | Like the current song |
+| `Q` / `Ctrl+U` | Queue |
+| `/` or `Ctrl+L` | Search |
+| `Ctrl+F` | Find in page |
+| `Ctrl+Y` | Lyrics |
+| `Ctrl+H` | Home |
+| `Ctrl+B` | Toggle sidebar |
+| `Ctrl+,` | Settings |
+| `↑` / `↓`, `Enter` | Move through the list, play the row |
+| `Ctrl+C` / `Ctrl+V` | Copy song links / paste them into your playlist |
+| `Ctrl+Q` | Quit (closing the window only hides it to the tray) |
+
+## Building from source
+
+### Requirements
+
+- **Windows 10/11** (x64)
+- **Rust** stable, 1.85 or newer (edition 2024) — install with [rustup](https://rustup.rs) and the MSVC toolchain (`x86_64-pc-windows-msvc`)
+- **Visual Studio Build Tools** with "Desktop development with C++" (MSVC linker and Windows SDK)
+- Optional: the Windows SDK's `rc.exe` on `PATH` (or found by the build script) to embed the exe icon; without it the build prints a warning and skips the icon
+
+### Build
+
+```powershell
+git clone https://github.com/JustEmoBut/SlimSpot.git
+cd SlimSpot
+
+# Day-to-day build (fast to rebuild, same memory use as release)
+cargo build --profile fast        # -> target\fast\slimspot.exe
+
+# Fully optimised build (LTO, ~4 min, slightly smaller exe)
+cargo build --release             # -> target\release\slimspot.exe
+
+# Run the tests
+cargo test
+```
+
+The first build downloads and compiles all dependencies and takes a few minutes; later `fast` builds take ~25–40 s.
+
+### Notes for forks
+
+- `fast` and `release` builds embed the update-signing public key from `assets/update-public-key.pem` and refuse to compile without one. If you publish your own releases, generate your own key pair:
+  ```sh
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out slimspot-update.pem   # keep private, never commit
+  openssl pkey -in slimspot-update.pem -pubout -out assets/update-public-key.pem
+  ```
+  and point the update check in `src/update.rs` at your repository.
+- `Cargo.lock` pins `vergen` 9.0.6 because librespot 0.8.0's build script fails with newer versions; avoid a blanket `cargo update`.
+
+### Making a release
+
+1. Bump `version` in `Cargo.toml` (the in-app update check compares against it).
+2. `.\install.ps1 -Release` (or `cargo build --release`).
+3. Zip `SlimSpot.exe`, `LICENSE`, `OFL.txt` and `README.md` as `SlimSpot-X.Y.Z-windows-x64.zip`.
+4. Sign it: `openssl dgst -sha256 -sign slimspot-update.pem -out SlimSpot-X.Y.Z-windows-x64.zip.sig SlimSpot-X.Y.Z-windows-x64.zip`
+5. Publish both files on a `vX.Y.Z` GitHub release. Running copies then show "Update to vX.Y.Z"; a release without a valid `.sig` is never offered.
+
+## Project layout
+
+| Path | What it does |
+|---|---|
+| `src/main.rs` | Wires the UI to the player, tray, timers |
+| `src/ui.rs` | Slint markup and UI helpers |
+| `src/player.rs` | Playback backend: login, Spotify Connect device, command loop |
+| `src/web.rs` | Spotify Web API: library, search, playlists, queue |
+| `src/covers.rs` | Cover thumbnails (only for visible rows) |
+| `src/eq.rs` | 10-band equalizer |
+| `src/update.rs` | Signed self-update from GitHub Releases |
+| `src/lyrics.rs`, `src/nav.rs`, `src/settings.rs`, … | Lyrics, back/forward history, settings and Windows integration |
+| `assets/` | Icon (`icon.svg` is the source), fonts, update public key |
 
 ## Your own Spotify app (optional)
 
