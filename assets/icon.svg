@@ -1,37 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <title>SlimSpot</title>
   <defs>
-    <radialGradient id="bg" cx="0.3" cy="0.25" r="0.9">
-      <stop offset="0" stop-color="#26304a"/>
-      <stop offset="1" stop-color="#0b1020"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2a2a"/>
+      <stop offset="1" stop-color="#0d0d0d"/>
+    </linearGradient>
+    <radialGradient id="spot" cx="0.35" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#5cf08f"/>
+      <stop offset="0.6" stop-color="#1ed760"/>
+      <stop offset="1" stop-color="#119c45"/>
     </radialGradient>
-    <linearGradient id="wave" gradientUnits="userSpaceOnUse" x1="44" y1="0" x2="224" y2="0">
-      <stop offset="0" stop-color="#f472b6"/>
-      <stop offset="0.5" stop-color="#a78bfa"/>
-      <stop offset="1" stop-color="#22d3ee"/>
-    </linearGradient>
-    <linearGradient id="ring" gradientUnits="userSpaceOnUse" x1="56" y1="56" x2="200" y2="200">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.55"/>
-    </linearGradient>
-    <filter id="glow" x="-20%" y="-40%" width="140%" height="180%">
-      <feGaussianBlur stdDeviation="7"/>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10"/>
     </filter>
   </defs>
   <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <rect x="1.5" y="1.5" width="253" height="253" rx="54.5" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="3"/>
 
-  <!-- The "spot": a slim ring, open on the right where the sound escapes. -->
-  <path d="M195.7 152.6 A72 72 0 1 1 195.7 103.4"
-        fill="none" stroke="url(#ring)" stroke-width="8" stroke-linecap="round"/>
-
-  <!-- One waveform whose swing builds, peaks, then settles as it leaves the ring. -->
-  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
-    <path id="w" d="M44 128 C58 128 62 110 74 110 C88 110 90 152 104 152 C118 152 118 78 132 78
-                    C146 78 148 164 162 164 C174 164 178 118 190 118 C200 118 204 128 214 128"
-          stroke="url(#wave)" stroke-width="18" opacity="0.55" filter="url(#glow)"/>
-    <path d="M44 128 C58 128 62 110 74 110 C88 110 90 152 104 152 C118 152 118 78 132 78
-             C146 78 148 164 162 164 C174 164 178 118 190 118 C200 118 204 128 214 128"
-          stroke="url(#wave)" stroke-width="11"/>
+  <!-- The "spot": a glowing disc with slim equalizer bars cut into it. -->
+  <circle cx="128" cy="128" r="80" fill="#1ed760" opacity="0.35" filter="url(#glow)"/>
+  <circle cx="128" cy="128" r="80" fill="url(#spot)"/>
+  <g fill="#0f0f0f">
+    <rect x="85"  y="112" width="14" height="32"  rx="7"/>
+    <rect x="109" y="84"  width="14" height="88"  rx="7"/>
+    <rect x="133" y="64"  width="14" height="128" rx="7"/>
+    <rect x="157" y="94"  width="14" height="68"  rx="7"/>
   </g>
-  <circle cx="224" cy="128" r="11" fill="#22d3ee"/>
 </svg>
