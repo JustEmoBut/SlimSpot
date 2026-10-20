@@ -148,11 +148,15 @@ pub enum Command {
     CheckLikedMore,
 }
 
+/// `%APPDATA%\SlimSpot` on Windows, `$XDG_CONFIG_HOME/SlimSpot` (`~/.config/SlimSpot`) elsewhere.
 pub fn cache_dir() -> PathBuf {
-    std::env::var_os("APPDATA")
+    #[cfg(windows)]
+    let base = std::env::var_os("APPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("SlimSpot")
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
+    base.unwrap_or_else(|| PathBuf::from(".")).join("SlimSpot")
 }
 
 async fn browser_login(ui: &Ui) -> Result<Credentials, String> {
@@ -383,8 +387,13 @@ fn songs(n: usize) -> String {
 fn greeting() -> &'static str {
     #[cfg(windows)]
     let hour = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() }.wHour;
-    #[cfg(not(windows))]
-    let hour = 12;
+    #[cfg(unix)]
+    let hour = unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut local: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&now, &mut local);
+        local.tm_hour
+    };
     match hour {
         5..=11 => "Good morning",
         12..=17 => "Good afternoon",
@@ -1522,12 +1531,15 @@ pub async fn run(
                             }
                         }
                         "copy" => {
-                            #[cfg(windows)]
                             match crate::clipboard::web_link(&uri) {
+                                #[cfg(windows)]
                                 Some(link) => match crate::clipboard::set_text(&link) {
                                     Ok(()) => set_status(&ui, format!("Copied {link}")),
                                     Err(e) => set_status(&ui, e),
                                 },
+                                // Freya's clipboard (Linux) works on the UI thread only.
+                                #[cfg(not(windows))]
+                                Some(link) => ui.send(UiUpdate::CopyText(link)),
                                 None => set_status(&ui, "This has no Spotify link"),
                             }
                             None

@@ -44,6 +44,9 @@ pub enum Current {
 /// backend doesn't depend on the UI toolkit.
 pub enum UiUpdate {
     Status(String),
+    /// Puts text on the clipboard and says so (Linux: Freya's clipboard works on the UI thread only).
+    #[cfg_attr(windows, allow(dead_code))]
+    CopyText(String),
     /// The page header's size line ("50 songs, 2 hr 42 min").
     Summary(String),
     Playing(bool),
@@ -206,7 +209,9 @@ pub fn run(commands: mpsc::UnboundedSender<Command>, cover_requests: mpsc::Unbou
                         let _ = MAIN_WINDOW.set(window.id());
                         #[cfg(windows)]
                         windows_setup(window);
-                        // Started by the Windows Run entry: stay in the tray. Freya shows the window right
+                        #[cfg(target_os = "linux")]
+                        linux_setup();
+                        // Started by the autostart entry: stay in the tray. Freya shows the window right
                         // after this hook, so the hide is queued for after that.
                         if start_in_tray {
                             Platform::get().with_window(window.id(), |w| w.set_visible(false));
@@ -257,11 +262,20 @@ fn windows_setup(window: &freya::winit::window::Window) {
     crate::taskbar::setup(hwnd, tx.clone());
 }
 
+/// Media keys through MPRIS; the window manager draws the title bar and there is no taskbar API.
+#[cfg(target_os = "linux")]
+fn linux_setup() {
+    let Some(tx) = COMMANDS.get() else { return };
+    if let Err(e) = crate::media_keys::setup(tx.clone()) {
+        log::warn!("{e}");
+    }
+}
+
 /// Brings the window back from the tray (or from behind other windows).
 fn show_window() {
     if let Some(id) = MAIN_WINDOW.get() {
         Platform::get().with_window(*id, |w| {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             crate::instance::bring_to_front(w);
         });
     }
@@ -584,6 +598,12 @@ impl Model {
                 self.status = text;
             }
             UiUpdate::Summary(text) => self.summary = text,
+            UiUpdate::CopyText(text) => {
+                self.status = match crate::clipboard::set_text(&text) {
+                    Ok(()) => format!("Copied {text}"),
+                    Err(e) => e,
+                };
+            }
             UiUpdate::Playing(playing) => {
                 self.position_ms = self.position();
                 self.position_at = Some(Instant::now());
@@ -1637,8 +1657,13 @@ impl Component for Toast {
         use_future(move || async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                let expired = model.peek().status_until.is_some_and(|until| std::time::Instant::now() >= until);
-                if expired {
+                let (until, shown) = {
+                    let m = model.peek();
+                    (m.status_until, !m.status.is_empty())
+                };
+                if shown && until.is_none() {
+                    model.write().status_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(TOAST_SECS));
+                } else if until.is_some_and(|until| std::time::Instant::now() >= until) {
                     let mut m = model.write();
                     m.status.clear();
                     m.status_until = None;
@@ -1703,7 +1728,20 @@ fn modifiers_held() -> (bool, bool) {
         (down(VK_CONTROL), down(VK_SHIFT))
     }
     #[cfg(not(windows))]
-    (false, false)
+    (CTRL_HELD.load(std::sync::atomic::Ordering::Relaxed), SHIFT_HELD.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Ctrl / Shift state from the last key down or up (Linux has no `GetKeyState` equivalent in winit).
+#[cfg(not(windows))]
+static CTRL_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(not(windows))]
+static SHIFT_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(not(windows))]
+fn track_modifiers(e: &KeyboardEventData) {
+    use std::sync::atomic::Ordering::Relaxed;
+    CTRL_HELD.store(e.modifiers.contains(Modifiers::CONTROL), Relaxed);
+    SHIFT_HELD.store(e.modifiers.contains(Modifiers::SHIFT), Relaxed);
 }
 
 impl Model {
@@ -1745,7 +1783,6 @@ impl Model {
 /// Copies `open.spotify.com` links of the selection (Ctrl+C, and Ctrl+X before removing).
 fn copy_selection(model: &mut Model) -> Vec<String> {
     let uris = model.selected_uris();
-    #[cfg(windows)]
     {
         let links: Vec<String> = uris.iter().filter_map(|u| crate::clipboard::web_link(u)).collect();
         if !links.is_empty() {
@@ -1760,7 +1797,6 @@ fn copy_selection(model: &mut Model) -> Vec<String> {
 
 /// Adds song links from the clipboard to the open own playlist (Ctrl+V).
 fn paste_links() {
-    #[cfg(windows)]
     match crate::clipboard::get_text().map(|t| crate::clipboard::track_uris(&t)) {
         Ok(uris) if !uris.is_empty() => send(Command::AddUris { list: String::new(), uris }),
         Ok(_) => send(Command::Status("No song links on the clipboard".into())),
@@ -1836,7 +1872,7 @@ fn open_add_popup() {
 
 /// Native Open dialog on a thread of its own (it's modal and would stall the UI), then upload.
 fn change_cover() {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     std::thread::spawn(|| {
         if let Some(path) = crate::dialog::pick_image(MAIN_HWND.get().copied()) {
             send(Command::PlaylistCover(path));
@@ -2186,10 +2222,10 @@ impl Component for SettingsPage {
         let mut id_shown = use_state(|| false);
         let shown = *id_shown.read();
         let mut eq_dirty = use_state(|| false);
-        // The registry Run value is the source of truth.
-        #[cfg(windows)]
+        // The registry Run value / the autostart entry is the source of truth.
+        #[cfg(any(windows, target_os = "linux"))]
         let mut autostart = use_state(crate::autostart::is_enabled);
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         let mut autostart = use_state(|| false);
         let m = model.read();
         let choices = |labels: &[&'static str], active: i32, pick: fn(i32)| {
@@ -2322,15 +2358,15 @@ impl Component for SettingsPage {
                 ))
                 .child(section("Startup"))
                 .child(setting_row(
-                    "Start with Windows",
+                    if cfg!(windows) { "Start with Windows" } else { "Start on login" },
                     "Starts in the tray",
                     Switch::new().toggled(autostart()).on_toggle(move |_| {
-                        #[cfg(windows)]
+                        #[cfg(any(windows, target_os = "linux"))]
                         {
                             if let Err(e) = crate::autostart::set(!autostart()) {
                                 model.write().status = e;
                             }
-                            // Show what Windows will actually do, even if the change failed.
+                            // Show what the system will actually do, even if the change failed.
                             autostart.set(crate::autostart::is_enabled());
                         }
                     }),
@@ -2780,12 +2816,16 @@ fn app() -> impl IntoElement {
             while let Ok(update) = rx.try_recv() {
                 m.apply(update);
             }
-            // The Windows media overlay follows track and play state.
-            #[cfg(windows)]
+            // The system media overlay (Windows SMTC, Linux MPRIS) follows track and play state.
+            #[cfg(any(windows, target_os = "linux"))]
             if let Some(now) = &m.now {
                 if (now.uri.as_str(), m.playing) != (overlay.0.as_str(), overlay.1) {
                     overlay = (now.uri.clone(), m.playing);
-                    crate::media_keys::now_playing(&now.title, &now.artist, &crate::covers::larger_cover(&now.cover_url), m.playing);
+                    let cover = crate::covers::larger_cover(&now.cover_url);
+                    #[cfg(windows)]
+                    crate::media_keys::now_playing(&now.title, &now.artist, &cover, m.playing);
+                    #[cfg(target_os = "linux")]
+                    crate::media_keys::now_playing(&now.uri, &now.title, &now.artist, &cover, m.playing);
                 }
             }
         }
@@ -2806,7 +2846,15 @@ fn app() -> impl IntoElement {
         .height(Size::fill())
         .background(rgb(BASE))
         .color(rgb(TEXT))
-        .on_global_key_down(move |e: Event<KeyboardEventData>| on_key(&e, model, search.0))
+        .on_global_key_down(move |e: Event<KeyboardEventData>| {
+            #[cfg(not(windows))]
+            track_modifiers(&e);
+            on_key(&e, model, search.0)
+        })
+        .on_global_key_up(|_e: Event<KeyboardEventData>| {
+            #[cfg(not(windows))]
+            track_modifiers(&_e);
+        })
         .child(ContextMenuViewer::new())
         .maybe_child((!mini).then(|| {
             rect()

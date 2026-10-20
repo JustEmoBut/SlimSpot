@@ -5502,23 +5502,26 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "slimspot"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bytes",
  "freya",
  "http",
  "http-body-util",
  "image",
+ "libc",
  "librespot",
  "librespot-oauth",
  "log",
  "miniz_oxide 0.8.9",
  "raw-window-handle",
+ "rfd",
  "rsa",
  "serde_json",
  "sha2",
  "tokio",
  "windows 0.62.2",
+ "zbus",
 ]
 
 [[package]]

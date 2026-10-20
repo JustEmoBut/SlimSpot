@@ -5,14 +5,14 @@
 <h1 align="center">SlimSpot</h1>
 
 <p align="center">
-  <b>A tiny, native Spotify client for Windows.</b><br>
+  <b>A tiny, native Spotify client for Windows and Linux.</b><br>
   Rust · Freya (software renderer) · librespot — no browser engine, no webview.
 </p>
 
 <p align="center">
   <a href="https://github.com/JustEmoBut/SlimSpot/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/JustEmoBut/SlimSpot"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
-  <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue">
+  <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue">
 </p>
 
 ## Why SlimSpot?
@@ -42,10 +42,13 @@ Memory is the whole point. SlimSpot uses about **32 MB of private memory at star
 - 10-band equalizer and preamp that really shape the sound (Settings → Playback)
 - Updates itself from GitHub Releases: an "Update to vX" button appears when a new version is out
 - Windows integration: media keys and overlay, taskbar buttons and progress, tray, start with Windows
+- Linux integration: media keys and desktop media controls (MPRIS), tray, start on login
 
 ## Install
 
-Requirements: Windows 10/11, a Spotify Premium account.
+Requirements: a Spotify Premium account, and Windows 10/11 or a 64-bit Linux desktop.
+
+### Windows
 
 **Download:** get the zip from [Releases](https://github.com/JustEmoBut/SlimSpot/releases), unzip it and run `SlimSpot.exe`. The exe isn't code-signed, so SmartScreen may warn ("More info" → "Run anyway").
 
@@ -58,6 +61,30 @@ cd SlimSpot
 ```
 
 `install.ps1` builds SlimSpot, copies it to `%LOCALAPPDATA%\Programs\SlimSpot`, adds a Start menu shortcut and turns on start with Windows (switch that off in Settings). Options: `-Release` (fully optimised LTO build), `-NoAutostart`, `-Uninstall`. A running SlimSpot is stopped first, so it also works for updating.
+
+### Linux
+
+Needs ALSA (PipeWire or PulseAudio work through it), GTK 3, an AppIndicator library for the tray and libxdo. On Arch/CachyOS:
+
+```sh
+sudo pacman -S --needed alsa-lib gtk3 libayatana-appindicator xdotool
+```
+
+(Debian/Ubuntu: `libasound2 libgtk-3-0 libayatana-appindicator3-1 libxdo3`.)
+
+**Download:** get `SlimSpot-X.Y.Z-linux-x64.tar.gz` from [Releases](https://github.com/JustEmoBut/SlimSpot/releases), unpack it and run `./install.sh` inside. The release binary is built on Arch Linux, so it needs a recent glibc; on older distributions build from source.
+
+**From source:** install Rust and `clang` (Skia's build needs it), then:
+
+```sh
+git clone https://github.com/JustEmoBut/SlimSpot.git
+cd SlimSpot
+./install.sh
+```
+
+`install.sh` copies SlimSpot to `~/.local/bin/slimspot`, adds a menu entry and icon, and turns on start on login (switch that off in Settings). `./install.sh --uninstall` removes it again. The tray icon needs a desktop with AppIndicator/StatusNotifier support (KDE Plasma does; GNOME needs the AppIndicator extension).
+
+### First start
 
 On the first start the browser opens twice: once to sign in for playback, once for the Web API (library and search).
 
@@ -86,10 +113,10 @@ Press `?` in the app for the full list. The most used ones:
 
 ### Requirements
 
-- **Windows 10/11** (x64)
+- **Windows 10/11** (x64), or **Linux** x64 with the libraries listed under [Linux](#linux) plus `clang`
 - **Rust** stable, 1.85 or newer (edition 2024) — install with [rustup](https://rustup.rs) and the MSVC toolchain (`x86_64-pc-windows-msvc`)
-- **Visual Studio Build Tools** with "Desktop development with C++" (MSVC linker and Windows SDK)
-- Optional: the Windows SDK's `rc.exe` on `PATH` (or found by the build script) to embed the exe icon; without it the build prints a warning and skips the icon
+- Windows: **Visual Studio Build Tools** with "Desktop development with C++" (MSVC linker and Windows SDK)
+- Windows, optional: the Windows SDK's `rc.exe` on `PATH` (or found by the build script) to embed the exe icon; without it the build prints a warning and skips the icon
 
 ### Build
 
@@ -125,7 +152,8 @@ The first build downloads and compiles all dependencies and takes a few minutes;
 2. `.\install.ps1 -Release` (or `cargo build --release`).
 3. Zip `SlimSpot.exe`, `LICENSE`, `OFL.txt`, `THIRD-PARTY-NOTICES.txt` and `README.md` as `SlimSpot-X.Y.Z-windows-x64.zip`.
 4. Sign it: `openssl dgst -sha256 -sign slimspot-update.pem -out SlimSpot-X.Y.Z-windows-x64.zip.sig SlimSpot-X.Y.Z-windows-x64.zip`
-5. Publish both files on a `vX.Y.Z` GitHub release. Running copies then show "Update to vX.Y.Z"; a release without a valid `.sig` is never offered.
+5. Linux, on Arch (WSL works): `cargo build --release`, then pack `slimspot`, `assets/icon-256.png` renamed to `slimspot.png`, `install.sh`, `LICENSE`, `OFL.txt`, `THIRD-PARTY-NOTICES.txt` and `README.md` into a `SlimSpot-X.Y.Z/` folder as `SlimSpot-X.Y.Z-linux-x64.tar.gz`, and sign it the same way.
+6. Publish all four files on a `vX.Y.Z` GitHub release. Running copies then show "Update to vX.Y.Z"; a release without a valid `.sig` is never offered.
 
 ## Project layout
 
@@ -139,6 +167,7 @@ The first build downloads and compiles all dependencies and takes a few minutes;
 | `src/eq.rs` | 10-band equalizer |
 | `src/update.rs` | Signed self-update from GitHub Releases |
 | `src/lyrics.rs`, `src/nav.rs`, `src/settings.rs`, … | Lyrics, back/forward history, settings and Windows integration |
+| `src/*_linux.rs` | Linux counterparts: single instance, MPRIS media keys, autostart, cover picker |
 | `assets/` | Icon (`icon.svg` is the source), fonts, update public key |
 
 ## Your own Spotify app (optional)
@@ -153,7 +182,7 @@ Apps in Spotify's Development Mode only accept the users added to them in the da
 
 ## Files
 
-Everything lives in `%APPDATA%\SlimSpot`: sign-in tokens, `settings.json`, a library cache (`library.json`), the audio cache and `slimspot.log` (warnings and errors only).
+Everything lives in `%APPDATA%\SlimSpot` (Linux: `~/.config/SlimSpot`): sign-in tokens, `settings.json`, a library cache (`library.json`), the audio cache and `slimspot.log` (warnings and errors only).
 
 ## License
 

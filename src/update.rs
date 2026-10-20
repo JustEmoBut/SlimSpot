@@ -1,11 +1,12 @@
 //! Updates from GitHub Releases: one check at startup, install on request.
 //!
 //! Releases are tagged `vX.Y.Z` with a `SlimSpot-X.Y.Z-windows-x64.zip` asset holding `SlimSpot.exe`
-//! (checked on v0.1.0, 2026-10-05). The running exe is renamed to `.old` (Windows allows renaming a
-//! running exe, not overwriting it), the new one takes its name, and it is started with
-//! `--wait-pid` so it waits for this process to quit before taking the single-instance guard.
+//! (checked on v0.1.0, 2026-10-05) and a `SlimSpot-X.Y.Z-linux-x64.tar.gz` holding `slimspot`. The
+//! running binary is renamed to `.old` (Windows allows renaming a running exe, not overwriting it),
+//! the new one takes its name, and it is started with `--wait-pid` so it waits for this process to
+//! quit before taking the single-instance guard.
 //!
-//! The zip is only installed with a valid `<zip>.sig` asset: an RSA PKCS#1 v1.5 / SHA-256 signature
+//! The archive is only installed with a valid `<archive>.sig` asset: an RSA PKCS#1 v1.5 / SHA-256 signature
 //! (`openssl dgst -sha256 -sign`) checked against `assets/update-public-key.pem`. Builds made
 //! before the key existed install unverified; the first build carrying it is strict.
 
@@ -14,20 +15,29 @@ use std::path::{Path, PathBuf};
 use librespot::core::session::Session;
 
 const LATEST_URL: &str = "https://api.github.com/repos/JustEmoBut/SlimSpot/releases/latest";
+#[cfg(windows)]
 const ASSET_SUFFIX: &str = "-windows-x64.zip";
+#[cfg(not(windows))]
+const ASSET_SUFFIX: &str = "-linux-x64.tar.gz";
 const SIG_SUFFIX: &str = ".sig";
 /// SPKI PEM (`openssl pkey -pubout`); empty until the release key exists.
 const PUBLIC_KEY_PEM: &str = include_str!("../assets/update-public-key.pem");
 // Optimised builds (`fast`, release) are what gets installed and published: never without the key.
 #[cfg(not(debug_assertions))]
 const _: () = assert!(!PUBLIC_KEY_PEM.is_empty(), "assets/update-public-key.pem is empty: see the release steps in CLAUDE.md");
+#[cfg(windows)]
 const EXE_NAME: &str = "slimspot.exe";
+#[cfg(not(windows))]
+const EXE_NAME: &str = "slimspot";
 /// GitHub answers API calls without a User-Agent with 403.
 const USER_AGENT: &str = concat!("SlimSpot/", env!("CARGO_PKG_VERSION"));
 /// Release downloads redirect once (to objects.githubusercontent.com); a few hops to be safe.
 const MAX_REDIRECTS: usize = 5;
-/// The exe is ~20 MB; anything far bigger inside the zip isn't it.
+/// The exe is ~30 MB; anything far bigger inside the archive isn't it.
 const MAX_EXE: usize = 64 << 20;
+/// The whole unpacked Linux tar (binary plus license texts).
+#[cfg(not(windows))]
+const MAX_TAR: usize = MAX_EXE + (1 << 20);
 pub const WAIT_PID_ARG: &str = "--wait-pid";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -109,8 +119,15 @@ pub async fn check(session: &Session) -> Result<Option<Release>, String> {
     Ok(newer(&latest, env!("CARGO_PKG_VERSION"), !PUBLIC_KEY_PEM.is_empty()))
 }
 
+/// `SlimSpot.exe.old` / `slimspot.old` next to the running binary.
+fn sibling(exe: &Path, suffix: &str) -> PathBuf {
+    let mut name = exe.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    exe.with_file_name(name)
+}
+
 fn old_path(exe: &Path) -> PathBuf {
-    exe.with_extension("exe.old")
+    sibling(exe, ".old")
 }
 
 /// Leftover of the previous update; removed at startup once that process has quit.
@@ -132,11 +149,19 @@ pub async fn install(session: &Session, release: &Release) -> Result<PathBuf, St
         let sig = get(session, &release.sig_url).await?;
         verify(PUBLIC_KEY_PEM, &zip, &sig)?;
     }
+    #[cfg(windows)]
     let files = crate::zip::unzip(&zip, MAX_EXE)?;
-    let new_exe = files.get(EXE_NAME).ok_or("The update has no SlimSpot.exe")?;
+    #[cfg(not(windows))]
+    let files = crate::targz::untar_gz(&zip, MAX_TAR)?;
+    let new_exe = files.get(EXE_NAME).ok_or("The update has no SlimSpot binary")?;
     let exe = std::env::current_exe().map_err(|e| format!("Can't find the running exe: {e}"))?;
-    let staged = exe.with_extension("exe.new");
+    let staged = sibling(&exe, ".new");
     std::fs::write(&staged, new_exe).map_err(|e| format!("Can't write the update: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("Can't make the update executable: {e}"))?;
+    }
     let old = old_path(&exe);
     let _ = std::fs::remove_file(&old);
     std::fs::rename(&exe, &old).map_err(|e| format!("Can't move the running exe aside: {e}"))?;
@@ -173,12 +198,24 @@ pub fn wait_for_previous(timeout: std::time::Duration) {
     }
 }
 
+/// `--wait-pid N` on Linux: polls `/proc/N` until the process is gone (at most `timeout`).
+#[cfg(target_os = "linux")]
+pub fn wait_for_previous(timeout: std::time::Duration) {
+    const POLL: std::time::Duration = std::time::Duration::from_millis(100);
+    let mut args = std::env::args().skip_while(|a| a != WAIT_PID_ARG).skip(1);
+    let Some(pid) = args.next().and_then(|p| p.parse::<u32>().ok()) else { return };
+    let start = std::time::Instant::now();
+    while Path::new(&format!("/proc/{pid}")).exists() && start.elapsed() < timeout {
+        std::thread::sleep(POLL);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn release(tag: &str) -> serde_json::Value {
-        let zip = format!("SlimSpot-{}-windows-x64.zip", tag.trim_start_matches('v'));
+        let zip = format!("SlimSpot-{}{ASSET_SUFFIX}", tag.trim_start_matches('v'));
         serde_json::json!({
             "tag_name": tag,
             "assets": [

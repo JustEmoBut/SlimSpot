@@ -1,12 +1,29 @@
-//! Plain-text clipboard ("Copy link", copying and pasting song links), straight through Win32.
+//! Plain-text clipboard ("Copy link", copying and pasting song links): Win32 on Windows, Freya's
+//! clipboard (copypasta: Wayland or X11) on Linux, which works on the UI thread only.
 
+#[cfg(windows)]
 use windows::Win32::Foundation::HANDLE;
+#[cfg(windows)]
 use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData};
+#[cfg(windows)]
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 
 // CF_UNICODETEXT from WinUser.h; the windows crate only exports it behind the OLE feature.
+#[cfg(windows)]
 const CF_UNICODETEXT: u32 = 13;
 
+#[cfg(not(windows))]
+pub fn set_text(text: &str) -> Result<(), String> {
+    freya::clipboard::Clipboard::set(text.to_string()).map_err(|_| "Copying failed".to_string())
+}
+
+/// The clipboard's text, "" when it holds none.
+#[cfg(not(windows))]
+pub fn get_text() -> Result<String, String> {
+    Ok(freya::clipboard::Clipboard::get().unwrap_or_default())
+}
+
+#[cfg(windows)]
 pub fn set_text(text: &str) -> Result<(), String> {
     let utf16: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
     let bytes = utf16.len() * size_of::<u16>();
@@ -31,6 +48,7 @@ pub fn set_text(text: &str) -> Result<(), String> {
 }
 
 /// The clipboard's text, "" when it holds none.
+#[cfg(windows)]
 pub fn get_text() -> Result<String, String> {
     unsafe {
         OpenClipboard(None).map_err(|e| format!("Clipboard busy: {e}"))?;
