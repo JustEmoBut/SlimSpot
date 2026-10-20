@@ -12,7 +12,9 @@ use freya::tray::{Icon, MouseButton, MouseButtonState, TrayEvent, TrayIcon, Tray
 use freya::winit::window::Theme as WindowTheme;
 use tokio::sync::mpsc;
 
+use crate::eq::EqState;
 use crate::player::{Command, MORE_URI};
+use crate::settings::Quality;
 use crate::web::Item;
 
 // ---- Messages from the backend ----
@@ -145,6 +147,8 @@ pub fn set_current(ui: &Ui, uri: String, which: Current) {
 static UPDATES: Mutex<Option<mpsc::UnboundedReceiver<UiUpdate>>> = Mutex::new(None);
 static COMMANDS: OnceLock<mpsc::UnboundedSender<Command>> = OnceLock::new();
 static COVER_REQUESTS: OnceLock<mpsc::UnboundedSender<String>> = OnceLock::new();
+// "Update to vX" clicks go to the update task, not the command loop (see CLAUDE.md, Updates).
+static UPDATE_CLICKS: OnceLock<mpsc::UnboundedSender<()>> = OnceLock::new();
 
 /// The handle the backend sends through; `run` picks the updates up on the UI thread.
 pub fn channel() -> Ui {
@@ -174,9 +178,10 @@ fn quit() {
 }
 
 /// Opens the window and runs the event loop until the app quits.
-pub fn run(commands: mpsc::UnboundedSender<Command>, cover_requests: mpsc::UnboundedSender<String>) {
+pub fn run(commands: mpsc::UnboundedSender<Command>, cover_requests: mpsc::UnboundedSender<String>, update_clicks: mpsc::UnboundedSender<()>) {
     let _ = COMMANDS.set(commands);
     let _ = COVER_REQUESTS.set(cover_requests);
+    let _ = UPDATE_CLICKS.set(update_clicks);
     launch(
         LaunchConfig::new()
             .with_font("Poppins", &include_bytes!("../assets/fonts/Poppins-Regular.ttf")[..])
@@ -287,6 +292,24 @@ const POSITION_TICK: Duration = Duration::from_millis(500);
 // Keyboard steps: Shift+arrows seek, Ctrl+Up/Down change the volume.
 const SEEK_STEP_MS: u32 = 10_000;
 const VOLUME_STEP: f32 = 5.;
+// Lyrics lines have a fixed height, so the sung line can be centered arithmetically.
+const LYRIC_LINE_H: f32 = 52.;
+// Roughly half the lyrics panel at the default window size, so the sung line sits mid-panel.
+const LYRICS_TOP: f32 = 260.;
+// Winamp's 10 EQ bands and its built-in presets (dB / MAX_DB), as in the Slint version.
+const EQ_BANDS: [&str; 10] = ["60", "170", "310", "600", "1K", "3K", "6K", "12K", "14K", "16K"];
+const EQ_PRESETS: [(&str, [f32; 10]); 8] = [
+    ("Flat", [0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]),
+    ("Classical", [0., 0., 0., 0., 0., 0., -0.36, -0.36, -0.36, -0.48]),
+    ("Dance", [0.48, 0.36, 0.12, 0., 0., -0.28, -0.36, -0.36, 0., 0.]),
+    ("Full Bass", [0.4, 0.4, 0.4, 0.24, 0.08, -0.2, -0.4, -0.52, -0.56, -0.56]),
+    ("Full Treble", [-0.48, -0.48, -0.48, -0.2, 0.12, 0.56, 0.8, 0.8, 0.8, 0.84]),
+    ("Pop", [-0.08, 0.24, 0.36, 0.4, 0.28, 0., -0.12, -0.12, -0.08, -0.08]),
+    ("Rock", [0.4, 0.24, -0.28, -0.4, -0.16, 0.2, 0.44, 0.56, 0.56, 0.56]),
+    ("Techno", [0.4, 0.28, 0., -0.28, -0.24, 0., 0.4, 0.48, 0.48, 0.44]),
+];
+const QUALITIES: [&str; 3] = ["96 kbps", "160 kbps", "320 kbps"];
+const SLEEP_CHOICES: [(&str, i32); 5] = [("Off", 0), ("15 min", 15), ("30 min", 30), ("1 hr", 60), ("End of track", -1)];
 
 // ---- Icons: 24x24 paths, stroked unless noted ----
 const I_HOME: &str = "M4 11 L12 4 L20 11 V20 H14.5 V14 H9.5 V20 H4 Z";
@@ -304,6 +327,8 @@ const I_BACK: &str = "M15 5 L8 12 L15 19";
 const I_FORWARD: &str = "M9 5 L16 12 L9 19";
 const I_RADIO: &str = "M8.8 8.8 C7 10.6 7 13.4 8.8 15.2 M15.2 8.8 C17 10.6 17 13.4 15.2 15.2 M5.8 5.8 C2.4 9.2 2.4 14.8 5.8 18.2 M18.2 5.8 C21.6 9.2 21.6 14.8 18.2 18.2 M12 10.6 C12.8 10.6 13.4 11.2 13.4 12 C13.4 12.8 12.8 13.4 12 13.4 C11.2 13.4 10.6 12.8 10.6 12 C10.6 11.2 11.2 10.6 12 10.6 Z";
 const I_MORE: &str = "M5 10.5 H8 V13.5 H5 Z M10.5 10.5 H13.5 V13.5 H10.5 Z M16 10.5 H19 V13.5 H16 Z";
+const I_LYRICS: &str = "M9.5 3.5 H14.5 V11.5 C14.5 14 9.5 14 9.5 11.5 Z M6 11 C6 18 18 18 18 11 M12 16.5 V21 M8.5 21 H15.5";
+const I_SETTINGS: &str = "M12 9 C13.7 9 15 10.3 15 12 C15 13.7 13.7 15 12 15 C10.3 15 9 13.7 9 12 C9 10.3 10.3 9 12 9 Z M12 2.5 V5 M12 19 V21.5 M2.5 12 H5 M19 12 H21.5 M5.3 5.3 L7.1 7.1 M16.9 16.9 L18.7 18.7 M5.3 18.7 L7.1 16.9 M16.9 7.1 L18.7 5.3";
 const I_CLOCK: &str = "M12 3.5 C16.7 3.5 20.5 7.3 20.5 12 C20.5 16.7 16.7 20.5 12 20.5 C7.3 20.5 3.5 16.7 3.5 12 C3.5 7.3 7.3 3.5 12 3.5 Z M12 7.5 V12 L15 14";
 
 // ---- State ----
@@ -355,6 +380,20 @@ struct Model {
     credits: Option<(String, String)>,
     /// The volume before M muted it.
     muted_from: Option<f32>,
+    quality: i32,
+    normalize: bool,
+    eq: EqState,
+    low_api: bool,
+    web_client_id: String,
+    sleep_minutes: i32,
+    /// A newer release to offer ("Update to vX"); empty when none.
+    update_version: String,
+    show_settings: bool,
+    show_lyrics: bool,
+    lyric_lines: Vec<String>,
+    /// Start time per line; empty when the lyrics aren't synced.
+    lyric_times: Vec<u32>,
+    lyrics_note: String,
 }
 
 impl Model {
@@ -416,6 +455,9 @@ impl Model {
             UiUpdate::PageHeader { kind, title, can_back, can_forward } => {
                 if (kind, &title) != (self.page_kind, &self.page_title) {
                     self.page_gen += 1;
+                    // Any page change closes the settings and lyrics, like the Slint version.
+                    self.show_settings = false;
+                    self.show_lyrics = false;
                 }
                 self.page_kind = kind;
                 self.page_title = title;
@@ -437,10 +479,33 @@ impl Model {
             }
             UiUpdate::PageInfo(info) => self.page_info = info,
             UiUpdate::PageCover(url) => self.page_cover = url,
-            UiUpdate::Settings { volume, shuffle, repeat, .. } => {
+            UiUpdate::Settings { volume, shuffle, repeat, quality, normalize, .. } => {
                 self.volume = volume;
                 self.shuffle = shuffle;
                 self.repeat = repeat;
+                self.quality = quality;
+                self.normalize = normalize;
+            }
+            UiUpdate::StartupSettings { low_api, eq, .. } => {
+                self.low_api = low_api;
+                self.eq = eq;
+            }
+            UiUpdate::UpdateVersion(version) => self.update_version = version,
+            UiUpdate::WebClientId(id) => self.web_client_id = id,
+            // Dropped if another track has started meanwhile.
+            UiUpdate::Lyrics(uri, result) => {
+                if self.now.as_ref().is_some_and(|n| n.uri == uri) {
+                    (self.lyric_lines, self.lyric_times, self.lyrics_note) = match result {
+                        Ok(Some(l)) => (l.lines, l.times_ms.unwrap_or_default(), String::new()),
+                        Ok(None) => (Vec::new(), Vec::new(), "No lyrics for this track".into()),
+                        Err(e) => (Vec::new(), Vec::new(), e),
+                    };
+                }
+            }
+            UiUpdate::ClearLyrics(note) => {
+                self.lyric_lines.clear();
+                self.lyric_times.clear();
+                self.lyrics_note = note;
             }
             UiUpdate::Now { item, duration, position } => {
                 self.now = Some(item);
@@ -466,18 +531,14 @@ impl Model {
             UiUpdate::InvokeQuit => quit(),
             UiUpdate::QuitEventLoop => std::process::exit(0),
             // ponytail: lyrics, credits, settings, queue, page tabs and the update chip come with their screens (phase 2).
-            UiUpdate::Lyrics(..)
-            | UiUpdate::ClearLyrics(_)
-            | UiUpdate::PageSaved(_)
+            UiUpdate::PageSaved(_)
             | UiUpdate::ScrollTop
             | UiUpdate::Reveal(_)
             | UiUpdate::LikedChecked(_)
             | UiUpdate::ResetLibraryChips
-            | UiUpdate::StartupSettings { .. }
             | UiUpdate::NowTintDefault
             | UiUpdate::NowAbout(_)
-            | UiUpdate::UpdateVersion(_)
-            | UiUpdate::WebClientId(_) => {}
+ => {}
         }
     }
 }
@@ -607,14 +668,14 @@ impl Component for IconButton {
 struct Chip {
     label: &'static str,
     active: bool,
-    tab: i32,
+    on_press: EventHandler<()>,
 }
 
 impl Component for Chip {
     fn render(&self) -> impl IntoElement {
         let (mut anim, t) = use_hover();
         let (bg, fg) = if self.active { (TEXT, ON_ACCENT) } else { (mix(ELEVATED, HOVER, t), TEXT) };
-        let tab = self.tab;
+        let on_press = self.on_press.clone();
         rect()
             .padding((6., 14.))
             .corner_radius(99.)
@@ -623,7 +684,7 @@ impl Component for Chip {
             .font_size(13.)
             .on_pointer_enter(move |_| anim.start())
             .on_pointer_leave(move |_| anim.reverse())
-            .on_press(move |_| send(Command::SearchTab(tab)))
+            .on_press(move |_| on_press.call(()))
             .child(self.label)
     }
 }
@@ -1050,7 +1111,40 @@ impl Component for TopBar {
                         }
                     }),
             )
-            .child(rect().padding((0., 8.)).child(one_line(m.status.clone(), 12., SUB)))
+            .child(rect().width(Size::func(|p| Some((p.parent - 640.).max(0.)))).padding((0., 8.)).child(one_line(m.status.clone(), 12., SUB)))
+            .maybe_child((!m.update_version.is_empty()).then(|| {
+                Chip {
+                    label: leak(&format!("Update to v{}", m.update_version)),
+                    active: true,
+                    on_press: EventHandler::new(|_| {
+                        if let Some(tx) = UPDATE_CLICKS.get() {
+                            let _ = tx.send(());
+                        }
+                    }),
+                }
+            }))
+            .child(IconButton { path: I_SETTINGS, size: 20., active: m.show_settings, filled: false, on_press: Some(toggle_settings) })
+    }
+}
+
+thread_local! {
+    /// The model handle for plain `fn()` handlers (icon buttons, shortcuts); set once by `app`.
+    static MODEL: std::cell::Cell<Option<State<Model>>> = const { std::cell::Cell::new(None) };
+}
+
+fn toggle_settings() {
+    if let Some(mut model) = MODEL.get() {
+        let mut m = model.write();
+        m.show_settings = !m.show_settings;
+        m.show_lyrics = false;
+    }
+}
+
+fn toggle_lyrics() {
+    if let Some(mut model) = MODEL.get() {
+        let mut m = model.write();
+        m.show_lyrics = !m.show_lyrics;
+        m.show_settings = false;
     }
 }
 
@@ -1152,7 +1246,7 @@ impl Component for ListPage {
             .child(rect().width(Size::px(44.)).cross_align(Alignment::End).child(icon(I_CLOCK, 16., SUB, false)));
         let tabs = (!m.tabs.is_empty()).then(|| {
             rect().horizontal().padding((0., 24., 12., 24.)).spacing(GAP).children(m.tabs.iter().enumerate().map(|(i, label)| {
-                Chip { label, active: m.search_tab == i as i32, tab: i as i32 }.into_element()
+                Chip { label, active: m.search_tab == i as i32, on_press: EventHandler::new(move |_| send(Command::SearchTab(i as i32))) }.into_element()
             }))
         });
         // The artist About tab shows the biography instead of rows.
@@ -1188,6 +1282,249 @@ impl Component for ListPage {
             .child(columns)
             .child(rect().width(Size::fill()).height(Size::px(1.)).margin((0., 24.)).background(rgb(HAIRLINE)))
             .child(list)
+    }
+}
+
+fn section(title: &str) -> Label {
+    heading(title.to_string(), 20.)
+}
+
+/// Label and description on the left, the control on the right (the Slint `SettingRow`).
+fn setting_row(label: &str, desc: &str, control: impl IntoElement) -> Rect {
+    rect()
+        .horizontal()
+        .width(Size::fill())
+        .padding((10., 0.))
+        .spacing(24.)
+        .cross_align(Alignment::Center)
+        .content(Content::Flex)
+        .child(
+            rect()
+                .width(Size::flex(1.))
+                .spacing(2.)
+                .child(rect().font_size(14.).color(rgb(TEXT)).child(label.to_string()))
+                .maybe_child((!desc.is_empty()).then(|| paragraph().span(desc.to_string()).font_size(12.).color(rgb(SUB)).width(Size::fill()))),
+        )
+        .child(control)
+}
+
+/// One EQ slider: vertical, -MAX_DB..=MAX_DB.
+fn eq_slider(label: &'static str, db: f32, on_moved: impl Fn(f32) + 'static) -> Rect {
+    let max = crate::eq::MAX_DB;
+    rect()
+        .width(Size::px(48.))
+        .spacing(6.)
+        .cross_align(Alignment::Center)
+        .child(rect().font_size(11.).color(rgb(SUB)).child(format!("{db:+.0}")))
+        .child(
+            Slider::new(move |v: f64| on_moved(((v as f32 / 100.) * 2. * max - max).clamp(-max, max)))
+                .direction(Direction::Vertical)
+                // The wheel scrolls the settings page; it must not move bands on the way.
+                .scroll_enabled(false)
+                .size(Size::px(120.))
+                .value(((db + max) / (2. * max) * 100.) as f64),
+        )
+        .child(rect().font_size(11.).color(rgb(SUB)).child(label))
+}
+
+#[derive(PartialEq)]
+struct SettingsPage;
+
+impl Component for SettingsPage {
+    fn render(&self) -> impl IntoElement {
+        let mut model = use_model();
+        let mut client_id = use_state(|| model.peek().web_client_id.clone());
+        let mut eq_dirty = use_state(|| false);
+        let m = model.read();
+        let choices = |labels: &[&'static str], active: i32, pick: fn(i32)| {
+            rect().horizontal().spacing(GAP).children(labels.iter().enumerate().map(move |(i, label)| {
+                Chip { label, active: i as i32 == active, on_press: EventHandler::new(move |_| pick(i as i32)) }.into_element()
+            }))
+        };
+        // EQ changes apply at once and are saved on release.
+        let set_eq = move |f: &dyn Fn(&mut EqState)| {
+            // Copies of the handles, so this stays a plain `Fn` the sliders can share.
+            let (mut model, mut eq_dirty) = (model, eq_dirty);
+            let mut m = model.write();
+            f(&mut m.eq);
+            crate::eq::set(m.eq);
+            eq_dirty.set(true);
+        };
+        let eq = m.eq;
+        let bands = (0..EQ_BANDS.len()).map(|i| eq_slider(EQ_BANDS[i], eq.bands[i], move |db| set_eq(&|e: &mut EqState| e.bands[i] = db)).into_element());
+        let presets = EQ_PRESETS.iter().map(|(name, bands)| {
+            let bands = *bands;
+            Chip {
+                label: name,
+                active: eq.bands.iter().zip(bands).all(|(a, b)| (a - b * crate::eq::MAX_DB).abs() < 0.05),
+                on_press: EventHandler::new(move |_| {
+                    let mut m = model.write();
+                    m.eq.bands = bands.map(|b| b * crate::eq::MAX_DB);
+                    crate::eq::set(m.eq);
+                    send(Command::Eq(m.eq));
+                }),
+            }
+            .into_element()
+        });
+        let sleep_minutes = m.sleep_minutes;
+        ScrollView::new().child(
+            rect()
+                .width(Size::fill())
+                .padding((8., 32., 32., 32.))
+                .spacing(12.)
+                .on_global_pointer_up(move |_| {
+                    if eq_dirty() {
+                        eq_dirty.set(false);
+                        send(Command::Eq(model.peek().eq));
+                    }
+                })
+                .child(heading("Settings", 32.))
+                .child(section("Audio quality"))
+                .child(setting_row("Streaming quality", "", choices(&QUALITIES, m.quality, |i| {
+                    send(Command::Quality(Quality::from_ui(i as i64)));
+                })))
+                .child(setting_row(
+                    "Normalize volume",
+                    "Set the same volume level for all songs and podcasts",
+                    Switch::new().toggled(m.normalize).on_toggle(move |_| {
+                        let on = !model.peek().normalize;
+                        model.write().normalize = on;
+                        send(Command::Normalize(on));
+                    }),
+                ))
+                .child(section("Playback"))
+                .child(setting_row(
+                    "Equalizer",
+                    "Winamp's 10 bands, ±12 dB",
+                    Switch::new().toggled(eq.on).on_toggle(move |_| {
+                        let mut m = model.write();
+                        m.eq.on = !m.eq.on;
+                        crate::eq::set(m.eq);
+                        send(Command::Eq(m.eq));
+                    }),
+                ))
+                .child(rect().horizontal().spacing(GAP).children(presets))
+                .child(
+                    rect()
+                        .horizontal()
+                        .padding((8., 0.))
+                        .spacing(4.)
+                        .child(eq_slider("Preamp", eq.preamp, move |db| set_eq(&|e: &mut EqState| e.preamp = db)))
+                        .child(rect().width(Size::px(16.)))
+                        .children(bands),
+                )
+                .child(setting_row("Sleep timer", "Pauses playback after the chosen time", {
+                    rect().horizontal().spacing(GAP).children(SLEEP_CHOICES.iter().map(move |(label, minutes)| {
+                        let minutes = *minutes;
+                        Chip {
+                            label,
+                            active: sleep_minutes == minutes,
+                            on_press: EventHandler::new(move |_| {
+                                model.write().sleep_minutes = minutes;
+                                send(Command::SleepTimer(minutes));
+                            }),
+                        }
+                        .into_element()
+                    }))
+                }))
+                .child(section("Spotify API"))
+                .child(setting_row(
+                    "Low API usage",
+                    "Fewer Spotify requests, for apps near their quota. When on: the library loads from a cache up to 6 hours old, liked marks are asked once per run, Home reuses Recently played for 60 s and checks new releases once a day. Changes made in other Spotify apps show up later; the refresh button reloads everything.",
+                    Switch::new().toggled(m.low_api).on_toggle(move |_| {
+                        let on = !model.peek().low_api;
+                        model.write().low_api = on;
+                        send(Command::LowApi(on));
+                    }),
+                ))
+                .child(setting_row(
+                    "Your own Spotify app",
+                    "Client ID from developer.spotify.com (redirect URI http://127.0.0.1:8989/login). Empty uses the shared app.",
+                    rect()
+                        .horizontal()
+                        .spacing(GAP)
+                        .cross_align(Alignment::Center)
+                        .child(Input::new(client_id).placeholder("Client ID").width(Size::px(300.)))
+                        .child(Chip { label: "Save", active: false, on_press: EventHandler::new(move |_| send(Command::WebClientId(client_id.read().trim().to_string()))) }),
+                ))
+                .maybe_child((!m.update_version.is_empty()).then(|| {
+                    rect().spacing(12.).child(section("Updates")).child(setting_row(&format!("Version {} is available", m.update_version), "Downloads, verifies the signature and restarts SlimSpot.", Chip {
+                        label: "Update now",
+                        active: true,
+                        on_press: EventHandler::new(|_| {
+                            if let Some(tx) = UPDATE_CLICKS.get() {
+                                let _ = tx.send(());
+                            }
+                        }),
+                    }))
+                })),
+        )
+    }
+}
+
+/// Lyrics in place of the track list: the sung line is highlighted and kept in the middle;
+/// clicking a synced line seeks there.
+#[derive(PartialEq)]
+struct LyricsView;
+
+impl Component for LyricsView {
+    fn render(&self) -> impl IntoElement {
+        let model = use_model();
+        let mut tick = use_state(|| 0u64);
+        use_future(move || async move {
+            loop {
+                tokio::time::sleep(POSITION_TICK).await;
+                *tick.write() += 1;
+            }
+        });
+        let _ = tick();
+        let mut scroll = use_scroll_controller(ScrollConfig::default);
+        let mut followed = use_state(|| None::<usize>);
+        let m = model.read();
+        let sung = crate::lyrics::current_line(&m.lyric_times, m.position());
+        // ponytail: always follows the sung line; Slint's "stop following after a manual scroll" + Follow chip comes later.
+        if sung != followed() {
+            followed.set(sung);
+            if let Some(i) = sung {
+                scroll.scroll_to_y(-((i as f32 * LYRIC_LINE_H) as i32));
+            }
+        }
+        let synced = !m.lyric_times.is_empty();
+        let lines = m.lyric_lines.iter().enumerate().map(|(i, line)| {
+            let start = m.lyric_times.get(i).copied();
+            let color = match sung {
+                Some(s) if s == i => TEXT,
+                Some(s) if i < s => (110, 110, 118),
+                _ => SUB,
+            };
+            rect()
+                .width(Size::fill())
+                .height(Size::px(LYRIC_LINE_H))
+                .main_align(Alignment::Center)
+                .on_press(move |_| {
+                    if let Some(ms) = start {
+                        send(Command::Seek(ms));
+                    }
+                })
+                .child(one_line(if line.is_empty() { "♪".to_string() } else { line.clone() }, 26., color).font_weight(FontWeight::BOLD))
+                .into_element()
+        });
+        let note_text = if m.lyrics_note.is_empty() { "Lyrics load when a song starts playing".to_string() } else { m.lyrics_note.clone() };
+        let note = m.lyric_lines.is_empty().then(|| rect().padding(32.).child(one_line(note_text, 18., SUB)));
+        rect()
+            .width(Size::fill())
+            .height(Size::fill())
+            .background(LinearGradient::new().angle(180.).stop(((52, 40, 80), 0.)).stop((SURFACE, 100.)))
+            .maybe_child(note)
+            .child(
+                ScrollView::new_controlled(scroll).child(
+                    rect()
+                        .width(Size::fill())
+                        .padding((LYRICS_TOP, 40., 400., 40.))
+                        .children(lines)
+                        .maybe_child((!synced && !m.lyric_lines.is_empty()).then(|| one_line("These lyrics aren't synced", 12., SUB))),
+                ),
+            )
     }
 }
 
@@ -1315,6 +1652,7 @@ impl Component for PlayerBar {
             .spacing(4.)
             .main_align(Alignment::End)
             .cross_align(Alignment::Center)
+            .child(IconButton { path: I_LYRICS, size: 18., active: m.show_lyrics, filled: false, on_press: Some(toggle_lyrics) })
             .child(icon(I_VOLUME, 18., SUB, false))
             .child(
                 rect()
@@ -1396,7 +1734,13 @@ fn on_key(e: &KeyboardEventData, model: State<Model>, search: AccessibilityId) {
     let seek = |delta: i64| send(Command::Seek((position + delta).clamp(0, duration) as u32));
     let volume = |v: f32| send(Command::Volume { percent: v.clamp(0., 100.), save: true });
     match &e.key {
-        Key::Named(NamedKey::Escape) => search.request_unfocus(),
+        Key::Named(NamedKey::Escape) => {
+            search.request_unfocus();
+            let mut model = model;
+            let mut m = model.write();
+            m.show_settings = false;
+            m.show_lyrics = false;
+        }
         Key::Named(NamedKey::ArrowRight) if ctrl => send(Command::Next),
         Key::Named(NamedKey::ArrowLeft) if ctrl => send(Command::Prev),
         Key::Named(NamedKey::ArrowUp) if ctrl => volume(current + VOLUME_STEP),
@@ -1411,6 +1755,8 @@ fn on_key(e: &KeyboardEventData, model: State<Model>, search: AccessibilityId) {
             "r" => send(Command::CycleRepeat),
             "h" => send(Command::Home),
             "f" | "l" => search.request_focus(),
+            "," => toggle_settings(),
+            "y" => toggle_lyrics(),
             _ => {}
         },
         Key::Character(c) if !typing && !alt => match c.as_str() {
@@ -1436,6 +1782,7 @@ fn app() -> impl IntoElement {
         SearchBox(id)
     });
     let mut model = use_provide_context(|| State::create(Model { volume: 100., ..Default::default() }));
+    MODEL.set(Some(model));
     use_future(move || async move {
         let Some(mut rx) = UPDATES.lock().unwrap().take() else { return };
         while let Some(update) = rx.recv().await {
@@ -1447,9 +1794,16 @@ fn app() -> impl IntoElement {
             }
         }
     });
-    let (page_gen, home) = {
+    let (page_gen, home, show_settings, show_lyrics) = {
         let m = model.read();
-        (m.page_gen, m.page_kind == "Home")
+        (m.page_gen, m.page_kind == "Home", m.show_settings, m.show_lyrics)
+    };
+    let main: Element = if show_settings {
+        SettingsPage.into_element()
+    } else if show_lyrics {
+        LyricsView.into_element()
+    } else {
+        MainPanel { page_gen, home }.into_element()
     };
     rect()
         .width(Size::fill())
@@ -1474,7 +1828,7 @@ fn app() -> impl IntoElement {
                         .overflow(Overflow::Clip)
                         .background(rgb(SURFACE))
                         .child(TopBar)
-                        .child(MainPanel { page_gen, home }),
+                        .child(main),
                 ),
         )
         .child(PlayerBar)

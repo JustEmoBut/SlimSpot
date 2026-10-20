@@ -44,13 +44,13 @@ fn main() {
     }
     let (tx, rx) = mpsc::unbounded_channel();
     let (cover_tx, cover_rx) = mpsc::unbounded_channel();
-    // "Update to vX" clicks; the chip returns with the settings screen.
-    let (_update_tx, update_rx) = mpsc::unbounded_channel();
+    // "Update to vX" clicks, served by the update task.
+    let (update_tx, update_rx) = mpsc::unbounded_channel();
     let backend_tx = tx.clone();
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let backend = rt.handle().clone();
     std::thread::spawn(move || backend.block_on(player::run(ui, backend_tx, rx, cover_rx, update_rx)));
     // The UI thread uses tokio timers too (Freya's own executor polls them).
     let _rt = rt.enter();
-    ui::run(tx, cover_tx);
+    ui::run(tx, cover_tx, update_tx);
 }
