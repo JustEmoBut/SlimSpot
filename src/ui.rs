@@ -324,6 +324,8 @@ const MINI_HEIGHT: f64 = 96.;
 // Share of the cover's average color kept for the page tint, so white text stays readable.
 const TINT_BRIGHTNESS: f32 = 0.45;
 const DEFAULT_TINT: (u8, u8, u8) = (88, 64, 128);
+// Playing-row equalizer bars: a few steps a second keep the software renderer's CPU low.
+const EQ_BARS_TICK: Duration = Duration::from_millis(300);
 const SHORTCUTS: [(&str, &str); 22] = [
     ("Space", "Play / pause"),
     ("Ctrl+Right / Left", "Next / previous"),
@@ -406,6 +408,8 @@ const I_PLUS: &str = "M12 5 V19 M5 12 H19";
 const I_REFRESH: &str = "M19.5 12 A7.5 7.5 0 1 1 17 6.4 M17.5 2.5 V6.8 H13.2";
 const I_MINI: &str = "M4 6 H20 V18 H4 Z M11 12 H18 V16 H11 Z";
 const I_DEVICES: &str = "M3 5 H14 V15 H3 Z M6 19 H11 M8.5 15 V19 M17 7 H21 V19 H17 Z";
+const I_CHECK: &str = "M6.5 12.5 L10.5 16.5 L17.5 8.5";
+const I_FULLSCREEN: &str = "M4 9 V4 H9 M15 4 H20 V9 M20 15 V20 H15 M9 20 H4 V15";
 const I_CLOCK: &str = "M12 3.5 C16.7 3.5 20.5 7.3 20.5 12 C20.5 16.7 16.7 20.5 12 20.5 C7.3 20.5 3.5 16.7 3.5 12 C3.5 7.3 7.3 3.5 12 3.5 Z M12 7.5 V12 L15 14";
 
 // ---- State ----
@@ -506,6 +510,10 @@ struct Model {
     reveal: Option<usize>,
     /// The now-playing cover's average color, dimmed: the page header tint.
     tint: (u8, u8, u8),
+    /// The open album/artist/podcast is in the library (header button).
+    page_saved: bool,
+    /// Full-screen lyrics: the window goes full screen with only lyrics and the player bar.
+    lyrics_full: bool,
 }
 
 impl Model {
@@ -575,6 +583,12 @@ impl Model {
                     // Any page change closes the settings and lyrics and resets find, like the Slint version.
                     self.show_settings = false;
                     self.show_lyrics = false;
+                    if self.lyrics_full {
+                        self.lyrics_full = false;
+                        if let Some(id) = MAIN_WINDOW.get().copied() {
+                            Platform::get().with_window(id, |w| w.set_fullscreen(None));
+                        }
+                    }
                     self.find_open = false;
                     self.page_filter.clear();
                     self.page_sort = 0;
@@ -596,6 +610,7 @@ impl Model {
                 self.search_tab = p.search_tab;
                 self.about = p.about;
                 self.editable = p.editable;
+                self.page_saved = p.saved;
                 self.liked_checked = p.liked_upto.max(0) as usize;
                 self.liked_asked = self.liked_checked;
             }
@@ -671,9 +686,9 @@ impl Model {
             UiUpdate::InvokeQuit => quit(),
             UiUpdate::QuitEventLoop => std::process::exit(0),
             // ponytail: lyrics, credits, settings, queue, page tabs and the update chip come with their screens (phase 2).
-            UiUpdate::PageSaved(_)
-            | UiUpdate::ScrollTop
- => {}
+            UiUpdate::PageSaved(saved) => self.page_saved = saved,
+            // Pages remount per page and start at the top already.
+            UiUpdate::ScrollTop => {}
         }
     }
 }
@@ -1126,6 +1141,8 @@ impl Component for TrackRow {
         let (uri, current) = (self.item.uri.clone(), self.current);
         let marker = if hovered() {
             icon(if current && self.playing { I_PAUSE } else { I_PLAY }, 14., TEXT, true).into_element()
+        } else if current && self.playing {
+            EqBars.into_element()
         } else if current {
             icon(I_VOLUME, 16., ACCENT, false).into_element()
         } else if self.numbered {
@@ -1216,6 +1233,31 @@ impl Component for TrackRow {
 
     fn render_key(&self) -> DiffKey {
         DiffKey::from(&self.index)
+    }
+}
+
+/// Three bars that bounce while the row's song plays.
+#[derive(PartialEq)]
+struct EqBars;
+
+impl Component for EqBars {
+    fn render(&self) -> impl IntoElement {
+        let mut step = use_state(|| 0usize);
+        use_future(move || async move {
+            loop {
+                tokio::time::sleep(EQ_BARS_TICK).await;
+                *step.write() += 1;
+            }
+        });
+        // Fixed height patterns per bar, out of phase, so it reads as music rather than a loop.
+        const HEIGHTS: [[f32; 4]; 3] = [[6., 14., 9., 12.], [12., 5., 14., 8.], [9., 12., 5., 14.]];
+        let i = step();
+        rect()
+            .horizontal()
+            .height(Size::px(14.))
+            .spacing(2.)
+            .cross_align(Alignment::End)
+            .children(HEIGHTS.iter().map(|h| rect().width(Size::px(3.)).height(Size::px(h[i % 4])).corner_radius(1.).background(rgb(ACCENT)).into_element()))
     }
 }
 
@@ -1545,7 +1587,30 @@ fn change_cover() {
     });
 }
 
+/// Full-screen lyrics on or off; leaving lyrics also leaves full screen.
+fn set_lyrics_full(on: bool) {
+    let Some(mut model) = MODEL.get() else { return };
+    {
+        let mut m = model.write();
+        if m.lyrics_full == on {
+            return;
+        }
+        m.lyrics_full = on;
+        if on {
+            m.show_lyrics = true;
+            m.show_settings = false;
+        }
+    }
+    if let Some(id) = MAIN_WINDOW.get().copied() {
+        Platform::get().with_window(id, move |w| w.set_fullscreen(on.then_some(freya::winit::window::Fullscreen::Borderless(None))));
+    }
+}
+
 fn toggle_lyrics() {
+    let leaving = MODEL.get().is_some_and(|m| m.peek().show_lyrics);
+    if leaving {
+        set_lyrics_full(false);
+    }
     if let Some(mut model) = MODEL.get() {
         let mut m = model.write();
         m.show_lyrics = !m.show_lyrics;
@@ -1639,6 +1704,43 @@ impl Component for ListPage {
             .background(LinearGradient::new().angle(180.).stop((mix(m.tint, SURFACE, 0.55), 0.)).stop((SURFACE, 100.)))
             .maybe_child(m.playable.then(|| PlayFab { size: 56., playing: m.playing && !m.current_list.is_empty() && m.current_list == m.page_uri }))
             .child(IconButton { path: I_SHUFFLE, size: 26., active: m.shuffle, filled: false, on_press: Some(|| send(Command::ToggleShuffle)) })
+            .maybe_child((m.page_kind == "Artist").then(|| {
+                // Like Spotify: an outlined "Follow" pill on artists.
+                let (uri, saved) = (m.page_uri.clone(), m.page_saved);
+                rect()
+                    .padding((6., 16.))
+                    .corner_radius(99.)
+                    .border(Border::new().fill(rgb(if saved { SUB } else { TEXT })).width(1.).alignment(BorderAlignment::Inner))
+                    .font_size(13.)
+                    .font_weight(FontWeight::SEMI_BOLD)
+                    .on_press(move |_| send(Command::RowAction { action: (if saved { "unfollow" } else { "save" }).into(), uri: uri.clone() }))
+                    .child(if saved { "Following" } else { "Follow" })
+            }))
+            .maybe_child(matches!(m.page_kind, "Album" | "Podcast").then(|| {
+                // ...and a round +/check on albums and podcasts.
+                let (uri, saved) = (m.page_uri.clone(), m.page_saved);
+                rect()
+                    .width(Size::px(32.))
+                    .height(Size::px(32.))
+                    .corner_radius(16.)
+                    .center()
+                    .background(rgb(if saved { ACCENT } else { SURFACE }))
+                    .border((!saved).then(|| Border::new().fill(rgb(SUB)).width(1.5).alignment(BorderAlignment::Inner)))
+                    .on_press(move |_| send(Command::RowAction { action: (if saved { "unfollow" } else { "save" }).into(), uri: uri.clone() }))
+                    .child(icon(if saved { I_CHECK } else { I_PLUS }, 18., if saved { ON_ACCENT } else { TEXT }, false))
+            }))
+            .maybe_child(["spotify:playlist:", "spotify:album:", "spotify:artist:"].iter().any(|p| m.page_uri.starts_with(p)).then(|| {
+                let uri = m.page_uri.clone();
+                rect()
+                    .padding(6.)
+                    .on_press(move |_| send(Command::RowAction { action: "radio".into(), uri: uri.clone() }))
+                    .child(icon(I_RADIO, 24., SUB, false))
+            }))
+            .maybe_child((m.page_kind == "Album").then(|| {
+                let uri = m.page_uri.clone();
+                Chip { label: "More by this artist", active: false, on_press: EventHandler::new(move |_| send(Command::RowAction { action: "more-by".into(), uri: uri.clone() })) }
+            }))
+            .maybe_child((m.page_kind == "Radio").then(|| Chip { label: "Save as playlist", active: false, on_press: EventHandler::new(|_| send(Command::SaveRadio)) }))
             .maybe_child(m.editable.then(|| IconButton { path: I_PENCIL, size: 24., active: false, filled: false, on_press: Some(|| open_playlist_popup(false)) }))
             .maybe_child(m.editable.then(|| IconButton { path: I_PLUS, size: 24., active: false, filled: false, on_press: Some(open_add_popup) }));
         // Find in page (Ctrl+F): filter and sort run in the backend on the page's rows (no request).
@@ -1984,15 +2086,40 @@ impl Component for LyricsView {
         let _ = tick();
         let mut scroll = use_scroll_controller(ScrollConfig::default);
         let mut followed = use_state(|| None::<usize>);
+        // Follows the sung line until the user scrolls; "Follow" turns it back on (Spotifast's).
+        let mut following = use_state(|| true);
+        let mut auto_y = use_state(|| 0i32);
         let m = model.read();
         let sung = crate::lyrics::current_line(&m.lyric_times, m.position());
-        // ponytail: always follows the sung line; Slint's "stop following after a manual scroll" + Follow chip comes later.
-        if sung != followed() {
-            followed.set(sung);
-            if let Some(i) = sung {
-                scroll.scroll_to_y(-((i as f32 * LYRIC_LINE_H) as i32));
-            }
+        let (_, y): (i32, i32) = scroll.into();
+        if following() && y != auto_y() && followed().is_some() {
+            following.set(false);
         }
+        if following() && (sung != followed() || y != auto_y()) {
+            followed.set(sung);
+            let target = sung.map_or(0, |i| -((i as f32 * LYRIC_LINE_H) as i32));
+            scroll.scroll_to_y(target);
+            let (_, now): (i32, i32) = scroll.into();
+            auto_y.set(now);
+        }
+        let follow_chip = (!following()).then(|| {
+            Chip {
+                label: "Follow",
+                active: true,
+                on_press: EventHandler::new(move |_| {
+                    following.set(true);
+                    followed.set(None);
+                }),
+            }
+        });
+        let full = m.lyrics_full;
+        let controls = rect()
+            .position(Position::new_absolute().top(16.).right(24.))
+            .horizontal()
+            .spacing(GAP)
+            .cross_align(Alignment::Center)
+            .maybe_child(follow_chip)
+            .child(Chip { label: if full { "Exit full screen" } else { "Full screen" }, active: false, on_press: EventHandler::new(move |_| set_lyrics_full(!full)) });
         let synced = !m.lyric_times.is_empty();
         let lines = m.lyric_lines.iter().enumerate().map(|(i, line)| {
             let start = m.lyric_times.get(i).copied();
@@ -2029,6 +2156,8 @@ impl Component for LyricsView {
                         .maybe_child((!synced && !m.lyric_lines.is_empty()).then(|| one_line("These lyrics aren't synced", 12., SUB))),
                 ),
             )
+            // After the lyrics, so the chips sit on top and take their own clicks.
+            .child(controls)
     }
 }
 
@@ -2249,6 +2378,7 @@ fn on_key(e: &KeyboardEventData, model: State<Model>, search: AccessibilityId) {
     match &e.key {
         Key::Named(NamedKey::Escape) => {
             search.request_unfocus();
+            set_lyrics_full(false);
             let mut model = model;
             let mut m = model.write();
             m.show_settings = false;
@@ -2373,9 +2503,9 @@ fn app() -> impl IntoElement {
             }
         }
     });
-    let (page_gen, home, show_settings, show_lyrics, side_tab, playlist_popup, add_popup, devices_open, shortcuts_open, mini) = {
+    let (page_gen, home, show_settings, show_lyrics, side_tab, playlist_popup, add_popup, devices_open, shortcuts_open, mini, lyrics_full) = {
         let m = model.read();
-        (m.page_gen, m.page_kind == "Home", m.show_settings, m.show_lyrics, m.side_tab, m.playlist_popup, m.add_popup, m.devices_open, m.shortcuts_open, m.mini)
+        (m.page_gen, m.page_kind == "Home", m.show_settings, m.show_lyrics, m.side_tab, m.playlist_popup, m.add_popup, m.devices_open, m.shortcuts_open, m.mini, m.lyrics_full)
     };
     let main: Element = if show_settings {
         SettingsPage.into_element()
@@ -2399,7 +2529,7 @@ fn app() -> impl IntoElement {
                 .padding((GAP, GAP, 0., GAP))
                 .spacing(GAP)
                 .content(Content::Flex)
-                .child(Sidebar)
+                .maybe_child((!lyrics_full).then_some(Sidebar))
                 .child(
                     rect()
                         .width(Size::flex(1.))
@@ -2410,7 +2540,7 @@ fn app() -> impl IntoElement {
                         .child(TopBar)
                         .child(main),
                 )
-                .maybe_child(side_tab.map(|tab| SidePanel { tab }))
+                .maybe_child(side_tab.filter(|_| !lyrics_full).map(|tab| SidePanel { tab }))
         }))
         .child(PlayerBar)
         .child(CreditsPopup)
