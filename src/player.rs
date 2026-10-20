@@ -75,12 +75,8 @@ pub enum Command {
     CycleRepeat,
     Quality(Quality),
     Normalize(bool),
-    /// Settings → Theme: remember the palette.
-    Theme(i32),
     /// Settings → Spotify app: the user's own Web API Client ID ("" = shared default).
     WebClientId(String),
-    /// Settings → GPU renderer; applies on the next start.
-    Gpu(bool),
     /// Settings -> "Low API usage".
     LowApi(bool),
     /// Settings -> "Compact track list".
@@ -841,8 +837,7 @@ fn find_item<'a>(nav: &'a History<Page>, library: &'a [Item], now: Option<&'a It
 
 fn push_settings(ui: &Ui, s: &Settings) {
     let (volume, shuffle, repeat, quality, normalize) = (s.volume, s.shuffle, s.repeat.as_ui(), s.quality.as_ui(), s.normalize);
-    let theme = s.theme;
-    ui.send(UiUpdate::Settings { volume, shuffle, repeat, quality, normalize, theme });
+    ui.send(UiUpdate::Settings { volume, shuffle, repeat, quality, normalize });
 }
 
 fn save_settings(ui: &Ui, s: &Settings) {
@@ -898,8 +893,8 @@ pub async fn run(
     crate::eq::set(settings.eq);
     push_settings(&ui, &settings);
     // Once only: later settings pushes (Spotify volume/shuffle events) mustn't move EQ sliders mid-drag.
-    let (gpu, eq, low_api, compact) = (settings.gpu, settings.eq, settings.low_api, settings.compact);
-    ui.send(UiUpdate::StartupSettings { gpu, low_api, compact, eq });
+    let (eq, low_api, compact) = (settings.eq, settings.low_api, settings.compact);
+    ui.send(UiUpdate::StartupSettings { low_api, compact, eq });
 
     set_status(&ui, "Connecting...");
     let (ended_tx, mut ended_rx) = mpsc::unbounded_channel();
@@ -1897,10 +1892,6 @@ pub async fn run(
                     }
                     set_status(&ui, "Client ID saved. Restart SlimSpot to sign in with it (the browser asks once).");
                 }
-                Command::Theme(palette) => {
-                    settings.theme = palette;
-                    save_settings(&ui, &settings);
-                }
                 Command::Status(text) => set_status(&ui, text),
                 Command::AddUris { list, uris } => {
                     let Some(w) = web.as_mut() else { continue };
@@ -2026,11 +2017,6 @@ pub async fn run(
                         page.liked_upto = 0;
                         mark_liked(&ui, w, &session, &mut nav).await;
                     }
-                }
-                Command::Gpu(on) => {
-                    settings.gpu = on;
-                    save_settings(&ui, &settings);
-                    set_status(&ui, "Renderer saved. Restart SlimSpot to switch.");
                 }
                 Command::Eq(state) => {
                     crate::eq::set(state);

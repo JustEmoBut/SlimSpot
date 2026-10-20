@@ -62,8 +62,8 @@ pub enum UiUpdate {
     Reveal(usize),
     LikedChecked(usize),
     ResetLibraryChips,
-    Settings { volume: f32, shuffle: bool, repeat: i32, quality: i32, normalize: bool, theme: i32 },
-    StartupSettings { gpu: bool, low_api: bool, compact: bool, eq: crate::eq::EqState },
+    Settings { volume: f32, shuffle: bool, repeat: i32, quality: i32, normalize: bool },
+    StartupSettings { low_api: bool, compact: bool, eq: crate::eq::EqState },
     Now { item: Item, duration: f32, position: Option<f32> },
     NowTintDefault,
     NowAbout(String),
@@ -410,7 +410,6 @@ const I_REFRESH: &str = "M19.5 12 A7.5 7.5 0 1 1 17 6.4 M17.5 2.5 V6.8 H13.2";
 const I_MINI: &str = "M4 6 H20 V18 H4 Z M11 12 H18 V16 H11 Z";
 const I_DEVICES: &str = "M3 5 H14 V15 H3 Z M6 19 H11 M8.5 15 V19 M17 7 H21 V19 H17 Z";
 const I_CHECK: &str = "M6.5 12.5 L10.5 16.5 L17.5 8.5";
-const I_FULLSCREEN: &str = "M4 9 V4 H9 M15 4 H20 V9 M20 15 V20 H15 M9 20 H4 V15";
 const I_CLOCK: &str = "M12 3.5 C16.7 3.5 20.5 7.3 20.5 12 C20.5 16.7 16.7 20.5 12 20.5 C7.3 20.5 3.5 16.7 3.5 12 C3.5 7.3 7.3 3.5 12 3.5 Z M12 7.5 V12 L15 14";
 
 // ---- State ----
@@ -620,14 +619,14 @@ impl Model {
             UiUpdate::LikedChecked(rows) => self.liked_checked = rows,
             UiUpdate::PageInfo(info) => self.page_info = info,
             UiUpdate::PageCover(url) => self.page_cover = url,
-            UiUpdate::Settings { volume, shuffle, repeat, quality, normalize, .. } => {
+            UiUpdate::Settings { volume, shuffle, repeat, quality, normalize } => {
                 self.volume = volume;
                 self.shuffle = shuffle;
                 self.repeat = repeat;
                 self.quality = quality;
                 self.normalize = normalize;
             }
-            UiUpdate::StartupSettings { low_api, eq, compact, .. } => {
+            UiUpdate::StartupSettings { low_api, eq, compact } => {
                 self.low_api = low_api;
                 self.eq = eq;
                 self.compact = compact;
@@ -802,13 +801,22 @@ fn use_model() -> State<Model> {
 
 // ---- Components ----
 
-#[derive(PartialEq)]
 struct IconButton {
     path: &'static str,
     size: f32,
     active: bool,
     filled: bool,
     on_press: Option<fn()>,
+}
+
+impl PartialEq for IconButton {
+    fn eq(&self, other: &Self) -> bool {
+        let same_press = match (self.on_press, other.on_press) {
+            (Some(a), Some(b)) => std::ptr::fn_addr_eq(a, b),
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        (self.path, self.size, self.active, self.filled) == (other.path, other.size, other.active, other.filled) && same_press
+    }
 }
 
 impl Component for IconButton {
@@ -912,12 +920,17 @@ fn leak(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
 }
 
-#[derive(PartialEq)]
 struct NavItem {
     path: &'static str,
     label: &'static str,
     active: bool,
     on_press: fn(),
+}
+
+impl PartialEq for NavItem {
+    fn eq(&self, other: &Self) -> bool {
+        (self.path, self.label, self.active) == (other.path, other.label, other.active) && std::ptr::fn_addr_eq(self.on_press, other.on_press)
+    }
 }
 
 impl Component for NavItem {
@@ -1912,7 +1925,7 @@ struct SettingsPage;
 impl Component for SettingsPage {
     fn render(&self) -> impl IntoElement {
         let mut model = use_model();
-        let mut client_id = use_state(|| model.peek().web_client_id.clone());
+        let client_id = use_state(|| model.peek().web_client_id.clone());
         let mut eq_dirty = use_state(|| false);
         // The registry Run value is the source of truth.
         #[cfg(windows)]
@@ -2677,7 +2690,7 @@ struct PlaylistPopup {
 
 impl Component for PlaylistPopup {
     fn render(&self) -> impl IntoElement {
-        let mut model = use_model();
+        let model = use_model();
         let creating = self.creating;
         let name = use_state(|| {
             let m = model.peek();
