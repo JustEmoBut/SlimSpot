@@ -29,7 +29,7 @@ Spotify ToS concerns are accepted by the owner. The GitHub repo is **public** (o
 | `player.rs` | Backend tokio thread: login, Spotify Connect device (Spirc), command/event loop, reconnect. Talks to the UI only through `ui::Ui` |
 | `web.rs` | Spotify Web API (separate OAuth grant): search (all + per-type tabs, paged), queue (view, add), recently played, liked checks, playlists (create, edit name/description, cover upload, remove, add/remove/reorder tracks), Liked Songs, albums, artist release groups (paged), newest release, saved albums, followed artists, saved podcasts + episodes (paged), saved episodes ("Your Episodes"), like/unlike, devices, transfer |
 | `covers.rs` | Downloads cover images the UI asks for (instantiated rows only) and sends the encoded bytes; the UI keeps at most 300 and Freya decodes them at drawn size. Cover upload as 500 px JPEG |
-| `settings.rs` | `settings.json`: volume, shuffle, repeat, quality, normalize, last session, last-opened times of library entries, EQ, low API mode, compact list, Home's new release (per day). `theme` and `gpu` are still read and saved but unused since the Freya UI |
+| `settings.rs` | `settings.json`: volume, shuffle, repeat, quality, normalize, last session, last-opened times of library entries, EQ, low API mode, compact list, Home's new release (per day) |
 | `media_keys.rs` | Windows SystemMediaTransportControls (windows-only) |
 | `logger.rs` | File logger for warn/error, including librespot's |
 | `instance.rs` | Single instance via a named event; a second launch wakes the running window; title bar colors via DWM (windows-only) |
