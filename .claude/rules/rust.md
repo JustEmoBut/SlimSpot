@@ -17,6 +17,8 @@ paths:
 - `try_consume_root_context` doesn't find what `app` provided with `use_provide_context`; plain `fn()` handlers reach the model through the `MODEL` thread-local instead.
 - In a horizontal `rect`, `Size::fill()` is the whole parent width, not what's left: use `.content(Content::Flex)` on the parent and `Size::flex(1.)` on the growing child.
 - A later sibling draws on top and takes the clicks: overlay controls (absolute chips) go after the content they float over.
+- Reordering keyed children (`render_key`) can panic in the accessibility tree (`accessibility/tree.rs:426`, "Option::unwrap() on a None value"): the library sort crashed after a few clicks. Lists whose order changes in place stay unkeyed (`LibraryRow`).
+- `Input` stops presses inside it (focus handling), so a `.trailing()`/`.leading()` button never gets its press; put clickable extras next to the `Input`.
 - Pointer events carry no keyboard modifiers; read Ctrl/Shift with `GetKeyState` at click time.
 - `Slider` reacts to the mouse wheel: on scrolling pages set `.scroll_enabled(false)`, or scrolling past it changes values.
 - Hiding the window inside `with_on_close` doesn't stick; queue it with `Platform::get().with_window(id, ...)`. Freya shows the window right after the `with_window_handle` hook, so a start-hidden (`--tray`) hide is queued the same way.

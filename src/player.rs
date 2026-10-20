@@ -28,7 +28,7 @@ use tokio::sync::mpsc;
 use crate::covers;
 use crate::nav::History;
 use crate::settings::{self, LastSession, Quality, Repeat, Settings};
-use crate::ui::{Current, PageView, Rows, Ui, UiUpdate, clear_lyrics, set_liked_rows, set_current, set_lyrics, set_page_header, set_playing, set_position, set_rows, set_status};
+use crate::ui::{Current, PageView, Rows, Ui, UiUpdate, clear_lyrics, set_liked_rows, set_current, set_lyrics, set_page_header, set_playing, set_position, set_rows, set_status, set_summary};
 use crate::web::{Item, LIKED_SONGS, PAGE_LIMIT, SEARCH_LIMIT, SEARCH_TYPES, WebApi, YOUR_EPISODES};
 
 // Spotify desktop client id; same as librespot's internal KEYMASTER_CLIENT_ID.
@@ -81,6 +81,8 @@ pub enum Command {
     LowApi(bool),
     /// Settings -> "Compact track list".
     Compact(bool),
+    /// The sidebar edge was dragged; saved on release.
+    SidebarWidth(f32),
     /// Reloads the library and drops the Web API caches.
     Refresh,
     /// Songs (track URIs) to add to a playlist, or to save when it is Liked Songs; "" = the open
@@ -672,7 +674,7 @@ fn show_current(ui: &Ui, nav: &History<Page>, shown: &mut Option<Shown>) {
     set_current(ui, page.list.clone(), Current::List);
     set_rows(ui, page.rows.clone(), Rows::Tracks);
     set_page_header(ui, page.kind, page.title.clone(), nav.can_back(), nav.can_forward());
-    set_status(ui, page_summary(nav));
+    set_summary(ui, page_summary(nav));
     let editable = page.editable;
     // Spotify numbers the rows of track lists, not of mixed pages like an artist's or search.
     let numbered = matches!(page.kind, "Playlist" | "Album" | "Radio" | "Podcast");
@@ -766,7 +768,7 @@ fn reveal_track(ui: &Ui, nav: &History<Page>, uri: &str) {
     ui.send(UiUpdate::Reveal(index));
 }
 
-/// The resting status line: the page's size. Transient messages ("Loading...") fall back to it.
+/// The page header's size line ("50 songs, 2 hr 42 min").
 fn page_summary(nav: &History<Page>) -> String {
     let Some(page) = nav.current() else { return String::new() };
     let rows = page.rows.iter().filter(|r| r.uri != MORE_URI);
@@ -893,8 +895,8 @@ pub async fn run(
     crate::eq::set(settings.eq);
     push_settings(&ui, &settings);
     // Once only: later settings pushes (Spotify volume/shuffle events) mustn't move EQ sliders mid-drag.
-    let (eq, low_api, compact) = (settings.eq, settings.low_api, settings.compact);
-    ui.send(UiUpdate::StartupSettings { low_api, compact, eq });
+    let (eq, low_api, compact, sidebar_w) = (settings.eq, settings.low_api, settings.compact, settings.sidebar_w);
+    ui.send(UiUpdate::StartupSettings { low_api, compact, eq, sidebar_w });
 
     set_status(&ui, "Connecting...");
     let (ended_tx, mut ended_rx) = mpsc::unbounded_channel();
@@ -1024,7 +1026,7 @@ pub async fn run(
         set_rows(&ui, own_lists.clone(), Rows::Targets);
         set_rows(&ui, lists, Rows::Lists);
     }
-    set_status(&ui, format!("Logged in as {}. Visible in Spotify Connect as \"{DEVICE_NAME}\".", session.username()));
+    set_status(&ui, format!("Signed in. Visible in Spotify Connect as \"{DEVICE_NAME}\"."));
     if web.is_some() {
         let _ = tx.send(Command::Home);
     }
@@ -1158,7 +1160,7 @@ pub async fn run(
                                             page.rows.extend(more_rows.iter().cloned());
                                         }
                                         ui.send(UiUpdate::AppendTracks(more_rows));
-                                        set_status(&ui, page_summary(&nav));
+                                        set_summary(&ui, page_summary(&nav));
                                     }
                                     Err(e) => set_status(&ui, format!("Only the first songs loaded: {e}")),
                                 }
@@ -1498,7 +1500,7 @@ pub async fn run(
                             match track_credits(&session, &uri).await {
                                 Ok(lines) => {
                                     let (title, lines) = (item.title.clone(), if lines.is_empty() { "Spotify lists no credits for this song.".to_string() } else { lines });
-                                    set_status(&ui, page_summary(&nav));
+                                    set_summary(&ui, page_summary(&nav));
                                     ui.send(UiUpdate::Credits { title, text: lines });
                                 }
                                 Err(e) => set_status(&ui, e),
@@ -1980,6 +1982,10 @@ pub async fn run(
                     settings.compact = on;
                     save_settings(&ui, &settings);
                 }
+                Command::SidebarWidth(w) => {
+                    settings.sidebar_w = w;
+                    save_settings(&ui, &settings);
+                }
                 Command::LowApi(on) => {
                     settings.low_api = on;
                     save_settings(&ui, &settings);
@@ -2167,7 +2173,7 @@ pub async fn run(
                     _ => continue,
                 }
                 set_playing(&ui, playing);
-                set_status(&ui, page_summary(&nav));
+                set_summary(&ui, page_summary(&nav));
             },
             else => break,
         }

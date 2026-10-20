@@ -129,6 +129,8 @@ pub struct Settings {
     pub low_api: bool,
     /// Settings -> "Compact track list": one-line rows without covers.
     pub compact: bool,
+    /// Width of the left sidebar in px, dragged by its edge.
+    pub sidebar_w: f32,
     pub new_release: Option<Item>,
     path: PathBuf,
 }
@@ -157,6 +159,7 @@ impl Settings {
             new_release_day: json["new_release_day"].as_i64().unwrap_or(0),
             low_api: json["low_api"].as_bool().unwrap_or(false),
             compact: json["compact"].as_bool().unwrap_or(false),
+            sidebar_w: json["sidebar_w"].as_f64().map_or(crate::ui::SIDEBAR_W, |w| w as f32),
             new_release: Item::from_json(&json["new_release"]),
             path,
         }
@@ -176,6 +179,7 @@ impl Settings {
             "new_release_day": self.new_release_day,
             "low_api": self.low_api,
             "compact": self.compact,
+            "sidebar_w": self.sidebar_w,
             "new_release": self.new_release.as_ref().map(Item::to_json),
         });
         std::fs::write(&self.path, json.to_string()).map_err(|e| format!("Saving settings failed: {e}"))

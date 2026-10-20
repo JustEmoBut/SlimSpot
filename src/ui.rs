@@ -44,6 +44,8 @@ pub enum Current {
 /// backend doesn't depend on the UI toolkit.
 pub enum UiUpdate {
     Status(String),
+    /// The page header's size line ("50 songs, 2 hr 42 min").
+    Summary(String),
     Playing(bool),
     Position(u32),
     Rows(Rows, Vec<Item>),
@@ -63,7 +65,7 @@ pub enum UiUpdate {
     LikedChecked(usize),
     ResetLibraryChips,
     Settings { volume: f32, shuffle: bool, repeat: i32, quality: i32, normalize: bool },
-    StartupSettings { low_api: bool, compact: bool, eq: crate::eq::EqState },
+    StartupSettings { low_api: bool, compact: bool, eq: crate::eq::EqState, sidebar_w: f32 },
     Now { item: Item, duration: f32, position: Option<f32> },
     NowTintDefault,
     NowAbout(String),
@@ -112,6 +114,12 @@ pub fn set_liked_rows(ui: &Ui, uris: Vec<String>, liked: bool) {
 
 pub fn set_status(ui: &Ui, text: impl Into<String>) {
     ui.send(UiUpdate::Status(text.into()));
+}
+
+/// Sets the page's size line and clears any transient message.
+pub fn set_summary(ui: &Ui, text: String) {
+    ui.send(UiUpdate::Summary(text));
+    ui.send(UiUpdate::Status(String::new()));
 }
 
 pub fn set_playing(ui: &Ui, playing: bool) {
@@ -306,7 +314,25 @@ const RADIUS_PANEL: f32 = 12.;
 const RADIUS_COVER: f32 = 6.;
 const GAP: f32 = 8.;
 const PLAYER_H: f32 = 88.;
-const SIDEBAR_W: f32 = 300.;
+/// Default sidebar width, and the range its edge can be dragged in.
+pub const SIDEBAR_W: f32 = 300.;
+const SIDEBAR_MIN: f32 = 220.;
+const SIDEBAR_MAX: f32 = 480.;
+/// Page header cover size, and the title length past which the heading gets smaller.
+const HEADER_COVER: f32 = 160.;
+const HEADER_TITLE_LONG: usize = 24;
+/// Width of the find-in-page box in the action bar.
+const FIND_WIDTH: f32 = 220.;
+/// Collapsed sidebar: covers only (48 px cover + row and panel padding), like Spotify's.
+const SIDEBAR_COLLAPSED: f32 = 80.;
+/// Dragging the edge below this collapses the sidebar.
+const SIDEBAR_COLLAPSE_AT: f32 = 160.;
+/// How much more colorful than the plain average a cover tint is.
+const TINT_SATURATION: f32 = 1.6;
+/// A gray pixel's weight in the cover tint (a fully saturated one weighs 1 more).
+const TINT_GRAY_WEIGHT: f32 = 0.05;
+/// How long a status message stays on screen.
+const TOAST_SECS: u64 = 7;
 const SIDE_PANEL_W: f32 = 320.;
 const SIDE_TABS: [&str; 3] = ["Now playing", "Queue", "Recent"];
 // Right panel tab indexes.
@@ -401,7 +427,7 @@ const I_FORWARD: &str = "M9 5 L16 12 L9 19";
 const I_RADIO: &str = "M8.8 8.8 C7 10.6 7 13.4 8.8 15.2 M15.2 8.8 C17 10.6 17 13.4 15.2 15.2 M5.8 5.8 C2.4 9.2 2.4 14.8 5.8 18.2 M18.2 5.8 C21.6 9.2 21.6 14.8 18.2 18.2 M12 10.6 C12.8 10.6 13.4 11.2 13.4 12 C13.4 12.8 12.8 13.4 12 13.4 C11.2 13.4 10.6 12.8 10.6 12 C10.6 11.2 11.2 10.6 12 10.6 Z";
 const I_MORE: &str = "M5 10.5 H8 V13.5 H5 Z M10.5 10.5 H13.5 V13.5 H10.5 Z M16 10.5 H19 V13.5 H16 Z";
 const I_LYRICS: &str = "M9.5 3.5 H14.5 V11.5 C14.5 14 9.5 14 9.5 11.5 Z M6 11 C6 18 18 18 18 11 M12 16.5 V21 M8.5 21 H15.5";
-const I_SETTINGS: &str = "M12 9 C13.7 9 15 10.3 15 12 C15 13.7 13.7 15 12 15 C10.3 15 9 13.7 9 12 C9 10.3 10.3 9 12 9 Z M12 2.5 V5 M12 19 V21.5 M2.5 12 H5 M19 12 H21.5 M5.3 5.3 L7.1 7.1 M16.9 16.9 L18.7 18.7 M5.3 18.7 L7.1 16.9 M16.9 7.1 L18.7 5.3";
+const I_SETTINGS: &str = "M19.2 10.1 L21.9 10.3 L21.9 13.7 L19.2 13.9 L18.4 15.7 L20.2 17.8 L17.8 20.2 L15.7 18.4 L13.9 19.2 L13.7 21.9 L10.3 21.9 L10.1 19.2 L8.3 18.4 L6.2 20.2 L3.8 17.8 L5.6 15.7 L4.8 13.9 L2.1 13.7 L2.1 10.3 L4.8 10.1 L5.6 8.3 L3.8 6.2 L6.2 3.8 L8.3 5.6 L10.1 4.8 L10.3 2.1 L13.7 2.1 L13.9 4.8 L15.7 5.6 L17.8 3.8 L20.2 6.2 L18.4 8.3 Z M15 12 A3 3 0 1 1 9 12 A3 3 0 1 1 15 12 Z";
 const I_PANEL: &str = "M3.5 5 H20.5 V19 H3.5 Z M14.5 5 V19";
 const I_QUEUE: &str = "M4 6 H20 M4 11 H20 M4 16 H11 M15 14 V20 L20 17 Z";
 const I_PENCIL: &str = "M5 19 L6 14.5 L15.5 5 L19 8.5 L9.5 18 Z M13.5 7 L17 10.5";
@@ -411,6 +437,9 @@ const I_MINI: &str = "M4 6 H20 V18 H4 Z M11 12 H18 V16 H11 Z";
 const I_DEVICES: &str = "M3 5 H14 V15 H3 Z M6 19 H11 M8.5 15 V19 M17 7 H21 V19 H17 Z";
 const I_CHECK: &str = "M6.5 12.5 L10.5 16.5 L17.5 8.5";
 const I_CLOCK: &str = "M12 3.5 C16.7 3.5 20.5 7.3 20.5 12 C20.5 16.7 16.7 20.5 12 20.5 C7.3 20.5 3.5 16.7 3.5 12 C3.5 7.3 7.3 3.5 12 3.5 Z M12 7.5 V12 L15 14";
+const I_CLOSE: &str = "M6 6 L18 18 M18 6 L6 18";
+const I_EYE: &str = "M2 12 C5 6.5 8.5 5 12 5 C15.5 5 19 6.5 22 12 C19 17.5 15.5 19 12 19 C8.5 19 5 17.5 2 12 Z M15 12 A3 3 0 1 1 9 12 A3 3 0 1 1 15 12 Z";
+const I_EYE_OFF: &str = "M2 12 C5 6.5 8.5 5 12 5 C15.5 5 19 6.5 22 12 C19 17.5 15.5 19 12 19 C8.5 19 5 17.5 2 12 Z M15 12 A3 3 0 1 1 9 12 A3 3 0 1 1 15 12 Z M4 4 L20 20";
 
 // ---- State ----
 
@@ -419,6 +448,12 @@ const I_CLOCK: &str = "M12 3.5 C16.7 3.5 20.5 7.3 20.5 12 C20.5 16.7 16.7 20.5 1
 #[derive(Default)]
 struct Model {
     status: String,
+    /// When the shown status message goes away.
+    status_until: Option<std::time::Instant>,
+    summary: String,
+    sidebar_w: f32,
+    /// The expanded width to go back to after a collapse.
+    sidebar_open_w: f32,
     playing: bool,
     position_ms: u32,
     position_at: Option<Instant>,
@@ -510,6 +545,8 @@ struct Model {
     reveal: Option<usize>,
     /// The now-playing cover's average color, dimmed: the page header tint.
     tint: (u8, u8, u8),
+    /// The open page's cover color for its header (the now-playing tint until it is known).
+    page_tint: Option<(u8, u8, u8)>,
     /// The open album/artist/podcast is in the library (header button).
     page_saved: bool,
     /// Full-screen lyrics: the window goes full screen with only lyrics and the player bar.
@@ -542,7 +579,11 @@ impl Model {
 
     fn apply(&mut self, update: UiUpdate) {
         match update {
-            UiUpdate::Status(text) => self.status = text,
+            UiUpdate::Status(text) => {
+                self.status_until = (!text.is_empty()).then(|| std::time::Instant::now() + std::time::Duration::from_secs(TOAST_SECS));
+                self.status = text;
+            }
+            UiUpdate::Summary(text) => self.summary = text,
             UiUpdate::Playing(playing) => {
                 self.position_ms = self.position();
                 self.position_at = Some(Instant::now());
@@ -606,6 +647,7 @@ impl Model {
                 self.page_info = p.info;
                 self.page_uri = p.page_uri;
                 self.page_cover = p.cover;
+                self.page_tint = self.cover(&crate::covers::larger_cover(&self.page_cover)).and_then(|b| cover_tint(&b));
                 self.numbered = p.numbered;
                 self.playable = p.playable;
                 self.tabs = p.tabs;
@@ -618,7 +660,10 @@ impl Model {
             }
             UiUpdate::LikedChecked(rows) => self.liked_checked = rows,
             UiUpdate::PageInfo(info) => self.page_info = info,
-            UiUpdate::PageCover(url) => self.page_cover = url,
+            UiUpdate::PageCover(url) => {
+                self.page_cover = url;
+                self.page_tint = self.cover(&crate::covers::larger_cover(&self.page_cover)).and_then(|b| cover_tint(&b));
+            }
             UiUpdate::Settings { volume, shuffle, repeat, quality, normalize } => {
                 self.volume = volume;
                 self.shuffle = shuffle;
@@ -626,7 +671,11 @@ impl Model {
                 self.quality = quality;
                 self.normalize = normalize;
             }
-            UiUpdate::StartupSettings { low_api, eq, compact } => {
+            UiUpdate::StartupSettings { low_api, eq, compact, sidebar_w } => {
+                self.sidebar_w = if sidebar_w <= SIDEBAR_COLLAPSED { SIDEBAR_COLLAPSED } else { sidebar_w.clamp(SIDEBAR_MIN, SIDEBAR_MAX) };
+                if self.sidebar_w > SIDEBAR_COLLAPSED {
+                    self.sidebar_open_w = self.sidebar_w;
+                }
                 self.low_api = low_api;
                 self.eq = eq;
                 self.compact = compact;
@@ -670,6 +719,9 @@ impl Model {
             }
             UiUpdate::Credits { title, text } => self.credits = Some((title, text)),
             UiUpdate::Cover(url, bytes) => {
+                if crate::covers::larger_cover(&self.page_cover) == url {
+                    self.page_tint = cover_tint(&bytes);
+                }
                 if self.now.as_ref().is_some_and(|n| n.cover_url == url) {
                     if let Some(tint) = cover_tint(&bytes) {
                         self.tint = tint;
@@ -698,14 +750,21 @@ impl Model {
 /// The average color of a cover, dimmed so white text stays readable on it.
 fn cover_tint(encoded: &[u8]) -> Option<(u8, u8, u8)> {
     let img = image::load_from_memory(encoded).ok()?.to_rgb8();
-    let (mut sum, n) = ([0u64; 3], (img.width() * img.height()).max(1) as u64);
+    // Weighted by saturation, so a cover's colored parts count more than its grays and whites.
+    let (mut sum, mut weight) = ([0f32; 3], 0f32);
     for px in img.pixels() {
+        let (max, min) = (px[0].max(px[1]).max(px[2]) as f32, px[0].min(px[1]).min(px[2]) as f32);
+        let w = TINT_GRAY_WEIGHT + (max - min) / 255.;
         for c in 0..3 {
-            sum[c] += px[c] as u64;
+            sum[c] += px[c] as f32 * w;
         }
+        weight += w;
     }
-    let dim = |s: u64| ((s / n) as f32 * TINT_BRIGHTNESS) as u8;
-    Some((dim(sum[0]), dim(sum[1]), dim(sum[2])))
+    let avg = sum.map(|s| s / weight.max(f32::EPSILON));
+    let lum = (avg[0] + avg[1] + avg[2]) / 3.;
+    // Push the average away from gray first, so a cover's color shows instead of a muddy gray.
+    let tint = |c: f32| ((lum + (c - lum) * TINT_SATURATION).clamp(0., 255.) * TINT_BRIGHTNESS) as u8;
+    Some((tint(avg[0]), tint(avg[1]), tint(avg[2])))
 }
 
 /// Home's tiles in reading order: the backend fills a left and a right column.
@@ -960,6 +1019,8 @@ struct LibraryRow {
     cover: Option<Bytes>,
     /// An own playlist or Liked Songs: dropped songs are added (or saved) there.
     drop_target: bool,
+    /// Collapsed sidebar: the cover only.
+    collapsed: bool,
 }
 
 impl Component for LibraryRow {
@@ -984,13 +1045,13 @@ impl Component for LibraryRow {
                 move |_| ContextMenu::open_from_down(row_menu(&item, true, false, &[]))
             })
             .child(list_cover(&self.item, self.cover.clone(), 48., if round { 24. } else { RADIUS_COVER }))
-            .child(
+            .maybe_child((!self.collapsed).then(|| {
                 rect()
                     .width(Size::func(|p| Some(p.parent - 64.)))
                     .spacing(2.)
                     .child(one_line(self.item.title.clone(), 14., if self.selected { ACCENT } else { TEXT }))
-                    .child(one_line(self.item.artist.clone(), 12., SUB)),
-            );
+                    .child(one_line(self.item.artist.clone(), 12., SUB))
+            }));
         if !self.drop_target {
             return row.into_element();
         }
@@ -1004,10 +1065,6 @@ impl Component for LibraryRow {
         })
         .child(row)
         .into_element()
-    }
-
-    fn render_key(&self) -> DiffKey {
-        DiffKey::from(&self.item.uri)
     }
 }
 
@@ -1313,19 +1370,32 @@ impl Component for Sidebar {
         let filter = use_state(String::new);
         let m = model.read();
         let home = m.page_kind == "Home";
-        let nav = rect()
+        let collapsed = m.sidebar_w <= SIDEBAR_COLLAPSED;
+        let nav = if collapsed {
+            rect()
+                .width(Size::fill())
+                .padding(8.)
+                .spacing(4.)
+                .cross_align(Alignment::Center)
+                .corner_radius(RADIUS_PANEL)
+                .background(rgb(SURFACE))
+                .child(IconButton { path: I_HOME, size: 24., active: home, filled: false, on_press: Some(|| send(Command::Home)) })
+                .child(IconButton { path: I_SEARCH, size: 24., active: m.page_kind == "Search", filled: false, on_press: Some(focus_search) })
+        } else {
+            rect()
             .width(Size::fill())
             .padding(8.)
             .corner_radius(RADIUS_PANEL)
             .background(rgb(SURFACE))
             .child(NavItem { path: I_HOME, label: "Home", active: home, on_press: || send(Command::Home) })
-            .child(NavItem { path: I_SEARCH, label: "Search", active: m.page_kind == "Search", on_press: focus_search });
+            .child(NavItem { path: I_SEARCH, label: "Search", active: m.page_kind == "Search", on_press: focus_search })
+        };
         let rows: Vec<Element> = m
             .lists
             .iter()
             .map(|item| {
                 let drop_target = item.uri == crate::web::LIKED_SONGS || m.targets.iter().any(|t| t.uri == item.uri);
-                LibraryRow { item: item.clone(), selected: item.uri == m.current_list, cover: m.cover(&item.cover_url), drop_target }.into_element()
+                LibraryRow { item: item.clone(), selected: item.uri == m.current_list, cover: m.cover(&item.cover_url), drop_target, collapsed }.into_element()
             })
             .collect();
         let (kind, sort) = (m.library_kind, m.library_sort);
@@ -1369,9 +1439,23 @@ impl Component for Sidebar {
                     }
                 }),
             });
+        if collapsed {
+            let library = rect()
+                .width(Size::fill())
+                .height(Size::flex(1.))
+                .padding(8.)
+                .spacing(GAP)
+                .cross_align(Alignment::Center)
+                .corner_radius(RADIUS_PANEL)
+                .background(rgb(SURFACE))
+                .child(IconButton { path: I_LIBRARY, size: 24., active: false, filled: false, on_press: Some(toggle_sidebar) })
+                .child(IconButton { path: I_PLUS, size: 24., active: false, filled: false, on_press: Some(|| open_playlist_popup(true)) })
+                .child(ScrollView::new().show_scrollbar(false).children(rows));
+            return rect().width(Size::px(m.sidebar_w)).height(Size::fill()).spacing(GAP).content(Content::Flex).child(nav).child(library).into_element();
+        }
         let library = rect()
             .width(Size::fill())
-            .height(Size::func(|p| Some(p.parent - 128.)))
+            .height(Size::flex(1.))
             .padding(8.)
             .spacing(GAP)
             .corner_radius(RADIUS_PANEL)
@@ -1383,7 +1467,7 @@ impl Component for Sidebar {
                     .spacing(12.)
                     .cross_align(Alignment::Center)
                     .content(Content::Flex)
-                    .child(icon(I_LIBRARY, 22., SUB, false))
+                    .child(IconButton { path: I_LIBRARY, size: 22., active: false, filled: false, on_press: Some(toggle_sidebar) })
                     .child(rect().width(Size::flex(1.)).font_size(15.).font_weight(FontWeight::SEMI_BOLD).color(rgb(TEXT)).child("Your Library"))
                     .child(IconButton { path: I_REFRESH, size: 18., active: false, filled: false, on_press: Some(|| send(Command::Refresh)) })
                     .child(IconButton { path: I_PLUS, size: 18., active: false, filled: false, on_press: Some(|| open_playlist_popup(true)) }),
@@ -1391,11 +1475,11 @@ impl Component for Sidebar {
             .child(chips)
             .child(tools)
             .child(ScrollView::new().children(rows));
-        rect().width(Size::px(SIDEBAR_W)).height(Size::fill()).spacing(GAP).child(nav).child(library)
+        rect().width(Size::px(m.sidebar_w)).height(Size::fill()).spacing(GAP).content(Content::Flex).child(nav).child(library).into_element()
     }
 }
 
-/// Back/forward, the search box and the status line, above every page.
+/// Back/forward, the search box, the update chip and Settings, above every page.
 #[derive(PartialEq)]
 struct TopBar;
 
@@ -1410,6 +1494,7 @@ impl Component for TopBar {
             .padding((12., 16.))
             .spacing(8.)
             .cross_align(Alignment::Center)
+            .content(Content::Flex)
             .child(IconButton { path: I_BACK, size: 20., active: false, filled: false, on_press: m.can_back.then_some(|| send(Command::Back)) })
             .child(IconButton { path: I_FORWARD, size: 20., active: false, filled: false, on_press: m.can_forward.then_some(|| send(Command::Forward)) })
             .child(
@@ -1423,7 +1508,7 @@ impl Component for TopBar {
                         }
                     }),
             )
-            .child(rect().width(Size::func(|p| Some((p.parent - 640.).max(0.)))).padding((0., 8.)).child(one_line(m.status.clone(), 12., SUB)))
+            .child(rect().width(Size::flex(1.)))
             .maybe_child((!m.update_version.is_empty()).then(|| {
                 Chip {
                     label: leak(&format!("Update to v{}", m.update_version)),
@@ -1435,13 +1520,169 @@ impl Component for TopBar {
                     }),
                 }
             }))
-            .child(IconButton { path: I_SETTINGS, size: 20., active: m.show_settings, filled: false, on_press: Some(toggle_settings) })
+            .child(SettingsButton { active: m.show_settings })
+    }
+}
+
+/// Find in page's sort: cycles page order / title / artist / duration.
+#[derive(PartialEq)]
+struct SortButton {
+    label: &'static str,
+}
+
+impl Component for SortButton {
+    fn render(&self) -> impl IntoElement {
+        let (mut anim, t) = use_hover();
+        rect()
+            .padding((6., 4.))
+            .font_size(13.)
+            .color(rgb(mix(SUB, TEXT, t)))
+            .on_pointer_enter(move |_| anim.start())
+            .on_pointer_leave(move |_| anim.reverse())
+            .on_press(|_| {
+                let Some(mut model) = MODEL.get() else { return };
+                let (text, sort) = {
+                    let mut m = model.write();
+                    m.page_sort = (m.page_sort + 1) % PAGE_SORTS.len() as i32;
+                    (m.page_filter.clone(), m.page_sort)
+                };
+                send(Command::FilterPage { text, sort });
+            })
+            .child(self.label)
+    }
+}
+
+/// The top bar's Settings pill: gear and label.
+#[derive(PartialEq)]
+struct SettingsButton {
+    active: bool,
+}
+
+impl Component for SettingsButton {
+    fn render(&self) -> impl IntoElement {
+        let (mut anim, t) = use_hover();
+        let (bg, fg) = if self.active { (TEXT, ON_ACCENT) } else { (mix(ELEVATED, HOVER, t), TEXT) };
+        rect()
+            .horizontal()
+            .padding((6., 14., 6., 10.))
+            .spacing(8.)
+            .cross_align(Alignment::Center)
+            .corner_radius(99.)
+            .background(rgb(bg))
+            .color(rgb(fg))
+            .font_size(13.)
+            .font_weight(FontWeight::SEMI_BOLD)
+            .on_pointer_enter(move |_| anim.start())
+            .on_pointer_leave(move |_| anim.reverse())
+            .on_press(|_| toggle_settings())
+            .child(icon(I_SETTINGS, 16., fg, false))
+            .child("Settings")
+    }
+}
+
+/// The gap between the sidebar and the page; dragging it resizes the sidebar (saved on release).
+#[derive(PartialEq)]
+struct SidebarHandle;
+
+impl Component for SidebarHandle {
+    fn render(&self) -> impl IntoElement {
+        let mut model = use_model();
+        let mut dragging = use_state(|| false);
+        let (mut anim, t) = use_hover();
+        let line = if *dragging.read() { 1. } else { t };
+        rect()
+            .width(Size::px(GAP))
+            .height(Size::fill())
+            .center()
+            .cursor(CursorIcon::ColResize)
+            .on_pointer_enter(move |_| anim.start())
+            .on_pointer_leave(move |_| anim.reverse())
+            .on_pointer_down(move |e: Event<PointerEventData>| {
+                if e.data().is_primary() {
+                    e.stop_propagation();
+                    e.prevent_default();
+                    dragging.set(true);
+                }
+            })
+            .on_capture_global_pointer_move(move |e: Event<PointerEventData>| {
+                if *dragging.peek() {
+                    e.prevent_default();
+                    // The sidebar starts after the window padding; the handle's middle follows the pointer.
+                    let w = e.global_location().x as f32 - GAP - GAP / 2.;
+                    let w = if w < SIDEBAR_COLLAPSE_AT { SIDEBAR_COLLAPSED } else { w.clamp(SIDEBAR_MIN, SIDEBAR_MAX) };
+                    let mut m = model.write();
+                    if w > SIDEBAR_COLLAPSED {
+                        m.sidebar_open_w = w;
+                    }
+                    m.sidebar_w = w;
+                }
+            })
+            .on_global_pointer_up(move |_: Event<PointerEventData>| {
+                if *dragging.peek() {
+                    dragging.set(false);
+                    send(Command::SidebarWidth(model.peek().sidebar_w));
+                }
+            })
+            .child(rect().width(Size::px(2.)).height(Size::percent(30.)).corner_radius(1.).background(rgb(mix(BASE, SUB, line))))
+    }
+}
+
+/// Transient status messages ("Loading...", errors) as a pill at the bottom of the page; gone after `TOAST_SECS`.
+#[derive(PartialEq)]
+struct Toast;
+
+impl Component for Toast {
+    fn render(&self) -> impl IntoElement {
+        let mut model = use_model();
+        use_future(move || async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let expired = model.peek().status_until.is_some_and(|until| std::time::Instant::now() >= until);
+                if expired {
+                    let mut m = model.write();
+                    m.status.clear();
+                    m.status_until = None;
+                }
+            }
+        });
+        let m = model.read();
+        rect()
+            .position(Position::new_absolute().bottom(16.))
+            .width(Size::fill())
+            .center()
+            .maybe_child((!m.status.is_empty()).then(|| {
+                rect()
+                    .padding((8., 16.))
+                    .corner_radius(99.)
+                    .background(rgb(ELEVATED))
+                    .shadow((0., 6., 20., 0., (0, 0, 0, 140)))
+                    .child(one_line(m.status.clone(), 13., TEXT))
+            }))
     }
 }
 
 thread_local! {
     /// The model handle for plain `fn()` handlers (icon buttons, shortcuts); set once by `app`.
     static MODEL: std::cell::Cell<Option<State<Model>>> = const { std::cell::Cell::new(None) };
+}
+
+/// The library icon: collapse the sidebar to covers, or open it again at its last width.
+fn toggle_sidebar() {
+    if let Some(mut model) = MODEL.get() {
+        let w = {
+            let mut m = model.write();
+            m.sidebar_w = if m.sidebar_w <= SIDEBAR_COLLAPSED { m.sidebar_open_w } else { SIDEBAR_COLLAPSED };
+            m.sidebar_w
+        };
+        send(Command::SidebarWidth(w));
+    }
+}
+
+fn toggle_find() {
+    if let Some(mut model) = MODEL.get() {
+        let mut m = model.write();
+        m.find_open = !m.find_open;
+    }
 }
 
 fn toggle_settings() {
@@ -1692,32 +1933,74 @@ impl Component for ListPage {
         let mut model = use_model();
         let find = use_state(String::new);
         let scroll = use_scroll_controller(ScrollConfig::default);
+        // Find in page (Ctrl+F or the magnifier): filter and sort run in the backend on the page's rows (no request).
+        // Closing the box drops its filter, so no hidden filter stays on the rows.
+        if !model.peek().find_open && !find.peek().is_empty() {
+            let mut find = find;
+            find.set(String::new());
+        }
+        let (page_sort, find_open, changed) = {
+            let m = model.peek();
+            (m.page_sort, m.find_open, *find.read() != m.page_filter)
+        };
+        if changed {
+            let typed = find.read().clone();
+            model.write().page_filter = typed.clone();
+            send(Command::FilterPage { text: typed, sort: page_sort });
+        }
+        let find_controls = if find_open {
+            rect()
+                .horizontal()
+                .spacing(12.)
+                .cross_align(Alignment::Center)
+                .child(SortButton { label: PAGE_SORTS[page_sort as usize] })
+                .child(
+                    Input::new(find)
+                        .placeholder("Search in page")
+                        .width(Size::px(FIND_WIDTH))
+                        .auto_focus(true)
+                        .leading(icon(I_SEARCH, 16., SUB, false))
+                        .theme_layout(InputLayoutThemePartial {
+                            corner_radius: Some(Preference::Specific(CornerRadius::new_all(99.))),
+                            padding: Some(Preference::Specific(Gaps::new(6., 12., 6., 10.))),
+                        }),
+                )
+                .child(IconButton { path: I_CLOSE, size: 18., active: false, filled: false, on_press: Some(toggle_find) })
+                .into_element()
+        } else {
+            IconButton { path: I_SEARCH, size: 22., active: false, filled: false, on_press: Some(toggle_find) }.into_element()
+        };
         let m = model.read();
         let header_cover = crate::covers::larger_cover(&m.page_cover);
         let has_cover = !header_cover.is_empty();
+        let tint = m.page_tint.unwrap_or(m.tint);
+        // Long titles get a smaller heading, like Spotify's.
+        let title_size = if m.page_title.chars().count() > HEADER_TITLE_LONG { 30. } else { 44. };
         let header = rect()
             .horizontal()
             .width(Size::fill())
-            .padding((24., 24., 24., 24.))
-            .spacing(24.)
+            .padding((16., 24., 20., 24.))
+            .spacing(20.)
             .cross_align(Alignment::End)
-            .background(LinearGradient::new().angle(180.).stop((m.tint, 0.)).stop((mix(m.tint, SURFACE, 0.55), 100.)))
-            .maybe_child(has_cover.then(|| cover(&header_cover, m.cover(&header_cover), 200., 8.).shadow((0., 12., 32., 0., (0, 0, 0, 160)))))
+            .background(LinearGradient::new().angle(180.).stop((mix(tint, TEXT, 0.08), 0.)).stop((mix(tint, SURFACE, 0.35), 100.)))
+            .maybe_child(has_cover.then(|| cover(&header_cover, m.cover(&header_cover), HEADER_COVER, 8.).shadow((0., 8., 24., 0., (0, 0, 0, 150)))))
             .child(
                 rect()
-                    .width(Size::func(move |p| Some(p.parent - if has_cover { 224. } else { 0. })))
-                    .spacing(6.)
-                    .child(rect().font_size(13.).font_weight(FontWeight::SEMI_BOLD).color(rgb(TEXT)).child(m.page_kind))
-                    .child(heading(m.page_title.clone(), 56.))
-                    .maybe_child((!m.page_info.is_empty()).then(|| one_line(m.page_info.clone(), 13., SUB))),
+                    .width(Size::func(move |p| Some(p.parent - if has_cover { HEADER_COVER + 20. } else { 0. })))
+                    .spacing(4.)
+                    .child(rect().font_size(12.).font_weight(FontWeight::SEMI_BOLD).color(rgb(TEXT)).child(m.page_kind))
+                    .child(heading(m.page_title.clone(), title_size))
+                    .maybe_child((!m.page_info.is_empty()).then(|| one_line(m.page_info.clone(), 13., mix(SUB, TEXT, 0.4))))
+                    .maybe_child((!m.summary.is_empty()).then(|| rect().padding((4., 0., 0., 0.)).font_size(13.).font_weight(FontWeight::SEMI_BOLD).color(rgb(TEXT)).child(m.summary.clone()))),
             );
         let actions = rect()
             .horizontal()
             .width(Size::fill())
-            .padding((20., 24.))
+            .padding((14., 24.))
             .spacing(20.)
             .cross_align(Alignment::Center)
-            .background(LinearGradient::new().angle(180.).stop((mix(m.tint, SURFACE, 0.55), 0.)).stop((SURFACE, 100.)))
+            .content(Content::Flex)
+            .background(LinearGradient::new().angle(180.).stop((mix(tint, SURFACE, 0.35), 0.)).stop((SURFACE, 100.)))
             .maybe_child(m.playable.then(|| PlayFab { size: 56., playing: m.playing && !m.current_list.is_empty() && m.current_list == m.page_uri }))
             .child(IconButton { path: I_SHUFFLE, size: 26., active: m.shuffle, filled: false, on_press: Some(|| send(Command::ToggleShuffle)) })
             .maybe_child((m.page_kind == "Artist").then(|| {
@@ -1758,37 +2041,11 @@ impl Component for ListPage {
             }))
             .maybe_child((m.page_kind == "Radio").then(|| Chip { label: "Save as playlist", active: false, on_press: EventHandler::new(|_| send(Command::SaveRadio)) }))
             .maybe_child(m.editable.then(|| IconButton { path: I_PENCIL, size: 24., active: false, filled: false, on_press: Some(|| open_playlist_popup(false)) }))
-            .maybe_child(m.editable.then(|| IconButton { path: I_PLUS, size: 24., active: false, filled: false, on_press: Some(open_add_popup) }));
-        // Find in page (Ctrl+F): filter and sort run in the backend on the page's rows (no request).
-        let (page_sort, find_open) = (m.page_sort, m.find_open);
-        let typed = find.read().clone();
-        let changed = typed != m.page_filter;
+            .maybe_child(m.editable.then(|| IconButton { path: I_PLUS, size: 24., active: false, filled: false, on_press: Some(open_add_popup) }))
+            .child(rect().width(Size::flex(1.)))
+            // Find in page: Spotify's magnifier at the right of the action bar (also Ctrl+F).
+            .maybe_child(m.playable.then_some(find_controls));
         drop(m);
-        if changed {
-            model.write().page_filter = typed.clone();
-            send(Command::FilterPage { text: typed, sort: page_sort });
-        }
-        let find_bar = find_open.then(|| {
-            rect()
-                .horizontal()
-                .padding((0., 24., 12., 24.))
-                .spacing(GAP)
-                .cross_align(Alignment::Center)
-                .child(Input::new(find).placeholder("Find in page").width(Size::px(260.)).auto_focus(true))
-                .child(Chip {
-                    label: PAGE_SORTS[page_sort as usize],
-                    active: page_sort != 0,
-                    on_press: EventHandler::new(move |_| {
-                        let mut model = model;
-                        let (text, sort) = {
-                            let mut m = model.write();
-                            m.page_sort = (m.page_sort + 1) % PAGE_SORTS.len() as i32;
-                            (m.page_filter.clone(), m.page_sort)
-                        };
-                        send(Command::FilterPage { text, sort });
-                    }),
-                })
-        });
         let m = model.read();
         // An empty own playlist invites songs, like Spotify.
         let empty_own = (m.editable && m.tracks.is_empty()).then(|| {
@@ -1868,7 +2125,6 @@ impl Component for ListPage {
             .child(header)
             .child(actions)
             .maybe_child(tabs)
-            .maybe_child(find_bar)
             .maybe_child(empty_own)
             .maybe_child(about)
             .child(columns)
@@ -1926,6 +2182,9 @@ impl Component for SettingsPage {
     fn render(&self) -> impl IntoElement {
         let mut model = use_model();
         let client_id = use_state(|| model.peek().web_client_id.clone());
+        // The Client ID is masked like a password; the eye shows it.
+        let mut id_shown = use_state(|| false);
+        let shown = *id_shown.read();
         let mut eq_dirty = use_state(|| false);
         // The registry Run value is the source of truth.
         #[cfg(windows)]
@@ -2051,7 +2310,14 @@ impl Component for SettingsPage {
                         .horizontal()
                         .spacing(GAP)
                         .cross_align(Alignment::Center)
-                        .child(Input::new(client_id).placeholder("Client ID").width(Size::px(300.)))
+                        .child(
+                            Input::new(client_id)
+                                .placeholder("Client ID")
+                                .width(Size::px(300.))
+                                .mode(if shown { InputMode::Shown } else { InputMode::Hidden('•') }),
+                        )
+                        // Outside the Input: it stops presses inside it for focusing.
+                        .child(rect().padding(6.).on_press(move |_| id_shown.set(!shown)).child(icon(if shown { I_EYE_OFF } else { I_EYE }, 18., SUB, false)))
                         .child(Chip { label: "Save", active: false, on_press: EventHandler::new(move |_| send(Command::WebClientId(client_id.read().trim().to_string()))) }),
                 ))
                 .child(section("Startup"))
@@ -2502,7 +2768,7 @@ fn app() -> impl IntoElement {
         let _ = SEARCH_BOX.set(id);
         SearchBox(id)
     });
-    let mut model = use_provide_context(|| State::create(Model { volume: 100., ..Default::default() }));
+    let mut model = use_provide_context(|| State::create(Model { volume: 100., sidebar_w: SIDEBAR_W, sidebar_open_w: SIDEBAR_W, ..Default::default() }));
     MODEL.set(Some(model));
     use_future(move || async move {
         let Some(mut rx) = UPDATES.lock().unwrap().take() else { return };
@@ -2548,9 +2814,9 @@ fn app() -> impl IntoElement {
                 .width(Size::fill())
                 .height(Size::func(|p| Some(p.parent - PLAYER_H)))
                 .padding((GAP, GAP, 0., GAP))
-                .spacing(GAP)
                 .content(Content::Flex)
                 .maybe_child((!lyrics_full && !hide_sidebar).then_some(Sidebar))
+                .maybe_child((!lyrics_full && !hide_sidebar).then_some(SidebarHandle))
                 .child(
                     rect()
                         .width(Size::flex(1.))
@@ -2559,8 +2825,10 @@ fn app() -> impl IntoElement {
                         .overflow(Overflow::Clip)
                         .background(rgb(SURFACE))
                         .child(TopBar)
-                        .child(main),
+                        .child(main)
+                        .child(Toast),
                 )
+                .maybe_child(side_tab.filter(|_| !lyrics_full).map(|_| rect().width(Size::px(GAP))))
                 .maybe_child(side_tab.filter(|_| !lyrics_full).map(|tab| SidePanel { tab }))
         }))
         .child(PlayerBar)
