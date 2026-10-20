@@ -56,7 +56,7 @@ pub const LIKED_SONGS: &str = "liked";
 /// Sidebar row for saved podcast episodes (Spotify's "Your Episodes").
 pub const YOUR_EPISODES: &str = "episodes";
 
-/// Thread-safe row data; `ui::Row` holds a `slint::Image`, which must stay on the UI thread.
+/// One row of a list (track, album, artist, playlist, episode), as the backend sends it to the UI.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Item {
     pub title: String,

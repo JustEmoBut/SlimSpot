@@ -25,7 +25,7 @@ use librespot::{
 use librespot_oauth::OAuthClientBuilder;
 use tokio::sync::mpsc;
 
-use crate::covers::{self, CoverRequest};
+use crate::covers;
 use crate::nav::History;
 use crate::settings::{self, LastSession, Quality, Repeat, Settings};
 use crate::ui::{Current, PageView, Rows, Ui, UiUpdate, clear_lyrics, set_liked_rows, set_current, set_lyrics, set_page_header, set_playing, set_position, set_rows, set_status};
@@ -881,12 +881,10 @@ fn spirc_result(ui: &Ui, r: Result<(), librespot::core::Error>) {
 
 pub async fn run(
     ui: Ui,
-    // ponytail: covers still build slint::Image on the UI thread, so they keep the Slint handle; moves with the Freya cover loader.
-    cover_ui: covers::CoverUi,
     // Our own queue: row menu actions re-enter it as the commands they stand for.
     tx: mpsc::UnboundedSender<Command>,
     mut rx: mpsc::UnboundedReceiver<Command>,
-    cover_rx: mpsc::UnboundedReceiver<CoverRequest>,
+    cover_rx: mpsc::UnboundedReceiver<String>,
     // "Update to vX" clicks: served by the update task, not the command loop, which doesn't run
     // while the Web API login waits for a browser consent.
     mut update_rx: mpsc::UnboundedReceiver<()>,
@@ -982,7 +980,7 @@ pub async fn run(
         };
         set_status(&ui, format!("Your Spotify app's Client ID no longer exists; using the shared app.{env_note}"));
     }
-    tokio::spawn(covers::worker(session.clone(), cover_ui, cover_rx));
+    tokio::spawn(covers::worker(session.clone(), ui.clone(), cover_rx));
     // Sidebar rows, kept to title the pages they open.
     let mut library: Vec<Item> = Vec::new();
     // The user's own playlists: targets of "Add to playlist".

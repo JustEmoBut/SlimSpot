@@ -34,49 +34,49 @@ pub fn acquire() -> Instance {
     Instance::Primary(Some(event.0 as isize))
 }
 
-/// Shows the window (from tray or minimized) and asks Windows to put it in front.
-pub fn bring_to_front(app: &crate::ui::App) {
+fn hwnd(window: &freya::winit::window::Window) -> Option<windows::Win32::Foundation::HWND> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use slint::ComponentHandle;
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
-
-    let _ = app.show();
-    app.window().set_minimized(false);
-    if let Ok(RawWindowHandle::Win32(h)) = app.window().window_handle().window_handle().map(|h| h.as_raw()) {
-        // Only allowed when the caller holds the foreground right (a click, or AllowSetForegroundWindow
-        // from the second launch); otherwise Windows flashes the taskbar button, which is fine.
-        let _ = unsafe { SetForegroundWindow(HWND(h.hwnd.get() as _)) };
+    match window.window_handle().map(|h| h.as_raw()) {
+        Ok(RawWindowHandle::Win32(h)) => Some(windows::Win32::Foundation::HWND(h.hwnd.get() as _)),
+        _ => None,
     }
 }
 
-/// Dark title bar to match the dark UI (Windows 10 20H1+; ignored where unsupported).
-pub fn dark_title_bar(app: &crate::ui::App) {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use slint::ComponentHandle;
-    use windows::Win32::Foundation::HWND;
+/// Shows the window (from tray or minimized) and asks Windows to put it in front.
+pub fn bring_to_front(window: &freya::winit::window::Window) {
+    use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+
+    window.set_visible(true);
+    window.set_minimized(false);
+    if let Some(hwnd) = hwnd(window) {
+        // Only allowed when the caller holds the foreground right (a click, or AllowSetForegroundWindow
+        // from the second launch); otherwise Windows flashes the taskbar button, which is fine.
+        let _ = unsafe { SetForegroundWindow(hwnd) };
+    }
+}
+
+/// Dark title bar in the theme's colors (Windows 10 20H1+; ignored where unsupported): the caption
+/// blends into the base color, the title text is subdued.
+pub fn dark_title_bar(window: &freya::winit::window::Window, caption: (u8, u8, u8), text: (u8, u8, u8), border: (u8, u8, u8)) {
     use windows::Win32::Graphics::Dwm::{
         DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWINDOWATTRIBUTE,
         DwmSetWindowAttribute,
     };
 
-    let Ok(RawWindowHandle::Win32(h)) = app.window().window_handle().window_handle().map(|h| h.as_raw()) else { return };
-    let hwnd = HWND(h.hwnd.get() as _);
+    let Some(hwnd) = hwnd(window) else { return };
     let set = |attribute: DWMWINDOWATTRIBUTE, value: u32| {
         // Windows 10 ignores the color attributes (Windows 11 only); the dark mode flag still applies.
         let _ = unsafe { DwmSetWindowAttribute(hwnd, attribute, (&value as *const u32).cast(), size_of::<u32>() as u32) };
     };
     set(DWMWA_USE_IMMERSIVE_DARK_MODE, 1);
-    // The current palette's colors: the caption blends into Theme.base, the title is Theme.subdued.
-    let theme = app.global::<crate::ui::Theme>();
-    set(DWMWA_CAPTION_COLOR, colorref(theme.get_base()));
-    set(DWMWA_TEXT_COLOR, colorref(theme.get_subdued()));
-    set(DWMWA_BORDER_COLOR, colorref(theme.get_raised()));
+    set(DWMWA_CAPTION_COLOR, colorref(caption));
+    set(DWMWA_TEXT_COLOR, colorref(text));
+    set(DWMWA_BORDER_COLOR, colorref(border));
 }
 
 /// COLORREF is 0x00BBGGRR.
-fn colorref(c: slint::Color) -> u32 {
-    u32::from(c.red()) | u32::from(c.green()) << 8 | u32::from(c.blue()) << 16
+fn colorref((r, g, b): (u8, u8, u8)) -> u32 {
+    u32::from(r) | u32::from(g) << 8 | u32::from(b) << 16
 }
 
 impl Instance {
