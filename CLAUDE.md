@@ -25,8 +25,8 @@ Spotify ToS concerns are accepted by the owner. The GitHub repo is **public** (o
 | Module | Responsibility |
 |---|---|
 | `main.rs` | Wires Slint callbacks to `player::Command`, tray, UI timers (seek interpolation, minimize-restore repaint, media-key setup retry) |
-| `ui.rs` | `slint::slint!` markup + helpers that push state to the UI thread |
-| `player.rs` | Backend tokio thread: login, Spotify Connect device (Spirc), command/event loop, reconnect |
+| `ui.rs` | `slint::slint!` markup; `UiUpdate` (everything the backend shows) and `slint_ui`, which applies it on the UI thread |
+| `player.rs` | Backend tokio thread: login, Spotify Connect device (Spirc), command/event loop, reconnect. Talks to the UI only through `ui::Ui` (no Slint types), except the covers worker's `covers::CoverUi` |
 | `web.rs` | Spotify Web API (separate OAuth grant): search (all + per-type tabs, paged), queue (view, add), recently played, liked checks, playlists (create, edit name/description, cover upload, remove, add/remove/reorder tracks), Liked Songs, albums, artist release groups (paged), newest release, saved albums, followed artists, saved podcasts + episodes (paged), saved episodes ("Your Episodes"), like/unlike, devices, transfer |
 | `covers.rs` | Thumbnails for instantiated rows only (track list, sidebar, "Add songs" results, Home tiles, right panel), 64 px, max 300 decoded; 160 px for Home shelf cards; 300 px for the now-playing panel and page header (one each); none in compact lists |
 | `settings.rs` | `settings.json`: volume, shuffle, repeat, quality, normalize, last session, last-opened times of library entries, theme, GPU renderer, EQ, low API mode, Home's new release (per day) |

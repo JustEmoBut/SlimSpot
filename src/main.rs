@@ -502,7 +502,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let weak = app.as_weak();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        rt.block_on(player::run(weak, backend_tx, rx, cover_rx, update_rx));
+        rt.block_on(player::run(ui::slint_ui(weak.clone()), weak, backend_tx, rx, cover_rx, update_rx));
     });
 
     // Shown even when starting in the tray: the media keys need the native window, which

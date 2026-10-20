@@ -49,6 +49,9 @@ pub struct CoverRequest {
     pub url: String,
 }
 
+/// The window the worker sets decoded covers on.
+pub type CoverUi = slint::Weak<App>;
+
 /// Fetches, decodes and downsizes covers for rows the ListView actually instantiated.
 pub async fn worker(session: Session, ui: slint::Weak<App>, mut rx: mpsc::UnboundedReceiver<CoverRequest>) {
     let limit = Arc::new(tokio::sync::Semaphore::new(COVER_FETCHES_IN_FLIGHT));

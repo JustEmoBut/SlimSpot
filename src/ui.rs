@@ -2236,74 +2236,265 @@ fn fmt_duration(ms: u32) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-/// Sets the liked mark on track-list rows with these URIs, in place so loaded covers stay.
-pub fn set_liked_rows(ui: &slint::Weak<App>, uris: Vec<String>, liked: bool) {
-    let _ = ui.upgrade_in_event_loop(move |app| {
-        let model = app.get_tracks();
-        for i in 0..model.row_count() {
-            let Some(mut row) = model.row_data(i) else { continue };
-            if row.liked != liked && uris.iter().any(|u| row.uri == u.as_str()) {
-                row.liked = liked;
-                model.set_row_data(i, row);
+/// Track-list models the backend fills from `web::Item`s.
+#[derive(Clone, Copy, Debug)]
+pub enum Rows {
+    Tracks,
+    Lists,
+    Targets,
+    SideRows,
+    Devices,
+    Shelf,
+    QuickTop,
+    QuickBottom,
+    AddResults,
+}
+
+/// Which "currently showing" URI a `UiUpdate::Current` sets.
+#[derive(Clone, Copy, Debug)]
+pub enum Current {
+    List,
+    Track,
+}
+
+/// Everything the backend shows. It sends these instead of touching the window, so the
+/// backend doesn't depend on the UI toolkit.
+pub enum UiUpdate {
+    Status(String),
+    Playing(bool),
+    Position(u32),
+    Rows(Rows, Vec<Item>),
+    Lyrics(String, Result<Option<crate::lyrics::Lyrics>, String>),
+    ClearLyrics(String),
+    LikedRows(Vec<String>, bool),
+    PageHeader { kind: &'static str, title: String, can_back: bool, can_forward: bool },
+    Current(Current, String),
+    Page(PageView),
+    PageSaved(bool),
+    PageInfo(String),
+    PageCover(String),
+    ScrollTop,
+    Reveal(usize),
+    LikedChecked(usize),
+    ResetLibraryChips,
+    Settings { volume: f32, shuffle: bool, repeat: i32, quality: i32, normalize: bool, theme: i32 },
+    StartupSettings { gpu: bool, low_api: bool, compact: bool, eq: crate::eq::EqState },
+    Now { item: Item, duration: f32, position: Option<f32> },
+    NowTintDefault,
+    NowAbout(String),
+    Liked(bool),
+    Credits { title: String, text: String },
+    UpdateVersion(String),
+    WebClientId(String),
+    /// The app's own quit path (saves, shuts Spirc down), as after an update.
+    InvokeQuit,
+    /// Ends the event loop; sent by that quit path once the backend is done.
+    QuitEventLoop,
+}
+
+/// The page-level state `show_current` puts on screen.
+pub struct PageView {
+    pub info: String,
+    pub saved: bool,
+    pub search_tab: i32,
+    pub tabs: Vec<&'static str>,
+    pub about: String,
+    pub page_uri: String,
+    pub liked_upto: i32,
+    pub cover: String,
+    pub editable: bool,
+    pub numbered: bool,
+    pub playable: bool,
+}
+
+/// The backend's handle to the UI: a sink for `UiUpdate`s, cheap to clone and `Send`.
+#[derive(Clone)]
+pub struct Ui(std::sync::Arc<dyn Fn(UiUpdate) + Send + Sync>);
+
+impl Ui {
+    pub fn send(&self, update: UiUpdate) {
+        (self.0)(update)
+    }
+}
+
+/// Applies updates to the Slint window on its event loop, in send order.
+pub fn slint_ui(weak: slint::Weak<App>) -> Ui {
+    Ui(std::sync::Arc::new(move |update| {
+        let _ = weak.upgrade_in_event_loop(move |app| apply(&app, update));
+    }))
+}
+
+fn apply(app: &App, update: UiUpdate) {
+    use slint::ComponentHandle;
+    match update {
+        UiUpdate::Status(text) => app.set_status(text.into()),
+        UiUpdate::Playing(playing) => app.set_playing(playing),
+        UiUpdate::Position(ms) => {
+            if !app.get_seeking() {
+                app.set_position(ms as f32);
             }
         }
-    });
-}
-
-pub fn set_status(ui: &slint::Weak<App>, text: impl Into<String>) {
-    let text = text.into();
-    let _ = ui.upgrade_in_event_loop(move |app| app.set_status(text.into()));
-}
-
-pub fn set_playing(ui: &slint::Weak<App>, playing: bool) {
-    let _ = ui.upgrade_in_event_loop(move |app| app.set_playing(playing));
-}
-
-pub fn set_position(ui: &slint::Weak<App>, ms: u32) {
-    let _ = ui.upgrade_in_event_loop(move |app| {
-        if !app.get_seeking() {
-            app.set_position(ms as f32);
-        }
-    });
-}
-
-pub fn set_rows(ui: &slint::Weak<App>, items: Vec<Item>, setter: fn(&App, ModelRc<Row>)) {
-    let _ = ui.upgrade_in_event_loop(move |app| {
-        let rows: Vec<Row> = items.into_iter().map(Row::from).collect();
-        setter(&app, ModelRc::new(VecModel::from(rows)));
-    });
-}
-
-/// Shows lyrics for `uri` unless another track has started meanwhile.
-pub fn set_lyrics(ui: &slint::Weak<App>, uri: String, result: Result<Option<crate::lyrics::Lyrics>, String>) {
-    let _ = ui.upgrade_in_event_loop(move |app| {
-        if app.get_now().uri != uri.as_str() {
-            return;
-        }
-        let (lines, times, note) = match result {
-            Ok(Some(l)) => {
-                let times = l.times_ms.unwrap_or_default().into_iter().map(|t| t as i32).collect::<Vec<_>>();
-                (l.lines, times, String::new())
+        UiUpdate::Rows(target, items) => {
+            let rows = ModelRc::new(VecModel::from(items.into_iter().map(Row::from).collect::<Vec<Row>>()));
+            match target {
+                Rows::Tracks => app.set_tracks(rows),
+                Rows::Lists => app.set_lists(rows),
+                Rows::Targets => app.set_targets(rows),
+                Rows::SideRows => app.set_side_rows(rows),
+                Rows::Devices => app.set_devices(rows),
+                Rows::Shelf => app.set_shelf(rows),
+                Rows::QuickTop => app.set_quick_top(rows),
+                Rows::QuickBottom => app.set_quick_bottom(rows),
+                Rows::AddResults => app.set_add_results(rows),
             }
-            Ok(None) => (Vec::new(), Vec::new(), "No lyrics for this track".into()),
-            Err(e) => (Vec::new(), Vec::new(), e),
-        };
-        let lines: Vec<slint::SharedString> = lines.into_iter().map(Into::into).collect();
-        app.set_lyric_lines(ModelRc::new(VecModel::from(lines)));
-        app.set_lyric_times(ModelRc::new(VecModel::from(times)));
-        app.set_lyric_index(-1);
-        app.set_lyrics_note(note.into());
-    });
+        }
+        // Dropped if another track has started meanwhile.
+        UiUpdate::Lyrics(uri, result) => {
+            if app.get_now().uri != uri.as_str() {
+                return;
+            }
+            let (lines, times, note) = match result {
+                Ok(Some(l)) => {
+                    let times = l.times_ms.unwrap_or_default().into_iter().map(|t| t as i32).collect::<Vec<_>>();
+                    (l.lines, times, String::new())
+                }
+                Ok(None) => (Vec::new(), Vec::new(), "No lyrics for this track".into()),
+                Err(e) => (Vec::new(), Vec::new(), e),
+            };
+            let lines: Vec<slint::SharedString> = lines.into_iter().map(Into::into).collect();
+            app.set_lyric_lines(ModelRc::new(VecModel::from(lines)));
+            app.set_lyric_times(ModelRc::new(VecModel::from(times)));
+            app.set_lyric_index(-1);
+            app.set_lyrics_note(note.into());
+        }
+        UiUpdate::ClearLyrics(note) => {
+            app.set_lyric_lines(ModelRc::default());
+            app.set_lyric_times(ModelRc::default());
+            app.set_lyric_index(-1);
+            app.set_lyrics_note(note.into());
+        }
+        // In place, so loaded covers stay.
+        UiUpdate::LikedRows(uris, liked) => {
+            let model = app.get_tracks();
+            for i in 0..model.row_count() {
+                let Some(mut row) = model.row_data(i) else { continue };
+                if row.liked != liked && uris.iter().any(|u| row.uri == u.as_str()) {
+                    row.liked = liked;
+                    model.set_row_data(i, row);
+                }
+            }
+        }
+        UiUpdate::PageHeader { kind, title, can_back, can_forward } => {
+            app.set_page_kind(kind.into());
+            app.set_page_title(title.into());
+            app.set_can_back(can_back);
+            app.set_can_forward(can_forward);
+        }
+        UiUpdate::Current(Current::List, uri) => app.set_current_list(uri.into()),
+        UiUpdate::Current(Current::Track, uri) => app.set_current_track(uri.into()),
+        UiUpdate::Page(p) => {
+            app.set_page_info(p.info.into());
+            app.set_page_saved(p.saved);
+            app.set_search_tab(p.search_tab);
+            let tabs: Vec<slint::SharedString> = p.tabs.into_iter().map(Into::into).collect();
+            app.set_page_tabs(ModelRc::new(VecModel::from(tabs)));
+            app.set_page_about(p.about.into());
+            app.set_page_uri(p.page_uri.into());
+            app.set_liked_checked(p.liked_upto);
+            if app.get_page_cover_url() != p.cover.as_str() {
+                app.set_page_cover(Default::default());
+                app.set_page_cover_url(p.cover.into());
+            }
+            app.set_editable(p.editable);
+            app.set_page_filter_text("".into());
+            app.set_page_sort(0);
+            app.set_numbered(p.numbered);
+            app.set_page_playable(p.playable);
+        }
+        UiUpdate::PageSaved(saved) => app.set_page_saved(saved),
+        UiUpdate::PageInfo(info) => app.set_page_info(info.into()),
+        UiUpdate::PageCover(url) => {
+            app.set_page_cover(Default::default());
+            app.set_page_cover_url(url.into());
+        }
+        UiUpdate::ScrollTop => app.set_list_y(0.0),
+        UiUpdate::Reveal(index) => app.invoke_reveal(index as i32),
+        UiUpdate::LikedChecked(rows) => app.set_liked_checked(rows as i32),
+        UiUpdate::ResetLibraryChips => {
+            app.set_library_kind(0);
+            app.set_library_sort(0);
+        }
+        UiUpdate::Settings { volume, shuffle, repeat, quality, normalize, theme } => {
+            if app.global::<Theme>().get_palette() != theme {
+                app.global::<Theme>().set_palette(theme);
+                #[cfg(windows)]
+                crate::instance::dark_title_bar(app);
+            }
+            // Don't yank the slider while the user is dragging it.
+            if (app.get_volume() - volume).abs() >= 1.0 {
+                app.set_volume(volume);
+            }
+            app.set_shuffle(shuffle);
+            app.set_repeat(repeat);
+            app.set_quality(quality);
+            app.set_normalize(normalize);
+        }
+        UiUpdate::StartupSettings { gpu, low_api, compact, eq } => {
+            app.set_gpu(gpu);
+            app.set_low_api(low_api);
+            app.set_compact(compact);
+            set_eq(app, eq);
+        }
+        UiUpdate::Now { item, duration, position } => {
+            app.set_now(Row::from(item));
+            app.set_duration(duration);
+            if let Some(at) = position {
+                app.set_position(at);
+            }
+        }
+        UiUpdate::NowTintDefault => app.set_now_tint(slint::Color::from_rgb_u8(16, 16, 42)),
+        UiUpdate::NowAbout(bio) => app.set_now_about(bio.into()),
+        UiUpdate::Liked(liked) => app.set_liked(liked),
+        UiUpdate::Credits { title, text } => {
+            app.set_credits_title(title.into());
+            app.set_credits_text(text.into());
+            app.invoke_show_credits();
+        }
+        UiUpdate::UpdateVersion(version) => app.set_update_version(version.into()),
+        UiUpdate::WebClientId(id) => app.set_web_client_id(id.into()),
+        UiUpdate::InvokeQuit => app.invoke_quit(),
+        UiUpdate::QuitEventLoop => {
+            let _ = slint::quit_event_loop();
+        }
+    }
 }
 
-pub fn clear_lyrics(ui: &slint::Weak<App>, note: &str) {
-    let note = note.to_string();
-    let _ = ui.upgrade_in_event_loop(move |app| {
-        app.set_lyric_lines(ModelRc::default());
-        app.set_lyric_times(ModelRc::default());
-        app.set_lyric_index(-1);
-        app.set_lyrics_note(note.into());
-    });
+pub fn set_liked_rows(ui: &Ui, uris: Vec<String>, liked: bool) {
+    ui.send(UiUpdate::LikedRows(uris, liked));
+}
+
+pub fn set_status(ui: &Ui, text: impl Into<String>) {
+    ui.send(UiUpdate::Status(text.into()));
+}
+
+pub fn set_playing(ui: &Ui, playing: bool) {
+    ui.send(UiUpdate::Playing(playing));
+}
+
+pub fn set_position(ui: &Ui, ms: u32) {
+    ui.send(UiUpdate::Position(ms));
+}
+
+pub fn set_rows(ui: &Ui, items: Vec<Item>, target: Rows) {
+    ui.send(UiUpdate::Rows(target, items));
+}
+
+pub fn set_lyrics(ui: &Ui, uri: String, result: Result<Option<crate::lyrics::Lyrics>, String>) {
+    ui.send(UiUpdate::Lyrics(uri, result));
+}
+
+pub fn clear_lyrics(ui: &Ui, note: &str) {
+    ui.send(UiUpdate::ClearLyrics(note.to_string()));
 }
 
 /// EQ window sliders run -1..1 for ±`eq::MAX_DB`.
@@ -2324,15 +2515,10 @@ pub fn get_eq(app: &App) -> crate::eq::EqState {
     crate::eq::EqState { on: app.get_eq_on(), preamp: app.get_eq_preamp() * max, bands, balance: app.get_eq_balance() }
 }
 
-pub fn set_page_header(ui: &slint::Weak<App>, kind: &'static str, title: String, can_back: bool, can_forward: bool) {
-    let _ = ui.upgrade_in_event_loop(move |app| {
-        app.set_page_kind(kind.into());
-        app.set_page_title(title.into());
-        app.set_can_back(can_back);
-        app.set_can_forward(can_forward);
-    });
+pub fn set_page_header(ui: &Ui, kind: &'static str, title: String, can_back: bool, can_forward: bool) {
+    ui.send(UiUpdate::PageHeader { kind, title, can_back, can_forward });
 }
 
-pub fn set_current(ui: &slint::Weak<App>, uri: String, setter: fn(&App, slint::SharedString)) {
-    let _ = ui.upgrade_in_event_loop(move |app| setter(&app, uri.into()));
+pub fn set_current(ui: &Ui, uri: String, which: Current) {
+    ui.send(UiUpdate::Current(which, uri));
 }

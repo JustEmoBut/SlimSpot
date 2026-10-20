@@ -28,7 +28,7 @@ use tokio::sync::mpsc;
 use crate::covers::{self, CoverRequest};
 use crate::nav::History;
 use crate::settings::{self, LastSession, Quality, Repeat, Settings};
-use crate::ui::{App, Row, clear_lyrics, set_liked_rows, set_current, set_lyrics, set_page_header, set_playing, set_position, set_rows, set_status};
+use crate::ui::{Current, PageView, Rows, Ui, UiUpdate, clear_lyrics, set_liked_rows, set_current, set_lyrics, set_page_header, set_playing, set_position, set_rows, set_status};
 use crate::web::{Item, LIKED_SONGS, PAGE_LIMIT, SEARCH_LIMIT, SEARCH_TYPES, WebApi, YOUR_EPISODES};
 
 // Spotify desktop client id; same as librespot's internal KEYMASTER_CLIENT_ID.
@@ -157,7 +157,7 @@ pub fn cache_dir() -> PathBuf {
         .join("SlimSpot")
 }
 
-async fn browser_login(ui: &slint::Weak<App>) -> Result<Credentials, String> {
+async fn browser_login(ui: &Ui) -> Result<Credentials, String> {
     set_status(ui, "Opening browser for Spotify login...");
     let client = OAuthClientBuilder::new(SPOTIFY_CLIENT_ID, REDIRECT_URI, OAUTH_SCOPES.to_vec())
         .open_in_browser()
@@ -222,7 +222,7 @@ type Connect = (Session, Spirc, librespot::playback::player::PlayerEventChannel,
 /// Retries `start_connect` with growing pauses until it works; network outages are the usual
 /// reason it fails, and there's nothing useful to do without a connection anyway.
 async fn reconnect(
-    ui: &slint::Weak<App>,
+    ui: &Ui,
     cache: &Cache,
     settings: &Settings,
     ended: &mpsc::UnboundedSender<(u64, bool)>,
@@ -249,7 +249,7 @@ async fn reconnect(
 
 /// Reloads what was playing on a freshly started device, at the same spot and play/pause state.
 fn resume(
-    ui: &slint::Weak<App>,
+    ui: &Ui,
     spirc: &Spirc,
     shown: Option<&Shown>,
     settings: &Settings,
@@ -509,11 +509,11 @@ struct Page {
 }
 
 /// Keeps the header's Follow / Save button in step after a library change from anywhere.
-fn set_page_saved(ui: &slint::Weak<App>, nav: &mut History<Page>, uri: &str, saved: bool) {
+fn set_page_saved(ui: &Ui, nav: &mut History<Page>, uri: &str, saved: bool) {
     let Some(page) = nav.current_mut() else { return };
     if matches!(&page.shown, Shown::Context(c) if c == uri) {
         page.saved = saved;
-        let _ = ui.upgrade_in_event_loop(move |app| app.set_page_saved(saved));
+        ui.send(UiUpdate::PageSaved(saved));
     }
 }
 
@@ -658,23 +658,23 @@ fn more_row() -> Item {
 }
 
 /// Opens `page` as a new history entry and shows it.
-fn open_page(ui: &slint::Weak<App>, nav: &mut History<Page>, shown: &mut Option<Shown>, page: Page) {
+fn open_page(ui: &Ui, nav: &mut History<Page>, shown: &mut Option<Shown>, page: Page) {
     nav.push(page);
     show_current(ui, nav, shown);
     scroll_to_top(ui);
 }
 
 /// A different page starts at its top; pages that grow or shrink in place keep their scroll.
-fn scroll_to_top(ui: &slint::Weak<App>) {
-    let _ = ui.upgrade_in_event_loop(|app| app.set_list_y(0.0));
+fn scroll_to_top(ui: &Ui) {
+    ui.send(UiUpdate::ScrollTop);
 }
 
 /// Puts the history's current page on screen (after open, back or forward).
-fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<Shown>) {
+fn show_current(ui: &Ui, nav: &History<Page>, shown: &mut Option<Shown>) {
     let Some(page) = nav.current() else { return };
     *shown = Some(page.shown.clone());
-    set_current(ui, page.list.clone(), App::set_current_list);
-    set_rows(ui, page.rows.clone(), App::set_tracks);
+    set_current(ui, page.list.clone(), Current::List);
+    set_rows(ui, page.rows.clone(), Rows::Tracks);
     set_page_header(ui, page.kind, page.title.clone(), nav.can_back(), nav.can_forward());
     set_status(ui, page_summary(nav));
     let editable = page.editable;
@@ -686,9 +686,9 @@ fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<S
     let info = page.info.clone();
     let saved = page.saved;
     let search_tab = page.search.as_ref().map_or(-1, |s| s.1);
-    let tabs: Vec<slint::SharedString> = match page.kind {
-        "Artist" => ARTIST_TABS.iter().map(|t| (*t).into()).collect(),
-        "Search" => ["All", "Songs", "Albums", "Artists", "Playlists"].iter().map(|t| (*t).into()).collect(),
+    let tabs: Vec<&'static str> = match page.kind {
+        "Artist" => ARTIST_TABS.to_vec(),
+        "Search" => vec!["All", "Songs", "Albums", "Artists", "Playlists"],
         _ => Vec::new(),
     };
     let about = page.about.clone();
@@ -696,24 +696,19 @@ fn show_current(ui: &slint::Weak<App>, nav: &History<Page>, shown: &mut Option<S
         Shown::Context(uri) => uri.clone(),
         Shown::Tracks(_) => String::new(),
     };
-    let _ = ui.upgrade_in_event_loop(move |app| {
-        app.set_page_info(info.into());
-        app.set_page_saved(saved);
-        app.set_search_tab(search_tab);
-        app.set_page_tabs(slint::ModelRc::new(slint::VecModel::from(tabs)));
-        app.set_page_about(about.into());
-        app.set_page_uri(page_uri.into());
-        app.set_liked_checked(liked_upto);
-        if app.get_page_cover_url() != cover.as_str() {
-            app.set_page_cover(Default::default());
-            app.set_page_cover_url(cover.into());
-        }
-        app.set_editable(editable);
-        app.set_page_filter_text("".into());
-        app.set_page_sort(0);
-        app.set_numbered(numbered);
-        app.set_page_playable(playable);
-    });
+    ui.send(UiUpdate::Page(PageView {
+        info,
+        saved,
+        search_tab,
+        tabs,
+        about,
+        page_uri,
+        liked_upto,
+        cover,
+        editable,
+        numbered,
+        playable,
+    }));
 }
 
 /// The cached library of `user` if it was written within `LIBRARY_CACHE_SECS`.
@@ -761,21 +756,18 @@ async fn fetch_library(w: &mut WebApi, session: &Session) -> (Vec<Item>, Option<
 }
 
 /// Pushes the sidebar and the "Add to playlist" targets after the library changed.
-fn refresh_library(ui: &slint::Weak<App>, user: &str, library: &[Item], own_lists: &[Item]) {
+fn refresh_library(ui: &Ui, user: &str, library: &[Item], own_lists: &[Item]) {
     save_library_cache(user, library);
-    set_rows(ui, library.to_vec(), App::set_lists);
-    set_rows(ui, own_lists.to_vec(), App::set_targets);
+    set_rows(ui, library.to_vec(), Rows::Lists);
+    set_rows(ui, own_lists.to_vec(), Rows::Targets);
     // The full list goes back in library order, so the filter and sort chips reset too.
-    let _ = ui.upgrade_in_event_loop(|app| {
-        app.set_library_kind(0);
-        app.set_library_sort(0);
-    });
+    ui.send(UiUpdate::ResetLibraryChips);
 }
 
 /// Scrolls the track list to `uri` if it is on the current page.
-fn reveal_track(ui: &slint::Weak<App>, nav: &History<Page>, uri: &str) {
+fn reveal_track(ui: &Ui, nav: &History<Page>, uri: &str) {
     let Some(index) = nav.current().and_then(|p| p.rows.iter().position(|r| r.uri == uri)) else { return };
-    let _ = ui.upgrade_in_event_loop(move |app| app.invoke_reveal(index as i32));
+    ui.send(UiUpdate::Reveal(index));
 }
 
 /// The resting status line: the page's size. Transient messages ("Loading...") fall back to it.
@@ -807,7 +799,7 @@ fn about(ms: u64) -> String {
 const LIKED_CHECK_BATCH: usize = 200;
 
 /// Marks liked tracks in the current page's next batch of unchecked rows.
-async fn mark_liked(ui: &slint::Weak<App>, web: &mut WebApi, session: &Session, nav: &mut History<Page>) {
+async fn mark_liked(ui: &Ui, web: &mut WebApi, session: &Session, nav: &mut History<Page>) {
     let Some(page) = nav.current_mut() else { return };
     let (from, to) = (page.liked_upto, (page.liked_upto + LIKED_CHECK_BATCH).min(page.rows.len()));
     if from >= to {
@@ -832,8 +824,8 @@ async fn mark_liked(ui: &slint::Weak<App>, web: &mut WebApi, session: &Session, 
     set_liked_rows(ui, liked.into_iter().collect(), true);
 }
 
-fn set_liked_checked(ui: &slint::Weak<App>, rows: usize) {
-    let _ = ui.upgrade_in_event_loop(move |app| app.set_liked_checked(rows as i32));
+fn set_liked_checked(ui: &Ui, rows: usize) {
+    ui.send(UiUpdate::LikedChecked(rows));
 }
 
 /// The item behind a URI on screen: the current page, the sidebar, or what is playing.
@@ -847,28 +839,13 @@ fn find_item<'a>(nav: &'a History<Page>, library: &'a [Item], now: Option<&'a It
         .find(|i| i.uri == uri)
 }
 
-fn push_settings(ui: &slint::Weak<App>, s: &Settings) {
+fn push_settings(ui: &Ui, s: &Settings) {
     let (volume, shuffle, repeat, quality, normalize) = (s.volume, s.shuffle, s.repeat.as_ui(), s.quality.as_ui(), s.normalize);
     let theme = s.theme;
-    let _ = ui.upgrade_in_event_loop(move |app| {
-        use slint::ComponentHandle;
-        if app.global::<crate::ui::Theme>().get_palette() != theme {
-            app.global::<crate::ui::Theme>().set_palette(theme);
-            #[cfg(windows)]
-            crate::instance::dark_title_bar(&app);
-        }
-        // Don't yank the slider while the user is dragging it.
-        if (app.get_volume() - volume).abs() >= 1.0 {
-            app.set_volume(volume);
-        }
-        app.set_shuffle(shuffle);
-        app.set_repeat(repeat);
-        app.set_quality(quality);
-        app.set_normalize(normalize);
-    });
+    ui.send(UiUpdate::Settings { volume, shuffle, repeat, quality, normalize, theme });
 }
 
-fn save_settings(ui: &slint::Weak<App>, s: &Settings) {
+fn save_settings(ui: &Ui, s: &Settings) {
     if let Err(e) = s.save() {
         set_status(ui, e);
     }
@@ -877,7 +854,7 @@ fn save_settings(ui: &slint::Weak<App>, s: &Settings) {
 /// Remembers the current track and position. ponytail: saved on track change, pause and quit;
 /// a crash mid-song resumes from the song's start, a periodic save would fix that.
 fn save_last(
-    ui: &slint::Weak<App>,
+    ui: &Ui,
     settings: &mut Settings,
     item: Option<&Item>,
     position: (u32, Instant),
@@ -896,14 +873,16 @@ fn save_last(
     save_settings(ui, settings);
 }
 
-fn spirc_result(ui: &slint::Weak<App>, r: Result<(), librespot::core::Error>) {
+fn spirc_result(ui: &Ui, r: Result<(), librespot::core::Error>) {
     if let Err(e) = r {
         set_status(ui, format!("Playback command failed: {e}"));
     }
 }
 
 pub async fn run(
-    ui: slint::Weak<App>,
+    ui: Ui,
+    // ponytail: covers still build slint::Image on the UI thread, so they keep the Slint handle; moves with the Freya cover loader.
+    cover_ui: covers::CoverUi,
     // Our own queue: row menu actions re-enter it as the commands they stand for.
     tx: mpsc::UnboundedSender<Command>,
     mut rx: mpsc::UnboundedReceiver<Command>,
@@ -922,12 +901,7 @@ pub async fn run(
     push_settings(&ui, &settings);
     // Once only: later settings pushes (Spotify volume/shuffle events) mustn't move EQ sliders mid-drag.
     let (gpu, eq, low_api, compact) = (settings.gpu, settings.eq, settings.low_api, settings.compact);
-    let _ = ui.upgrade_in_event_loop(move |app| {
-        app.set_gpu(gpu);
-        app.set_low_api(low_api);
-        app.set_compact(compact);
-        crate::ui::set_eq(&app, eq);
-    });
+    ui.send(UiUpdate::StartupSettings { gpu, low_api, compact, eq });
 
     set_status(&ui, "Connecting...");
     let (ended_tx, mut ended_rx) = mpsc::unbounded_channel();
@@ -956,7 +930,7 @@ pub async fn run(
             match crate::update::check(&session).await {
                 Ok(Some(release)) => {
                     let version = release.version.clone();
-                    let _ = ui.upgrade_in_event_loop(move |app| app.set_update_version(version.into()));
+                    ui.send(UiUpdate::UpdateVersion(version));
                     while update_rx.recv().await.is_some() {
                         set_status(&ui, "Downloading the update...");
                         let started = match crate::update::install(&session, &release).await {
@@ -966,7 +940,7 @@ pub async fn run(
                         match started {
                             // The new exe waits for this one to quit (--wait-pid).
                             Ok(()) => {
-                                let _ = ui.upgrade_in_event_loop(|app| app.invoke_quit());
+                                ui.send(UiUpdate::InvokeQuit);
                                 break;
                             }
                             Err(e) => {
@@ -984,7 +958,7 @@ pub async fn run(
     // Web API is optional: playback by link still works if it fails.
     let browser_ui = ui.clone();
     let client_id_text = settings.web_client_id.clone();
-    let _ = ui.upgrade_in_event_loop(move |app| app.set_web_client_id(client_id_text.into()));
+    ui.send(UiUpdate::WebClientId(client_id_text));
     let mut web = match WebApi::login(&dir, &settings.web_client_id, move || set_status(&browser_ui, "Opening browser for Web API login...")).await {
         Ok(mut w) => {
             w.low_api = settings.low_api;
@@ -1000,7 +974,7 @@ pub async fn run(
         if settings.web_client_id == gone {
             settings.web_client_id.clear();
             save_settings(&ui, &settings);
-            let _ = ui.upgrade_in_event_loop(|app| app.set_web_client_id("".into()));
+            ui.send(UiUpdate::WebClientId(String::new()));
         }
         let env_note = match std::env::var(crate::web::WEB_CLIENT_ID_ENV) {
             Ok(v) if v.trim() == gone => format!(" Remove the {} environment variable, it still names that app.", crate::web::WEB_CLIENT_ID_ENV),
@@ -1008,7 +982,7 @@ pub async fn run(
         };
         set_status(&ui, format!("Your Spotify app's Client ID no longer exists; using the shared app.{env_note}"));
     }
-    tokio::spawn(covers::worker(session.clone(), ui.clone(), cover_rx));
+    tokio::spawn(covers::worker(session.clone(), cover_ui, cover_rx));
     // Sidebar rows, kept to title the pages they open.
     let mut library: Vec<Item> = Vec::new();
     // The user's own playlists: targets of "Add to playlist".
@@ -1054,8 +1028,8 @@ pub async fn run(
         library = lists.clone();
         let me = format!("spotify:user:{}", session.username());
         own_lists = lists.iter().filter(|l| l.uri.starts_with("spotify:playlist:") && l.artist_uri == me).cloned().collect();
-        set_rows(&ui, own_lists.clone(), App::set_targets);
-        set_rows(&ui, lists, App::set_lists);
+        set_rows(&ui, own_lists.clone(), Rows::Targets);
+        set_rows(&ui, lists, Rows::Lists);
     }
     set_status(&ui, format!("Logged in as {}. Visible in Spotify Connect as \"{DEVICE_NAME}\".", session.username()));
     if web.is_some() {
@@ -1079,11 +1053,7 @@ pub async fn run(
     let mut liked = false;
     if let Some(last) = &pending_resume {
         let (item, at, total) = (last.item.clone(), last.position_ms as f32, last.duration_ms as f32);
-        let _ = ui.upgrade_in_event_loop(move |app| {
-            app.set_now(Row::from(item));
-            app.set_duration(total);
-            app.set_position(at);
-        });
+        ui.send(UiUpdate::Now { item, duration: total, position: Some(at) });
     }
     loop {
         // After the command that hit it, so its own status doesn't overwrite this.
@@ -1226,7 +1196,7 @@ pub async fn run(
                     match w.queue(&session).await {
                         Ok(rows) => {
                             queue_rows = rows.clone();
-                            set_rows(&ui, rows, App::set_side_rows);
+                            set_rows(&ui, rows, Rows::SideRows);
                         }
                         Err(e) => set_status(&ui, e),
                     }
@@ -1238,7 +1208,7 @@ pub async fn run(
                         None => w.recently_played(&session).await.inspect(|rows| recent_rows = Some((Instant::now(), rows.clone()))),
                     };
                     match rows {
-                        Ok((tracks, _)) => set_rows(&ui, tracks, App::set_side_rows),
+                        Ok((tracks, _)) => set_rows(&ui, tracks, Rows::SideRows),
                         Err(e) => set_status(&ui, e),
                     }
                 }
@@ -1250,7 +1220,7 @@ pub async fn run(
                     }
                     // Spotify's queue endpoint lags behind the skip; drop the passed rows locally instead.
                     queue_rows.drain(..=ahead.min(queue_rows.len().saturating_sub(1)));
-                    set_rows(&ui, queue_rows.clone(), App::set_side_rows);
+                    set_rows(&ui, queue_rows.clone(), Rows::SideRows);
                 }
                 Command::PlayUri(uri) => {
                     set_status(&ui, "Loading...");
@@ -1342,13 +1312,13 @@ pub async fn run(
                         Err(e) => set_status(&ui, e),
                     }
                     let now_liked = liked;
-                    let _ = ui.upgrade_in_event_loop(move |app| app.set_liked(now_liked));
+                    ui.send(UiUpdate::Liked(now_liked));
                 }
                 Command::LoadDevices => {
                     let Some(w) = web.as_mut() else { continue };
-                    set_rows(&ui, Vec::new(), App::set_devices);
+                    set_rows(&ui, Vec::new(), Rows::Devices);
                     match w.devices(&session).await {
-                        Ok(devices) => set_rows(&ui, devices, App::set_devices),
+                        Ok(devices) => set_rows(&ui, devices, Rows::Devices),
                         Err(e) => set_status(&ui, e),
                     }
                 }
@@ -1418,7 +1388,7 @@ pub async fn run(
                                         set_status(&ui, format!("Added \"{}\" to Liked Songs", item.title));
                                         if now_uri.as_deref() == Some(uri.as_str()) {
                                             liked = true;
-                                            let _ = ui.upgrade_in_event_loop(|app| app.set_liked(true));
+                                            ui.send(UiUpdate::Liked(true));
                                         }
                                     }
                                     Err(e) => set_status(&ui, e),
@@ -1512,11 +1482,7 @@ pub async fn run(
                                 Ok(lines) => {
                                     let (title, lines) = (item.title.clone(), if lines.is_empty() { "Spotify lists no credits for this song.".to_string() } else { lines });
                                     set_status(&ui, page_summary(&nav));
-                                    let _ = ui.upgrade_in_event_loop(move |app| {
-                                        app.set_credits_title(title.into());
-                                        app.set_credits_text(lines.into());
-                                        app.invoke_show_credits();
-                                    });
+                                    ui.send(UiUpdate::Credits { title, text: lines });
                                 }
                                 Err(e) => set_status(&ui, e),
                             }
@@ -1564,7 +1530,7 @@ pub async fn run(
                     };
                     match rows {
                         Ok((rows, albums)) => {
-                            set_rows(&ui, albums, App::set_shelf);
+                            set_rows(&ui, albums, Rows::Shelf);
                             let uris = rows.iter().map(|r| r.uri.clone()).collect();
                             open_page(&ui, &mut nav, &mut shown, Page {
                                 title: greeting().into(),
@@ -1615,8 +1581,8 @@ pub async fn run(
                     tiles.retain(|i| seen.insert(i.uri.clone()));
                     tiles.truncate(QUICK_TILES);
                     let bottom = tiles.split_off(tiles.len().min(QUICK_TILES / 2));
-                    set_rows(&ui, tiles, App::set_quick_top);
-                    set_rows(&ui, bottom, App::set_quick_bottom);
+                    set_rows(&ui, tiles, Rows::QuickTop);
+                    set_rows(&ui, bottom, Rows::QuickBottom);
                 }
                 Command::PlayPage => {
                     let first = nav.current().and_then(|p| p.rows.iter().find(|r| is_playable(&r.uri)));
@@ -1644,7 +1610,7 @@ pub async fn run(
                         2 => rows.sort_by_key(|i| i.title.to_lowercase()),
                         _ => {}
                     }
-                    set_rows(&ui, rows, App::set_lists);
+                    set_rows(&ui, rows, Rows::Lists);
                 }
                 Command::FilterPage { text, sort } => {
                     let Some(page) = nav.current() else { continue };
@@ -1663,7 +1629,7 @@ pub async fn run(
                         3 => rows.sort_by_key(|i| i.duration_ms),
                         _ => {}
                     }
-                    set_rows(&ui, rows, App::set_tracks);
+                    set_rows(&ui, rows, Rows::Tracks);
                 }
                 Command::MoveRow { from, to } => {
                     let list = nav.current().filter(|p| p.editable && from < p.rows.len() && to < p.rows.len()).map(|p| p.list.clone());
@@ -1726,7 +1692,7 @@ pub async fn run(
                                 page.title = name.clone();
                                 page.info = description.clone();
                             }
-                            let _ = ui.upgrade_in_event_loop(move |app| app.set_page_info(description.into()));
+                            ui.send(UiUpdate::PageInfo(description));
                             refresh_library(&ui, &session.username(), &library, &own_lists);
                             set_page_header(&ui, nav.current().map(|p| p.kind).unwrap_or(""), name, nav.can_back(), nav.can_forward());
                         }
@@ -1771,10 +1737,7 @@ pub async fn run(
                     refresh_library(&ui, &session.username(), &library, &own_lists);
                     if let Some(page) = nav.current_mut().filter(|p| p.list == list) {
                         page.cover_url = url.clone();
-                        let _ = ui.upgrade_in_event_loop(move |app| {
-                            app.set_page_cover(Default::default());
-                            app.set_page_cover_url(url.into());
-                        });
+                        ui.send(UiUpdate::PageCover(url));
                     }
                     set_status(&ui, "Cover updated");
                 }
@@ -1804,7 +1767,7 @@ pub async fn run(
                     match w.search_type(&session, query.trim(), "track", 0).await {
                         Ok((rows, _)) => {
                             add_results = rows.clone();
-                            set_rows(&ui, rows, App::set_add_results);
+                            set_rows(&ui, rows, Rows::AddResults);
                         }
                         Err(e) => set_status(&ui, e),
                     }
@@ -1868,9 +1831,7 @@ pub async fn run(
                 Command::Quit => {
                     save_last(&ui, &mut settings, now_item.as_ref(), position, playing, duration_ms, &playing_context);
                     let _ = spirc.shutdown();
-                    let _ = slint::invoke_from_event_loop(|| {
-                        let _ = slint::quit_event_loop();
-                    });
+                    ui.send(UiUpdate::QuitEventLoop);
                     break;
                 }
                 Command::Next => spirc_result(&ui, spirc.next()),
@@ -2028,8 +1989,8 @@ pub async fn run(
                     match failed {
                         // Keep the old cache rather than a partial library.
                         Some(e) => {
-                            set_rows(&ui, library.clone(), App::set_lists);
-                            set_rows(&ui, own_lists.clone(), App::set_targets);
+                            set_rows(&ui, library.clone(), Rows::Lists);
+                            set_rows(&ui, own_lists.clone(), Rows::Targets);
                             set_status(&ui, e);
                         }
                         None => {
@@ -2116,14 +2077,14 @@ pub async fn run(
                         }
                         // Without a cover the previous track's tint would linger.
                         if item.cover_url.is_empty() {
-                            let _ = ui.upgrade_in_event_loop(|app| app.set_now_tint(slint::Color::from_rgb_u8(16, 16, 42)));
+                            ui.send(UiUpdate::NowTintDefault);
                         }
                         if item.artist_uri != about_artist {
                             about_artist = item.artist_uri.clone();
                             let (about_session, about_ui, artist) = (session.clone(), ui.clone(), item.artist_uri.clone());
                             tokio::spawn(async move {
                                 let bio: String = artist_bio(&about_session, &artist).await.chars().take(NOW_ABOUT_CHARS).collect();
-                                let _ = about_ui.upgrade_in_event_loop(move |app| app.set_now_about(bio.into()));
+                                about_ui.send(UiUpdate::NowAbout(bio));
                             });
                         }
                         now_uri = Some(item.uri.clone());
@@ -2138,7 +2099,7 @@ pub async fn run(
                             None => false,
                         };
                         let now_liked = liked;
-                        let _ = ui.upgrade_in_event_loop(move |app| app.set_liked(now_liked));
+                        ui.send(UiUpdate::Liked(now_liked));
                         // Fetched off the event loop; set_lyrics drops it if the track changed meanwhile.
                         clear_lyrics(&ui, "Loading lyrics...");
                         let (lyrics_session, lyrics_ui, lyrics_uri) = (session.clone(), ui.clone(), item.uri.clone());
@@ -2147,11 +2108,8 @@ pub async fn run(
                             set_lyrics(&lyrics_ui, lyrics_uri, result);
                         });
                         let duration = audio_item.duration_ms as f32;
-                        set_current(&ui, item.uri.clone(), App::set_current_track);
-                        let _ = ui.upgrade_in_event_loop(move |app| {
-                            app.set_now(Row::from(item));
-                            app.set_duration(duration);
-                        });
+                        set_current(&ui, item.uri.clone(), Current::Track);
+                        ui.send(UiUpdate::Now { item, duration, position: None });
                         continue;
                     }
                     PlayerEvent::Seeked { position_ms, .. }
