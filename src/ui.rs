@@ -1,7 +1,7 @@
 //! The window: a Freya UI driven by `UiUpdate`s from the backend. Commands go back over the
 //! backend's `Command` channel.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -313,6 +313,8 @@ const TAB_NOW: i32 = 0;
 const TAB_QUEUE: i32 = 1;
 const TAB_RECENT: i32 = 2;
 const ROW_H: f32 = 56.;
+// Room for row numbers up to 4 digits (Liked Songs has hundreds).
+const NUMBER_W: f32 = 36.;
 const HOVER_MS: u64 = 150;
 const PAGE_ANIM_MS: u64 = 250;
 // Covers kept as encoded bytes (a few KB each); Freya decodes and caches them at drawn size.
@@ -337,6 +339,12 @@ const EQ_PRESETS: [(&str, [f32; 10]); 8] = [
     ("Rock", [0.4, 0.24, -0.28, -0.4, -0.16, 0.2, 0.44, 0.56, 0.56, 0.56]),
     ("Techno", [0.4, 0.28, 0., -0.28, -0.24, 0., 0.4, 0.48, 0.48, 0.44]),
 ];
+// Library filter chips (kind 1..=4; 0 = none, like Spotify there is no "All" chip) and sort chip labels.
+const LIBRARY_KINDS: [&str; 4] = ["Playlists", "Albums", "Artists", "Podcasts"];
+const LIBRARY_SORTS: [&str; 3] = ["Sort", "Recents", "A-Z"];
+// The next batch of liked marks is asked for when the list scrolls this close to the checked rows.
+const LIKED_AHEAD: usize = 20;
+const PAGE_SORTS: [&str; 4] = ["Custom order", "Title", "Artist", "Duration"];
 const QUALITIES: [&str; 3] = ["96 kbps", "160 kbps", "320 kbps"];
 const SLEEP_CHOICES: [(&str, i32); 5] = [("Off", 0), ("15 min", 15), ("30 min", 30), ("1 hr", 60), ("End of track", -1)];
 
@@ -362,6 +370,7 @@ const I_PANEL: &str = "M3.5 5 H20.5 V19 H3.5 Z M14.5 5 V19";
 const I_QUEUE: &str = "M4 6 H20 M4 11 H20 M4 16 H11 M15 14 V20 L20 17 Z";
 const I_PENCIL: &str = "M5 19 L6 14.5 L15.5 5 L19 8.5 L9.5 18 Z M13.5 7 L17 10.5";
 const I_PLUS: &str = "M12 5 V19 M5 12 H19";
+const I_REFRESH: &str = "M19.5 12 A7.5 7.5 0 1 1 17 6.4 M17.5 2.5 V6.8 H13.2";
 const I_CLOCK: &str = "M12 3.5 C16.7 3.5 20.5 7.3 20.5 12 C20.5 16.7 16.7 20.5 12 20.5 C7.3 20.5 3.5 16.7 3.5 12 C3.5 7.3 7.3 3.5 12 3.5 Z M12 7.5 V12 L15 14";
 
 // ---- State ----
@@ -437,6 +446,18 @@ struct Model {
     playlist_popup: Option<bool>,
     add_popup: bool,
     add_results: Vec<Item>,
+    library_kind: i32,
+    library_sort: i32,
+    /// Find in page (Ctrl+F): open, filter text and sort; reset by a new page.
+    find_open: bool,
+    page_filter: String,
+    page_sort: i32,
+    /// Marked track rows (indexes into `tracks`) and the Shift anchor.
+    selected: BTreeSet<usize>,
+    anchor: usize,
+    /// Rows whose liked mark is known; later ones are asked for while scrolling (`CheckLikedMore`).
+    liked_checked: usize,
+    liked_asked: usize,
 }
 
 impl Model {
@@ -474,7 +495,10 @@ impl Model {
                 self.position_at = Some(Instant::now());
             }
             UiUpdate::Rows(target, items) => match target {
-                Rows::Tracks => self.tracks = items,
+                Rows::Tracks => {
+                    self.tracks = items;
+                    self.selected.clear();
+                }
                 Rows::Lists => self.lists = items,
                 Rows::Shelf => self.shelf = items,
                 Rows::QuickTop => {
@@ -500,9 +524,12 @@ impl Model {
             UiUpdate::PageHeader { kind, title, can_back, can_forward } => {
                 if (kind, &title) != (self.page_kind, &self.page_title) {
                     self.page_gen += 1;
-                    // Any page change closes the settings and lyrics, like the Slint version.
+                    // Any page change closes the settings and lyrics and resets find, like the Slint version.
                     self.show_settings = false;
                     self.show_lyrics = false;
+                    self.find_open = false;
+                    self.page_filter.clear();
+                    self.page_sort = 0;
                 }
                 self.page_kind = kind;
                 self.page_title = title;
@@ -521,7 +548,10 @@ impl Model {
                 self.search_tab = p.search_tab;
                 self.about = p.about;
                 self.editable = p.editable;
+                self.liked_checked = p.liked_upto.max(0) as usize;
+                self.liked_asked = self.liked_checked;
             }
+            UiUpdate::LikedChecked(rows) => self.liked_checked = rows,
             UiUpdate::PageInfo(info) => self.page_info = info,
             UiUpdate::PageCover(url) => self.page_cover = url,
             UiUpdate::Settings { volume, shuffle, repeat, quality, normalize, .. } => {
@@ -562,6 +592,11 @@ impl Model {
             }
             UiUpdate::Liked(liked) => self.liked = liked,
             UiUpdate::NowAbout(bio) => self.now_about = bio,
+            // A library change (create, rename, remove) brings the full list back in library order.
+            UiUpdate::ResetLibraryChips => {
+                self.library_kind = 0;
+                self.library_sort = 0;
+            }
             UiUpdate::Credits { title, text } => self.credits = Some((title, text)),
             UiUpdate::Cover(url, bytes) => {
                 self.cover_order.push_back(url.clone());
@@ -580,8 +615,6 @@ impl Model {
             UiUpdate::PageSaved(_)
             | UiUpdate::ScrollTop
             | UiUpdate::Reveal(_)
-            | UiUpdate::LikedChecked(_)
-            | UiUpdate::ResetLibraryChips
             | UiUpdate::NowTintDefault
  => {}
         }
@@ -824,6 +857,8 @@ struct LibraryRow {
     item: Item,
     selected: bool,
     cover: Option<Bytes>,
+    /// An own playlist or Liked Songs: dropped songs are added (or saved) there.
+    drop_target: bool,
 }
 
 impl Component for LibraryRow {
@@ -832,7 +867,7 @@ impl Component for LibraryRow {
         let uri = self.item.uri.clone();
         let bg = if self.selected { HOVER } else { mix(SURFACE, ELEVATED, t) };
         let round = self.item.uri.starts_with("spotify:artist:");
-        rect()
+        let row = rect()
             .horizontal()
             .width(Size::fill())
             .padding(8.)
@@ -854,7 +889,20 @@ impl Component for LibraryRow {
                     .spacing(2.)
                     .child(one_line(self.item.title.clone(), 14., if self.selected { ACCENT } else { TEXT }))
                     .child(one_line(self.item.artist.clone(), 12., SUB)),
-            )
+            );
+        if !self.drop_target {
+            return row.into_element();
+        }
+        let list = self.item.uri.clone();
+        DropZone::new(move |index: usize| {
+            let Some(model) = MODEL.get() else { return };
+            let uris = model.peek().dragged_uris(index);
+            if !uris.is_empty() {
+                send(Command::AddUris { list: list.clone(), uris });
+            }
+        })
+        .child(row)
+        .into_element()
     }
 
     fn render_key(&self) -> DiffKey {
@@ -960,6 +1008,9 @@ struct TrackRow {
     playing: bool,
     numbered: bool,
     cover: Option<Bytes>,
+    marked: bool,
+    /// Rows of an own, unsorted, unfiltered playlist can be dragged into a new order.
+    reorder: bool,
 }
 
 impl Component for TrackRow {
@@ -967,6 +1018,10 @@ impl Component for TrackRow {
         let (mut anim, t) = use_hover();
         let mut hovered = use_state(|| false);
         let model = use_model();
+        // "Show more" is hidden while filtering (the filter only covers the loaded rows).
+        if self.item.uri == MORE_URI && !model.peek().page_filter.is_empty() {
+            return rect().into_element();
+        }
         if self.item.uri == MORE_URI {
             return rect()
                 .width(Size::fill())
@@ -1006,14 +1061,16 @@ impl Component for TrackRow {
             rect().into_element()
         };
         let duration = if self.item.duration_ms > 0 { fmt_ms(self.item.duration_ms) } else { String::new() };
-        rect()
+        let index = self.index;
+        let bg = if self.marked { mix(ELEVATED, ACCENT, 0.18) } else { mix(SURFACE, ELEVATED, t) };
+        let row = rect()
             .horizontal()
             .width(Size::fill())
             .height(Size::px(ROW_H))
             .padding((0., 16.))
             .spacing(16.)
             .corner_radius(6.)
-            .background(rgb(mix(SURFACE, ELEVATED, t)))
+            .background(rgb(bg))
             .cross_align(Alignment::Center)
             .content(Content::Flex)
             .on_pointer_enter(move |_| {
@@ -1024,10 +1081,19 @@ impl Component for TrackRow {
                 hovered.set(false);
                 anim.reverse();
             })
-            // The playing row pauses/resumes instead of restarting.
-            .on_press(move |_| send(if current { Command::Toggle } else { Command::PlayUri(uri.clone()) }))
+            // Ctrl/Shift mark rows; a plain click plays (the playing row pauses/resumes instead of restarting).
+            .on_press(move |_| {
+                let (ctrl, shift) = modifiers_held();
+                if ctrl || shift {
+                    if let Some(mut model) = MODEL.get() {
+                        model.write().select(index, ctrl, shift);
+                    }
+                } else {
+                    send(if current { Command::Toggle } else { Command::PlayUri(uri.clone()) });
+                }
+            })
             .on_secondary_down(move |_| ContextMenu::open_from_down(open_menu()))
-            .child(rect().width(Size::px(24.)).cross_align(Alignment::Center).child(marker))
+            .child(rect().width(Size::px(NUMBER_W)).cross_align(Alignment::Center).child(marker))
             .child(cover(&self.item.cover_url, self.cover.clone(), 40., if round { 20. } else { 4. }))
             .child(
                 rect()
@@ -1052,8 +1118,21 @@ impl Component for TrackRow {
                         ContextMenu::open(menu_for_button());
                     })
                     .child(icon(I_MORE, 18., SUB, true)),
-            )
-            .into_element()
+            );
+        let label = self.item.title.clone();
+        let dragged = DragZone::new(index)
+            .drag_element(rect().padding((8., 14.)).corner_radius(8.).background(rgb(ACCENT)).color(rgb(ON_ACCENT)).font_size(13.).child(label))
+            .child(row);
+        if !self.reorder {
+            return dragged.into_element();
+        }
+        DropZone::new(move |from: usize| {
+            if from != index {
+                send(Command::MoveRow { from, to: index });
+            }
+        })
+        .child(dragged)
+        .into_element()
     }
 
     fn render_key(&self) -> DiffKey {
@@ -1094,6 +1173,7 @@ struct Sidebar;
 impl Component for Sidebar {
     fn render(&self) -> impl IntoElement {
         let model = use_model();
+        let filter = use_state(String::new);
         let m = model.read();
         let home = m.page_kind == "Home";
         let nav = rect()
@@ -1106,8 +1186,52 @@ impl Component for Sidebar {
         let rows: Vec<Element> = m
             .lists
             .iter()
-            .map(|item| LibraryRow { item: item.clone(), selected: item.uri == m.current_list, cover: m.cover(&item.cover_url) }.into_element())
+            .map(|item| {
+                let drop_target = item.uri == crate::web::LIKED_SONGS || m.targets.iter().any(|t| t.uri == item.uri);
+                LibraryRow { item: item.clone(), selected: item.uri == m.current_list, cover: m.cover(&item.cover_url), drop_target }.into_element()
+            })
             .collect();
+        let (kind, sort) = (m.library_kind, m.library_sort);
+        // Filtering happens in the backend on the loaded rows (no request), whenever a control changes.
+        let mut sent = use_state(|| (0, String::new(), 0));
+        let filter_key = (kind, filter.read().clone(), sort);
+        if filter_key != *sent.peek() {
+            send(Command::FilterLibrary { kind: filter_key.0, text: filter_key.1.clone(), sort: filter_key.2 });
+            sent.set(filter_key);
+        }
+        // Wraps to a second line when the four chips don't fit the sidebar.
+        let chips = rect().horizontal().width(Size::fill()).padding((0., 8.)).spacing(6.).content(Content::Wrap { wrap_spacing: Some(6.) }).children(LIBRARY_KINDS.iter().enumerate().map(move |(i, label)| {
+            let k = i as i32 + 1;
+            Chip {
+                label,
+                active: kind == k,
+                on_press: EventHandler::new(move |_| {
+                    if let Some(mut model) = MODEL.get() {
+                        let mut m = model.write();
+                        m.library_kind = if m.library_kind == k { 0 } else { k };
+                    }
+                }),
+            }
+            .into_element()
+        }));
+        let tools = rect()
+            .horizontal()
+            .width(Size::fill())
+            .padding((0., 8.))
+            .spacing(6.)
+            .cross_align(Alignment::Center)
+            .content(Content::Flex)
+            .child(rect().width(Size::flex(1.)).child(Input::new(filter).placeholder("Search in Your Library").width(Size::fill())))
+            .child(Chip {
+                label: LIBRARY_SORTS[sort as usize],
+                active: sort != 0,
+                on_press: EventHandler::new(|_| {
+                    if let Some(mut model) = MODEL.get() {
+                        let mut m = model.write();
+                        m.library_sort = (m.library_sort + 1) % LIBRARY_SORTS.len() as i32;
+                    }
+                }),
+            });
         let library = rect()
             .width(Size::fill())
             .height(Size::func(|p| Some(p.parent - 128.)))
@@ -1124,8 +1248,11 @@ impl Component for Sidebar {
                     .content(Content::Flex)
                     .child(icon(I_LIBRARY, 22., SUB, false))
                     .child(rect().width(Size::flex(1.)).font_size(15.).font_weight(FontWeight::SEMI_BOLD).color(rgb(TEXT)).child("Your Library"))
+                    .child(IconButton { path: I_REFRESH, size: 18., active: false, filled: false, on_press: Some(|| send(Command::Refresh)) })
                     .child(IconButton { path: I_PLUS, size: 18., active: false, filled: false, on_press: Some(|| open_playlist_popup(true)) }),
             )
+            .child(chips)
+            .child(tools)
             .child(ScrollView::new().children(rows));
         rect().width(Size::px(SIDEBAR_W)).height(Size::fill()).spacing(GAP).child(nav).child(library)
     }
@@ -1185,6 +1312,81 @@ fn toggle_settings() {
         let mut m = model.write();
         m.show_settings = !m.show_settings;
         m.show_lyrics = false;
+    }
+}
+
+/// Whether Ctrl / Shift is held right now (pointer events carry no modifiers in Freya).
+fn modifiers_held() -> (bool, bool) {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_SHIFT};
+        // The high bit of GetKeyState is set while the key is down.
+        let down = |vk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY| unsafe { GetKeyState(vk.0 as i32) } < 0;
+        (down(VK_CONTROL), down(VK_SHIFT))
+    }
+    #[cfg(not(windows))]
+    (false, false)
+}
+
+impl Model {
+    /// Ctrl toggles a row, Shift extends from the anchor, a plain mark selects one (the Slint rules).
+    fn select(&mut self, index: usize, ctrl: bool, shift: bool) {
+        if index >= self.tracks.len() {
+            return;
+        }
+        if shift {
+            let from = self.anchor.min(self.tracks.len() - 1);
+            self.selected = (from.min(index)..=from.max(index)).collect();
+        } else {
+            self.anchor = index;
+            if ctrl {
+                if !self.selected.remove(&index) {
+                    self.selected.insert(index);
+                }
+            } else {
+                self.selected = BTreeSet::from([index]);
+            }
+        }
+    }
+
+    /// Track URIs of the marked rows, in list order.
+    fn selected_uris(&self) -> Vec<String> {
+        self.selected.iter().filter_map(|&i| self.tracks.get(i)).filter(|t| t.uri.starts_with("spotify:track:")).map(|t| t.uri.clone()).collect()
+    }
+
+    /// The songs a drag from row `index` carries: the selection if the row is part of it, else that row.
+    fn dragged_uris(&self, index: usize) -> Vec<String> {
+        if self.selected.contains(&index) {
+            self.selected_uris()
+        } else {
+            self.tracks.get(index).map(|t| vec![t.uri.clone()]).unwrap_or_default()
+        }
+    }
+}
+
+/// Copies `open.spotify.com` links of the selection (Ctrl+C, and Ctrl+X before removing).
+fn copy_selection(model: &mut Model) -> Vec<String> {
+    let uris = model.selected_uris();
+    #[cfg(windows)]
+    {
+        let links: Vec<String> = uris.iter().filter_map(|u| crate::clipboard::web_link(u)).collect();
+        if !links.is_empty() {
+            model.status = match crate::clipboard::set_text(&links.join("\n")) {
+                Ok(()) => format!("Copied {} link{}", links.len(), if links.len() == 1 { "" } else { "s" }),
+                Err(e) => e,
+            };
+        }
+    }
+    uris
+}
+
+/// Adds song links from the clipboard to the open own playlist (Ctrl+V).
+fn paste_links() {
+    #[cfg(windows)]
+    match crate::clipboard::get_text().map(|t| crate::clipboard::track_uris(&t)) {
+        Ok(uris) if !uris.is_empty() => send(Command::AddUris { list: String::new(), uris }),
+        Ok(_) => send(Command::Status("No song links on the clipboard".into())),
+        Err(e) => send(Command::Status(e)),
     }
 }
 
@@ -1264,7 +1466,7 @@ impl Component for HomePage {
             .enumerate()
             .map(|(index, item)| {
                 let current = item.uri == m.current_track;
-                TrackRow { index, item: item.clone(), current, playing: m.playing, numbered: false, cover: m.cover(&item.cover_url) }.into_element()
+                TrackRow { index, item: item.clone(), current, playing: m.playing, numbered: false, cover: m.cover(&item.cover_url), marked: m.selected.contains(&index), reorder: false }.into_element()
             })
             .collect();
         ScrollView::new()
@@ -1293,7 +1495,8 @@ struct ListPage;
 
 impl Component for ListPage {
     fn render(&self) -> impl IntoElement {
-        let model = use_model();
+        let mut model = use_model();
+        let find = use_state(String::new);
         let m = model.read();
         let header_cover = crate::covers::larger_cover(&m.page_cover);
         let has_cover = !header_cover.is_empty();
@@ -1324,6 +1527,37 @@ impl Component for ListPage {
             .child(IconButton { path: I_SHUFFLE, size: 26., active: m.shuffle, filled: false, on_press: Some(|| send(Command::ToggleShuffle)) })
             .maybe_child(m.editable.then(|| IconButton { path: I_PENCIL, size: 24., active: false, filled: false, on_press: Some(|| open_playlist_popup(false)) }))
             .maybe_child(m.editable.then(|| IconButton { path: I_PLUS, size: 24., active: false, filled: false, on_press: Some(open_add_popup) }));
+        // Find in page (Ctrl+F): filter and sort run in the backend on the page's rows (no request).
+        let (page_sort, find_open) = (m.page_sort, m.find_open);
+        let typed = find.read().clone();
+        let changed = typed != m.page_filter;
+        drop(m);
+        if changed {
+            model.write().page_filter = typed.clone();
+            send(Command::FilterPage { text: typed, sort: page_sort });
+        }
+        let find_bar = find_open.then(|| {
+            rect()
+                .horizontal()
+                .padding((0., 24., 12., 24.))
+                .spacing(GAP)
+                .cross_align(Alignment::Center)
+                .child(Input::new(find).placeholder("Find in page").width(Size::px(260.)).auto_focus(true))
+                .child(Chip {
+                    label: PAGE_SORTS[page_sort as usize],
+                    active: page_sort != 0,
+                    on_press: EventHandler::new(move |_| {
+                        let mut model = model;
+                        let (text, sort) = {
+                            let mut m = model.write();
+                            m.page_sort = (m.page_sort + 1) % PAGE_SORTS.len() as i32;
+                            (m.page_filter.clone(), m.page_sort)
+                        };
+                        send(Command::FilterPage { text, sort });
+                    }),
+                })
+        });
+        let m = model.read();
         // An empty own playlist invites songs, like Spotify.
         let empty_own = (m.editable && m.tracks.is_empty()).then(|| {
             rect().padding((24., 24.)).child(Chip { label: "Let's find something for your playlist", active: true, on_press: EventHandler::new(|_| open_add_popup()) })
@@ -1336,7 +1570,7 @@ impl Component for ListPage {
             .content(Content::Flex)
             .color(rgb(SUB))
             .font_size(12.)
-            .child(rect().width(Size::px(24.)).child(if m.numbered { "#" } else { "" }))
+            .child(rect().width(Size::px(NUMBER_W)).cross_align(Alignment::Center).child(if m.numbered { "#" } else { "" }))
             .child(rect().width(Size::px(40.)))
             .child(rect().width(Size::flex(1.)).child("Title"))
             .child(rect().width(Size::px(32.)))
@@ -1356,15 +1590,28 @@ impl Component for ListPage {
                 let m = model.read();
                 let Some(track) = m.tracks.get(item.index) else { return rect().into_element() };
                 let current = track.uri == m.current_track;
-                TrackRow {
+                let ask_more = item.index + LIKED_AHEAD >= m.liked_checked && m.liked_checked < m.tracks.len() && m.liked_asked <= m.liked_checked;
+                let checked = m.liked_checked;
+                let row = TrackRow {
                     index: item.index,
                     item: track.clone(),
                     current,
                     playing: m.playing,
                     numbered: m.numbered,
                     cover: m.cover(&track.cover_url),
+                    marked: m.selected.contains(&item.index),
+                    reorder: m.editable && m.page_sort == 0 && m.page_filter.is_empty(),
                 }
-                .into_element()
+                .into_element();
+                drop(m);
+                if ask_more {
+                    // Once per batch: liked_asked moves past liked_checked until the answer raises it.
+                    if let Some(mut model) = MODEL.get() {
+                        model.write().liked_asked = checked + 1;
+                    }
+                    send(Command::CheckLikedMore);
+                }
+                row
             })
             .length(len)
             .item_size(ROW_H),
@@ -1375,6 +1622,7 @@ impl Component for ListPage {
             .child(header)
             .child(actions)
             .maybe_child(tabs)
+            .maybe_child(find_bar)
             .maybe_child(empty_own)
             .maybe_child(about)
             .child(columns)
@@ -1873,13 +2121,42 @@ fn on_key(e: &KeyboardEventData, model: State<Model>, search: AccessibilityId) {
         Key::Named(NamedKey::ArrowRight) if shift && !typing => seek(SEEK_STEP_MS as i64),
         Key::Named(NamedKey::ArrowLeft) if shift && !typing => seek(-(SEEK_STEP_MS as i64)),
         Key::Named(NamedKey::ArrowLeft) if alt => send(Command::Back),
+        Key::Named(NamedKey::Delete) if !typing => {
+            let uris = model.peek().selected_uris();
+            if !uris.is_empty() {
+                send(Command::RemoveUris(uris));
+            }
+        }
         Key::Named(NamedKey::ArrowRight) if alt => send(Command::Forward),
         Key::Character(c) if ctrl => match c.to_lowercase().as_str() {
             "q" => quit(),
             "s" => send(Command::ToggleShuffle),
             "r" => send(Command::CycleRepeat),
             "h" => send(Command::Home),
+            // Ctrl+F finds in pages with tracks; Ctrl+L stays the global search.
+            "f" if model.peek().playable => {
+                let mut model = model;
+                let mut m = model.write();
+                m.find_open = !m.find_open;
+            }
             "f" | "l" => search.request_focus(),
+            "a" if !typing => {
+                let mut model = model;
+                let mut m = model.write();
+                m.selected = (0..m.tracks.len()).filter(|&i| m.tracks[i].uri.starts_with("spotify:track:")).collect();
+            }
+            "c" if !typing => {
+                let mut model = model;
+                copy_selection(&mut model.write());
+            }
+            "x" if !typing => {
+                let mut model = model;
+                let uris = copy_selection(&mut model.write());
+                if !uris.is_empty() {
+                    send(Command::RemoveUris(uris));
+                }
+            }
+            "v" if !typing => paste_links(),
             "," => toggle_settings(),
             "y" => toggle_lyrics(),
             "u" => toggle_side(TAB_QUEUE),
