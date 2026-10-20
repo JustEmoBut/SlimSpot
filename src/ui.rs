@@ -2264,6 +2264,8 @@ pub enum UiUpdate {
     Playing(bool),
     Position(u32),
     Rows(Rows, Vec<Item>),
+    /// Appended to the track list in place, so loaded covers and the scroll position stay.
+    AppendTracks(Vec<Item>),
     Lyrics(String, Result<Option<crate::lyrics::Lyrics>, String>),
     ClearLyrics(String),
     LikedRows(Vec<String>, bool),
@@ -2346,6 +2348,12 @@ fn apply(app: &App, update: UiUpdate) {
                 Rows::QuickTop => app.set_quick_top(rows),
                 Rows::QuickBottom => app.set_quick_bottom(rows),
                 Rows::AddResults => app.set_add_results(rows),
+            }
+        }
+        UiUpdate::AppendTracks(items) => {
+            let model = app.get_tracks();
+            if let Some(rows) = model.as_any().downcast_ref::<VecModel<Row>>() {
+                rows.extend(items.into_iter().map(Row::from));
             }
         }
         // Dropped if another track has started meanwhile.

@@ -1077,6 +1077,8 @@ pub async fn run(
                     }
                     // Shows page their episodes with "Show more".
                     let mut more = None;
+                    // The rest of a long playlist, loaded once its first page is on screen.
+                    let mut rest = None;
                     // Album and artist pages bring their own name; lists are named by the clicked row.
                     let result = if uri.starts_with("spotify:album:") {
                         w.album_tracks(&session, &uri).await
@@ -1096,8 +1098,11 @@ pub async fn run(
                     } else if uri.starts_with("spotify:artist:") {
                         artist_top_tracks(&session, &uri).await.map(|(name, top)| (name, String::new(), top))
                     } else {
-                        match w.list_tracks(&session, &uri).await {
-                            Ok(rows) => Ok((String::new(), String::new(), rows)),
+                        match w.list_tracks_first(&session, &uri).await {
+                            Ok((rows, next)) => {
+                                rest = next;
+                                Ok((String::new(), String::new(), rows))
+                            }
                             Err(e) if uri.starts_with("spotify:playlist:") => {
                                 log::warn!("Web API refused {uri} ({e}); reading it through librespot");
                                 context_tracks(&session, &uri).await.map(|rows| (String::new(), String::new(), rows))
@@ -1123,12 +1128,6 @@ pub async fn run(
                             };
                             let kind = kind_of(&uri);
                             let saved = matches!(kind, "Album" | "Artist" | "Podcast") && w.is_saved(&session, &uri).await.unwrap_or(false);
-                            // Playlists show their description where albums show year and label.
-                            let info = if uri.starts_with("spotify:playlist:") {
-                                w.playlist_description(&session, &uri).await.unwrap_or_default()
-                            } else {
-                                info
-                            };
                             // Only sidebar entries get highlighted.
                             let sidebar = uri == LIKED_SONGS || uri == YOUR_EPISODES || uri.starts_with("spotify:playlist:");
                             // Saved episodes have no Spotify context to load; they play as a list.
@@ -1139,13 +1138,38 @@ pub async fn run(
                             };
                             // Artist pages have tabs (Popular, Albums, ...); they open on Popular.
                             let search = (kind == "Artist").then(|| (uri.clone(), 0));
-                            let list = if sidebar { uri } else { String::new() };
+                            let list = if sidebar { uri.clone() } else { String::new() };
                             let reveal_row = reveal.take().filter(|_| playing_context.as_ref() == Some(&context));
                             open_page(&ui, &mut nav, &mut shown, Page { title, rows, shown: page_shown, list, more, search, about: String::new(), editable, kind, info, saved, cover_url, liked_upto: 0 });
                             if let Some(track) = reveal_row {
                                 reveal_track(&ui, &nav, &track);
                             }
                             mark_liked(&ui, w, &session, &mut nav).await;
+                            // Playlists show their description where albums show year and label; it
+                            // follows the page so the songs show a request earlier.
+                            if uri.starts_with("spotify:playlist:") {
+                                let description = w.playlist_description(&session, &uri).await.unwrap_or_default();
+                                if let Some(page) = nav.current_mut() {
+                                    page.info = description.clone();
+                                }
+                                ui.send(UiUpdate::PageInfo(description));
+                            }
+                            // ponytail: the command loop still waits for the whole list (as before, now behind a visible page); a click meanwhile runs after it. Move it to a task if that wait shows.
+                            if let Some(next) = rest {
+                                match w.list_tracks_rest(&session, next).await {
+                                    Ok(more_rows) => {
+                                        if let Some(page) = nav.current_mut() {
+                                            if let Shown::Tracks(uris) = &mut page.shown {
+                                                uris.extend(more_rows.iter().map(|r| r.uri.clone()));
+                                            }
+                                            page.rows.extend(more_rows.iter().cloned());
+                                        }
+                                        ui.send(UiUpdate::AppendTracks(more_rows));
+                                        set_status(&ui, page_summary(&nav));
+                                    }
+                                    Err(e) => set_status(&ui, format!("Only the first songs loaded: {e}")),
+                                }
+                            }
                             if let Some(tab) = open_tab.take() {
                                 let _ = tx.send(Command::SearchTab(tab));
                             }

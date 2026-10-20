@@ -269,13 +269,18 @@ impl WebApi {
         let mut items = Vec::new();
         let mut next = Some(first_url);
         while let Some(url) = next {
-            let mut page = self.get_json(session, &url).await?;
-            if let Some(arr) = page["items"].as_array_mut() {
-                items.append(arr);
-            }
-            next = page["next"].as_str().map(String::from);
+            let (mut page, more) = self.items_page(session, &url).await?;
+            items.append(&mut page);
+            next = more;
         }
         Ok(items)
+    }
+
+    /// One page of a paged list and the URL of the next page, if any.
+    async fn items_page(&mut self, session: &Session, url: &str) -> Result<(Vec<serde_json::Value>, Option<String>), String> {
+        let mut page = self.get_json(session, url).await?;
+        let items = page["items"].as_array_mut().map(std::mem::take).unwrap_or_default();
+        Ok((items, page["next"].as_str().map(String::from)))
     }
 
     /// Artists, then albums, then tracks, in one list; album/artist rows open their page.
@@ -557,18 +562,25 @@ impl WebApi {
         Ok(items.iter().filter_map(playlist_row).collect())
     }
 
-    pub async fn list_tracks(&mut self, session: &Session, list: &str) -> Result<Vec<Item>, String> {
+    /// The first page of a playlist (or Liked Songs) and the URL of the rest, so the page can show
+    /// before a long list has loaded; `list_tracks_rest` fetches the remainder.
+    pub async fn list_tracks_first(&mut self, session: &Session, list: &str) -> Result<(Vec<Item>, Option<String>), String> {
         let url = match list.strip_prefix("spotify:playlist:") {
             Some(id) => format!("{API}/playlists/{id}/items?limit={PAGE_LIMIT}&additional_types=track"),
             None => format!("{API}/me/tracks?limit={PAGE_LIMIT}"),
         };
-        let items = self.all_items(session, url).await?;
-        // Playlist items carry the track in `item` (older responses: `track`); saved tracks in `track`.
-        Ok(items
-            .iter()
-            .filter_map(|i| track_row(if i["item"].is_object() { &i["item"] } else { &i["track"] }))
-            .collect())
+        let (items, next) = self.items_page(session, &url).await?;
+        Ok((list_rows(&items), next))
     }
+
+    pub async fn list_tracks_rest(&mut self, session: &Session, next: String) -> Result<Vec<Item>, String> {
+        Ok(list_rows(&self.all_items(session, next).await?))
+    }
+}
+
+/// Playlist items carry the track in `item` (older responses: `track`); saved tracks in `track`.
+fn list_rows(items: &[serde_json::Value]) -> Vec<Item> {
+    items.iter().filter_map(|i| track_row(if i["item"].is_object() { &i["item"] } else { &i["track"] })).collect()
 }
 
 /// Spotify doesn't always rotate the refresh token, and librespot-oauth then reports it as "".
