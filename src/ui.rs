@@ -7,10 +7,12 @@ use std::time::{Duration, Instant};
 
 use freya::animation::*;
 use freya::prelude::*;
+use freya::tray::menu::{Menu as TrayMenu, MenuEvent, MenuItem as TrayItem, PredefinedMenuItem};
+use freya::tray::{Icon, MouseButton, MouseButtonState, TrayEvent, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use freya::winit::window::Theme as WindowTheme;
 use tokio::sync::mpsc;
 
-use crate::player::Command;
+use crate::player::{Command, MORE_URI};
 use crate::web::Item;
 
 // ---- Messages from the backend ----
@@ -187,16 +189,74 @@ pub fn run(commands: mpsc::UnboundedSender<Command>, cover_requests: mpsc::Unbou
                     .with_renderer(RendererPreference::Software)
                     .with_window_attributes(|attributes, _| attributes.with_theme(Some(WindowTheme::Dark)))
                     .with_window_handle(|window| {
+                        let _ = MAIN_WINDOW.set(window.id());
                         #[cfg(windows)]
                         crate::instance::dark_title_bar(window, BASE, SUB, HAIRLINE);
                     })
-                    // ponytail: closing quits until the tray is back (phase 2); then it hides to the tray again.
-                    .with_on_close(|_, _| {
-                        quit();
+                    // Close hides to the tray; playback continues. Quit from the tray or Ctrl+Q.
+                    .with_on_close(|_, id| {
+                        // Hiding inside the close event itself doesn't stick; queue it for after.
+                        Platform::get().with_window(id, |w| w.set_visible(false));
                         CloseDecision::KeepOpen
                     }),
-            ),
+            )
+            .with_tray(tray_icon, |event, _| {
+                let show = || show_window();
+                match event {
+                    TrayEvent::Icon(TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. }) => show(),
+                    TrayEvent::Menu(MenuEvent { id }) => match id.as_ref() {
+                        TRAY_SHOW => show(),
+                        TRAY_TOGGLE => send(Command::Toggle),
+                        TRAY_PREV => send(Command::Prev),
+                        TRAY_NEXT => send(Command::Next),
+                        TRAY_QUIT => quit(),
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }),
     );
+}
+
+static MAIN_WINDOW: OnceLock<freya::winit::window::WindowId> = OnceLock::new();
+
+/// Brings the window back from the tray (or from behind other windows).
+fn show_window() {
+    if let Some(id) = MAIN_WINDOW.get() {
+        Platform::get().with_window(*id, |w| {
+            #[cfg(windows)]
+            crate::instance::bring_to_front(w);
+        });
+    }
+}
+
+const TRAY_SHOW: &str = "show";
+const TRAY_TOGGLE: &str = "toggle";
+const TRAY_PREV: &str = "prev";
+const TRAY_NEXT: &str = "next";
+const TRAY_QUIT: &str = "quit";
+
+fn tray_icon() -> TrayIcon {
+    let menu = TrayMenu::new();
+    let items = [(TRAY_SHOW, "Show SlimSpot"), (TRAY_TOGGLE, "Play/Pause"), (TRAY_PREV, "Previous"), (TRAY_NEXT, "Next")];
+    for (id, label) in items {
+        let _ = menu.append(&TrayItem::with_id(id, label, true, None));
+    }
+    let _ = menu.append(&PredefinedMenuItem::separator());
+    let _ = menu.append(&TrayItem::with_id(TRAY_QUIT, "Quit", true, None));
+    let mut builder = TrayIconBuilder::new().with_tooltip("SlimSpot").with_menu(Box::new(menu)).with_menu_on_left_click(false);
+    match image::load_from_memory(include_bytes!("../assets/icon-64.png")) {
+        Ok(img) => {
+            let rgba = img.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            match Icon::from_rgba(rgba.into_raw(), w, h) {
+                Ok(icon) => builder = builder.with_icon(icon),
+                Err(e) => log::warn!("Tray icon: {e}"),
+            }
+        }
+        Err(e) => log::warn!("Tray icon: {e}"),
+    }
+    builder.build().expect("tray icon")
 }
 
 // ---- Design tokens (one dark theme) ----
@@ -224,6 +284,9 @@ const PAGE_ANIM_MS: u64 = 250;
 // Covers kept as encoded bytes (a few KB each); Freya decodes and caches them at drawn size.
 const MAX_COVERS: usize = 300;
 const POSITION_TICK: Duration = Duration::from_millis(500);
+// Keyboard steps: Shift+arrows seek, Ctrl+Up/Down change the volume.
+const SEEK_STEP_MS: u32 = 10_000;
+const VOLUME_STEP: f32 = 5.;
 
 // ---- Icons: 24x24 paths, stroked unless noted ----
 const I_HOME: &str = "M4 11 L12 4 L20 11 V20 H14.5 V14 H9.5 V20 H4 Z";
@@ -240,6 +303,7 @@ const I_VOLUME: &str = "M4 9.5 H7.5 L12 5.5 V18.5 L7.5 14.5 H4 Z M15.5 9 C16.8 1
 const I_BACK: &str = "M15 5 L8 12 L15 19";
 const I_FORWARD: &str = "M9 5 L16 12 L9 19";
 const I_RADIO: &str = "M8.8 8.8 C7 10.6 7 13.4 8.8 15.2 M15.2 8.8 C17 10.6 17 13.4 15.2 15.2 M5.8 5.8 C2.4 9.2 2.4 14.8 5.8 18.2 M18.2 5.8 C21.6 9.2 21.6 14.8 18.2 18.2 M12 10.6 C12.8 10.6 13.4 11.2 13.4 12 C13.4 12.8 12.8 13.4 12 13.4 C11.2 13.4 10.6 12.8 10.6 12 C10.6 11.2 11.2 10.6 12 10.6 Z";
+const I_MORE: &str = "M5 10.5 H8 V13.5 H5 Z M10.5 10.5 H13.5 V13.5 H10.5 Z M16 10.5 H19 V13.5 H16 Z";
 const I_CLOCK: &str = "M12 3.5 C16.7 3.5 20.5 7.3 20.5 12 C20.5 16.7 16.7 20.5 12 20.5 C7.3 20.5 3.5 16.7 3.5 12 C3.5 7.3 7.3 3.5 12 3.5 Z M12 7.5 V12 L15 14";
 
 // ---- State ----
@@ -279,6 +343,18 @@ struct Model {
     repeat: i32,
     covers: HashMap<String, Bytes>,
     cover_order: VecDeque<String>,
+    /// Search/artist page tabs and the chosen one.
+    tabs: Vec<&'static str>,
+    search_tab: i32,
+    /// An artist's biography (About tab).
+    about: String,
+    /// An own playlist: rows can be removed from it.
+    editable: bool,
+    /// Own playlists, the targets of "Add to playlist".
+    targets: Vec<Item>,
+    credits: Option<(String, String)>,
+    /// The volume before M muted it.
+    muted_from: Option<f32>,
 }
 
 impl Model {
@@ -327,8 +403,9 @@ impl Model {
                     self.quick_bottom = items;
                     self.quick = interleave(&self.quick_top, &self.quick_bottom);
                 }
-                // ponytail: playlist targets, side panel, devices and "Add songs" results come with their screens (phase 2).
-                Rows::Targets | Rows::SideRows | Rows::Devices | Rows::AddResults => {}
+                Rows::Targets => self.targets = items,
+                // ponytail: side panel, devices and "Add songs" results come with their screens (phase 2).
+                Rows::SideRows | Rows::Devices | Rows::AddResults => {}
             },
             UiUpdate::AppendTracks(items) => self.tracks.extend(items),
             UiUpdate::LikedRows(uris, liked) => {
@@ -353,6 +430,10 @@ impl Model {
                 self.page_cover = p.cover;
                 self.numbered = p.numbered;
                 self.playable = p.playable;
+                self.tabs = p.tabs;
+                self.search_tab = p.search_tab;
+                self.about = p.about;
+                self.editable = p.editable;
             }
             UiUpdate::PageInfo(info) => self.page_info = info,
             UiUpdate::PageCover(url) => self.page_cover = url,
@@ -370,6 +451,7 @@ impl Model {
                 }
             }
             UiUpdate::Liked(liked) => self.liked = liked,
+            UiUpdate::Credits { title, text } => self.credits = Some((title, text)),
             UiUpdate::Cover(url, bytes) => {
                 self.cover_order.push_back(url.clone());
                 self.covers.insert(url, bytes);
@@ -380,10 +462,7 @@ impl Model {
                     }
                 }
             }
-            UiUpdate::Show => Platform::get().with_window(Platform::window_id(), |w| {
-                #[cfg(windows)]
-                crate::instance::bring_to_front(w);
-            }),
+            UiUpdate::Show => show_window(),
             UiUpdate::InvokeQuit => quit(),
             UiUpdate::QuitEventLoop => std::process::exit(0),
             // ponytail: lyrics, credits, settings, queue, page tabs and the update chip come with their screens (phase 2).
@@ -397,7 +476,6 @@ impl Model {
             | UiUpdate::StartupSettings { .. }
             | UiUpdate::NowTintDefault
             | UiUpdate::NowAbout(_)
-            | UiUpdate::Credits { .. }
             | UiUpdate::UpdateVersion(_)
             | UiUpdate::WebClientId(_) => {}
         }
@@ -526,6 +604,88 @@ impl Component for IconButton {
 }
 
 #[derive(PartialEq)]
+struct Chip {
+    label: &'static str,
+    active: bool,
+    tab: i32,
+}
+
+impl Component for Chip {
+    fn render(&self) -> impl IntoElement {
+        let (mut anim, t) = use_hover();
+        let (bg, fg) = if self.active { (TEXT, ON_ACCENT) } else { (mix(ELEVATED, HOVER, t), TEXT) };
+        let tab = self.tab;
+        rect()
+            .padding((6., 14.))
+            .corner_radius(99.)
+            .background(rgb(bg))
+            .color(rgb(fg))
+            .font_size(13.)
+            .on_pointer_enter(move |_| anim.start())
+            .on_pointer_leave(move |_| anim.reverse())
+            .on_press(move |_| send(Command::SearchTab(tab)))
+            .child(self.label)
+    }
+}
+
+fn action(label: &'static str, name: &str, uri: &str) -> MenuButton {
+    let (name, uri) = (name.to_string(), uri.to_string());
+    MenuButton::new().on_press(move |_| send(Command::RowAction { action: name.clone(), uri: uri.clone() })).child(label)
+}
+
+/// The row menu (right-click or "..."), like the Slint one: what applies depends on the row.
+fn row_menu(item: &Item, sidebar: bool, editable: bool, targets: &[Item]) -> Menu {
+    let uri = item.uri.as_str();
+    let track = uri.starts_with("spotify:track:");
+    let saveable = ["spotify:album:", "spotify:artist:", "spotify:show:"].iter().any(|p| uri.starts_with(p));
+    let in_library = sidebar && (saveable || uri.starts_with("spotify:playlist:"));
+    let radio = track || saveable || uri.starts_with("spotify:playlist:");
+    let mut menu = Menu::new();
+    if track {
+        menu = menu.child(action("Add to queue", "queue", uri));
+        if !targets.is_empty() {
+            let lists: Vec<Element> = targets.iter().map(|t| action(leak(&t.title), &format!("add:{}", t.uri), uri).into_element()).collect();
+            menu = menu.child(SubMenu::new().label("Add to playlist").children(lists));
+        }
+        menu = menu.child(action("Save to Liked Songs", "like", uri));
+    } else {
+        menu = menu.child(action("Open", "open", uri));
+    }
+    if radio {
+        menu = menu.child(action("Start radio", "radio", uri));
+    }
+    if track {
+        menu = menu.child(action("Go to artist", "artist", uri)).child(action("Go to album", "album", uri)).child(action("View credits", "credits", uri));
+    }
+    menu = menu.child(action("Copy link", "copy", uri));
+    if track && editable && !sidebar {
+        menu = menu.child(action("Remove from this playlist", "remove", uri));
+    }
+    if saveable && !sidebar {
+        menu = menu.child(action("Save to Your Library", "save", uri));
+    }
+    if in_library {
+        let (title, uri) = (item.title.clone(), uri.to_string());
+        // Removing asks first; for an own playlist it is Spotify's delete.
+        menu = menu.child(MenuButton::new().on_press(move |_| ContextMenu::open(confirm_remove(&title, &uri))).child("Remove from Your Library"));
+    }
+    menu
+}
+
+fn confirm_remove(title: &str, uri: &str) -> Menu {
+    Menu::new()
+        .child(rect().padding((8., 12.)).color(rgb(SUB)).font_size(12.).child(format!("Remove \"{title}\" from Your Library?")))
+        .child(action("Remove", "unfollow", uri))
+        .child(MenuButton::new().on_press(|_| ContextMenu::close()).child("Cancel"))
+}
+
+/// Menu labels must be `'static`; playlist names live as long as the menu is open, a handful per menu.
+// ponytail: leaks each target's name once per open menu (a few bytes); intern them if menus get opened thousands of times.
+fn leak(s: &str) -> &'static str {
+    Box::leak(s.to_string().into_boxed_str())
+}
+
+#[derive(PartialEq)]
 struct NavItem {
     path: &'static str,
     label: &'static str,
@@ -548,7 +708,7 @@ impl Component for NavItem {
             .on_pointer_enter(move |_| anim.start())
             .on_pointer_leave(move |_| anim.reverse())
             .on_press(move |_| on_press())
-            .child(icon(self.path, 22., color, self.active))
+            .child(icon(self.path, 22., color, self.active && self.path == I_HOME))
             .child(rect().font_size(15.).font_weight(FontWeight::SEMI_BOLD).color(rgb(color)).child(self.label))
     }
 }
@@ -577,6 +737,10 @@ impl Component for LibraryRow {
             .on_pointer_enter(move |_| anim.start())
             .on_pointer_leave(move |_| anim.reverse())
             .on_press(move |_| send(Command::OpenList(uri.clone())))
+            .on_secondary_down({
+                let item = self.item.clone();
+                move |_| ContextMenu::open_from_down(row_menu(&item, true, false, &[]))
+            })
             .child(list_cover(&self.item, self.cover.clone(), 48., if round { 24. } else { RADIUS_COVER }))
             .child(
                 rect()
@@ -695,6 +859,35 @@ impl Component for TrackRow {
     fn render(&self) -> impl IntoElement {
         let (mut anim, t) = use_hover();
         let mut hovered = use_state(|| false);
+        let model = use_model();
+        if self.item.uri == MORE_URI {
+            return rect()
+                .width(Size::fill())
+                .height(Size::px(ROW_H))
+                .center()
+                .child(
+                    rect()
+                        .padding((8., 20.))
+                        .corner_radius(99.)
+                        .background(rgb(mix(ELEVATED, HOVER, t)))
+                        .font_size(13.)
+                        .font_weight(FontWeight::SEMI_BOLD)
+                        .on_pointer_enter(move |_| anim.start())
+                        .on_pointer_leave(move |_| anim.reverse())
+                        .on_press(|_| send(Command::PlayUri(MORE_URI.to_string())))
+                        .child("Show more"),
+                )
+                .into_element();
+        }
+        let open_menu = {
+            let item = self.item.clone();
+            move || {
+                let m = model.read();
+                row_menu(&item, false, m.editable, &m.targets)
+            }
+        };
+        let menu_for_button = open_menu.clone();
+        let round = self.item.uri.starts_with("spotify:artist:");
         let (uri, current) = (self.item.uri.clone(), self.current);
         let marker = if hovered() {
             icon(if current && self.playing { I_PAUSE } else { I_PLAY }, 14., TEXT, true).into_element()
@@ -726,8 +919,9 @@ impl Component for TrackRow {
             })
             // The playing row pauses/resumes instead of restarting.
             .on_press(move |_| send(if current { Command::Toggle } else { Command::PlayUri(uri.clone()) }))
+            .on_secondary_down(move |_| ContextMenu::open_from_down(open_menu()))
             .child(rect().width(Size::px(24.)).cross_align(Alignment::Center).child(marker))
-            .child(cover(&self.item.cover_url, self.cover.clone(), 40., 4.))
+            .child(cover(&self.item.cover_url, self.cover.clone(), 40., if round { 20. } else { 4. }))
             .child(
                 rect()
                     .width(Size::flex(1.))
@@ -742,6 +936,17 @@ impl Component for TrackRow {
                     .child(icon(I_HEART, 16., ACCENT, true)),
             )
             .child(rect().width(Size::px(44.)).color(rgb(SUB)).font_size(13.).text_align(TextAlign::End).child(duration))
+            .child(
+                rect()
+                    .width(Size::px(28.))
+                    .opacity(t)
+                    .on_press(move |e: Event<PressEventData>| {
+                        e.stop_propagation();
+                        ContextMenu::open(menu_for_button());
+                    })
+                    .child(icon(I_MORE, 18., SUB, true)),
+            )
+            .into_element()
     }
 
     fn render_key(&self) -> DiffKey {
@@ -790,7 +995,7 @@ impl Component for Sidebar {
             .corner_radius(RADIUS_PANEL)
             .background(rgb(SURFACE))
             .child(NavItem { path: I_HOME, label: "Home", active: home, on_press: || send(Command::Home) })
-            .child(NavItem { path: I_SEARCH, label: "Search", active: m.page_kind == "Search", on_press: || {} });
+            .child(NavItem { path: I_SEARCH, label: "Search", active: m.page_kind == "Search", on_press: focus_search });
         let rows: Vec<Element> = m
             .lists
             .iter()
@@ -836,6 +1041,7 @@ impl Component for TopBar {
             .child(IconButton { path: I_FORWARD, size: 20., active: false, filled: false, on_press: m.can_forward.then_some(|| send(Command::Forward)) })
             .child(
                 Input::new(query)
+                    .a11y_id(use_consume::<SearchBox>().0)
                     .placeholder("What do you want to play?")
                     .width(Size::px(360.))
                     .on_submit(|q: String| {
@@ -944,6 +1150,15 @@ impl Component for ListPage {
             .child(rect().width(Size::flex(1.)).child("Title"))
             .child(rect().width(Size::px(32.)))
             .child(rect().width(Size::px(44.)).cross_align(Alignment::End).child(icon(I_CLOCK, 16., SUB, false)));
+        let tabs = (!m.tabs.is_empty()).then(|| {
+            rect().horizontal().padding((0., 24., 12., 24.)).spacing(GAP).children(m.tabs.iter().enumerate().map(|(i, label)| {
+                Chip { label, active: m.search_tab == i as i32, tab: i as i32 }.into_element()
+            }))
+        });
+        // The artist About tab shows the biography instead of rows.
+        let about = (!m.about.is_empty() && m.tracks.is_empty()).then(|| {
+            ScrollView::new().child(paragraph().span(m.about.clone()).padding((8., 24.)).font_size(14.).color(rgb(SUB)).line_height(1.6).width(Size::fill()))
+        });
         let len = m.tracks.len();
         let list = rect().width(Size::fill()).height(Size::fill()).padding((0., 24.)).child(
             VirtualScrollView::new(move |item, _| {
@@ -968,6 +1183,8 @@ impl Component for ListPage {
             .height(Size::fill())
             .child(header)
             .child(actions)
+            .maybe_child(tabs)
+            .maybe_child(about)
             .child(columns)
             .child(rect().width(Size::fill()).height(Size::px(1.)).margin((0., 24.)).background(rgb(HAIRLINE)))
             .child(list)
@@ -1136,7 +1353,88 @@ impl Component for PlayerBar {
     }
 }
 
+/// Freya's dark component theme (inputs, menus, sliders, popups) in this app's colors.
+fn theme() -> freya::prelude::Theme {
+    let mut theme = dark_theme();
+    let c = &mut theme.colors;
+    c.primary = rgb(ACCENT);
+    c.background = rgb(BASE);
+    c.surface_primary = rgb(SURFACE);
+    c.surface_secondary = rgb(ELEVATED);
+    c.surface_tertiary = rgb(ELEVATED);
+    c.border = rgb(HAIRLINE);
+    c.border_focus = rgb(SUB);
+    c.text_primary = rgb(TEXT);
+    c.text_secondary = rgb(SUB);
+    c.text_placeholder = rgb(SUB);
+    theme
+}
+
+/// The search box's id, so shortcuts and the sidebar can focus it and know when the user is typing.
+#[derive(Clone, Copy)]
+struct SearchBox(AccessibilityId);
+
+static SEARCH_BOX: OnceLock<AccessibilityId> = OnceLock::new();
+
+fn focus_search() {
+    if let Some(id) = SEARCH_BOX.get() {
+        id.request_focus();
+    }
+}
+
+/// Global shortcuts (the Slint app's set, minus screens not ported yet). Unmodified keys only act
+/// while no text field has focus.
+fn on_key(e: &KeyboardEventData, model: State<Model>, search: AccessibilityId) {
+    let ctrl = e.modifiers.contains(Modifiers::CONTROL);
+    let shift = e.modifiers.contains(Modifiers::SHIFT);
+    let alt = e.modifiers.contains(Modifiers::ALT);
+    let typing = search.is_focused();
+    let (position, duration, current, muted_from, has_now) = {
+        let m = model.peek();
+        (m.position() as i64, m.duration_ms as i64, m.volume, m.muted_from, m.now.is_some())
+    };
+    let seek = |delta: i64| send(Command::Seek((position + delta).clamp(0, duration) as u32));
+    let volume = |v: f32| send(Command::Volume { percent: v.clamp(0., 100.), save: true });
+    match &e.key {
+        Key::Named(NamedKey::Escape) => search.request_unfocus(),
+        Key::Named(NamedKey::ArrowRight) if ctrl => send(Command::Next),
+        Key::Named(NamedKey::ArrowLeft) if ctrl => send(Command::Prev),
+        Key::Named(NamedKey::ArrowUp) if ctrl => volume(current + VOLUME_STEP),
+        Key::Named(NamedKey::ArrowDown) if ctrl => volume(current - VOLUME_STEP),
+        Key::Named(NamedKey::ArrowRight) if shift && !typing => seek(SEEK_STEP_MS as i64),
+        Key::Named(NamedKey::ArrowLeft) if shift && !typing => seek(-(SEEK_STEP_MS as i64)),
+        Key::Named(NamedKey::ArrowLeft) if alt => send(Command::Back),
+        Key::Named(NamedKey::ArrowRight) if alt => send(Command::Forward),
+        Key::Character(c) if ctrl => match c.to_lowercase().as_str() {
+            "q" => quit(),
+            "s" => send(Command::ToggleShuffle),
+            "r" => send(Command::CycleRepeat),
+            "h" => send(Command::Home),
+            "f" | "l" => search.request_focus(),
+            _ => {}
+        },
+        Key::Character(c) if !typing && !alt => match c.as_str() {
+            " " => send(Command::Toggle),
+            "/" => search.request_focus(),
+            "b" if has_now => send(Command::ToggleLike),
+            "m" => {
+                let mut model = model;
+                model.write().muted_from = if muted_from.is_some() { None } else { Some(current) };
+                volume(muted_from.unwrap_or(0.));
+            }
+            _ => {}
+        },
+        _ => {}
+    }
+}
+
 fn app() -> impl IntoElement {
+    use_init_theme(theme);
+    let search = use_provide_context(|| {
+        let id = AccessibilityId::new_unique();
+        let _ = SEARCH_BOX.set(id);
+        SearchBox(id)
+    });
     let mut model = use_provide_context(|| State::create(Model { volume: 100., ..Default::default() }));
     use_future(move || async move {
         let Some(mut rx) = UPDATES.lock().unwrap().take() else { return };
@@ -1158,11 +1456,8 @@ fn app() -> impl IntoElement {
         .height(Size::fill())
         .background(rgb(BASE))
         .color(rgb(TEXT))
-        .on_global_key_down(|e: Event<KeyboardEventData>| {
-            if e.modifiers.contains(Modifiers::CONTROL) && e.key == Key::Character("q".into()) {
-                quit();
-            }
-        })
+        .on_global_key_down(move |e: Event<KeyboardEventData>| on_key(&e, model, search.0))
+        .child(ContextMenuViewer::new())
         .child(
             rect()
                 .horizontal()
@@ -1183,6 +1478,23 @@ fn app() -> impl IntoElement {
                 ),
         )
         .child(PlayerBar)
+        .child(CreditsPopup)
+}
+
+#[derive(PartialEq)]
+struct CreditsPopup;
+
+impl Component for CreditsPopup {
+    fn render(&self) -> impl IntoElement {
+        let mut model = use_model();
+        let credits = model.read().credits.clone();
+        Popup::new().width(Size::px(420.)).on_close_request(move |_| model.write().credits = None).maybe(credits.is_some(), |popup| {
+            let (title, text) = credits.unwrap_or_default();
+            popup
+                .child(PopupTitle::new(format!("Credits · {title}")))
+                .child(PopupContent::new().child(paragraph().span(text).font_size(13.).color(rgb(SUB)).width(Size::fill())))
+        })
+    }
 }
 
 #[cfg(test)]

@@ -37,7 +37,7 @@ const REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 const OAUTH_SCOPES: &[&str] = &["streaming"];
 const DEVICE_NAME: &str = "SlimSpot";
 // Last row of a full search page; clicking it appends the next page of tracks.
-const MORE_URI: &str = "slimspot:more";
+pub const MORE_URI: &str = "slimspot:more";
 // Home tiles: Spotify shows 8 (two rows of four).
 const QUICK_TILES: usize = 8;
 // "New release": followed artists checked per run (one request each) and how recent counts.
