@@ -2,10 +2,7 @@
 //! preview (thumbnail toolbar) and the playing track's progress on the button itself.
 
 use std::cell::Cell;
-use std::time::Duration;
 
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use slint::ComponentHandle;
 use tokio::sync::mpsc;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::CreateBitmap;
@@ -18,19 +15,16 @@ use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, HICON, ICONINF
 use windows::core::w;
 
 use crate::player::Command;
-use crate::ui::App;
 
 // Small-icon size the thumbnail toolbar draws at 100% scaling (SM_CXSMICON).
 const ICON_SIZE: usize = 16;
-// Same cadence as the seek bar ticker in main.rs.
-const PROGRESS_TICK: Duration = Duration::from_millis(500);
 // Arbitrary id for our window subclass.
 const SUBCLASS_ID: usize = 1;
 const PREV: u32 = 0;
 const TOGGLE: u32 = 1;
 const NEXT: u32 = 2;
 
-/// Lives for the rest of the program (leaked): the window subclass and the timer use it.
+/// Lives for the rest of the program (leaked): the window subclass uses it.
 struct Taskbar {
     list: ITaskbarList3,
     hwnd: HWND,
@@ -40,7 +34,10 @@ struct Taskbar {
     /// Explorer sends this when it (re)creates our taskbar button, e.g. after the window was hidden.
     button_created: u32,
     playing: Cell<bool>,
-    timer: slint::Timer,
+}
+
+thread_local! {
+    static TASKBAR: Cell<Option<&'static Taskbar>> = const { Cell::new(None) };
 }
 
 impl Taskbar {
@@ -65,12 +62,10 @@ impl Taskbar {
         let _ = unsafe { self.list.ThumbBarAddButtons(self.hwnd, &self.buttons()) };
     }
 
-    fn update(&self, app: &App) {
-        let playing = app.get_playing();
+    fn update(&self, playing: bool, position: u64, duration: u64) {
         if playing != self.playing.replace(playing) {
             let _ = unsafe { self.list.ThumbBarUpdateButtons(self.hwnd, &self.buttons()) };
         }
-        let (position, duration) = (app.get_position() as u64, app.get_duration() as u64);
         unsafe {
             if duration == 0 {
                 let _ = self.list.SetProgressState(self.hwnd, TBPF_NOPROGRESS);
@@ -99,11 +94,17 @@ unsafe extern "system" fn subclass_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
+/// Play/pause icon and progress on the taskbar button; the UI calls it on its position tick.
+pub fn update(playing: bool, position_ms: u64, duration_ms: u64) {
+    if let Some(taskbar) = TASKBAR.get() {
+        taskbar.update(playing, position_ms, duration_ms);
+    }
+}
+
 /// Call once the native window exists (same moment as the media keys). Best-effort: the
 /// player works without it, so failures are only logged.
-pub fn setup(app: &App, tx: &mpsc::UnboundedSender<Command>) {
-    let Ok(RawWindowHandle::Win32(h)) = app.window().window_handle().window_handle().map(|h| h.as_raw()) else { return };
-    let hwnd = HWND(h.hwnd.get() as _);
+pub fn setup(hwnd: isize, tx: mpsc::UnboundedSender<Command>) {
+    let hwnd = HWND(hwnd as _);
     let list: ITaskbarList3 = match unsafe {
         // Already initialised as STA on the UI thread by winit; this only makes sure.
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -119,22 +120,16 @@ pub fn setup(app: &App, tx: &mpsc::UnboundedSender<Command>) {
     let taskbar: &'static Taskbar = Box::leak(Box::new(Taskbar {
         list,
         hwnd,
-        tx: tx.clone(),
+        tx,
         icons,
         button_created: unsafe { RegisterWindowMessageW(w!("TaskbarButtonCreated")) },
         playing: Cell::new(false),
-        timer: slint::Timer::default(),
     }));
     if !unsafe { SetWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID, taskbar as *const Taskbar as usize) }.as_bool() {
         return log::warn!("taskbar buttons unavailable: SetWindowSubclass failed");
     }
     taskbar.add_buttons();
-    let weak = app.as_weak();
-    taskbar.timer.start(slint::TimerMode::Repeated, PROGRESS_TICK, move || {
-        if let Some(app) = weak.upgrade() {
-            taskbar.update(&app);
-        }
-    });
+    TASKBAR.set(Some(taskbar));
 }
 
 /// A white 16 px icon from a shape test in 0..16 coordinates, 4×4 supersampled for soft edges.

@@ -178,7 +178,7 @@ fn quit() {
 }
 
 /// Opens the window and runs the event loop until the app quits.
-pub fn run(commands: mpsc::UnboundedSender<Command>, cover_requests: mpsc::UnboundedSender<String>, update_clicks: mpsc::UnboundedSender<()>) {
+pub fn run(commands: mpsc::UnboundedSender<Command>, cover_requests: mpsc::UnboundedSender<String>, update_clicks: mpsc::UnboundedSender<()>, start_in_tray: bool) {
     let _ = COMMANDS.set(commands);
     let _ = COVER_REQUESTS.set(cover_requests);
     let _ = UPDATE_CLICKS.set(update_clicks);
@@ -193,10 +193,15 @@ pub fn run(commands: mpsc::UnboundedSender<Command>, cover_requests: mpsc::Unbou
                     .with_title("SlimSpot")
                     .with_renderer(RendererPreference::Software)
                     .with_window_attributes(|attributes, _| attributes.with_theme(Some(WindowTheme::Dark)))
-                    .with_window_handle(|window| {
+                    .with_window_handle(move |window| {
                         let _ = MAIN_WINDOW.set(window.id());
                         #[cfg(windows)]
-                        crate::instance::dark_title_bar(window, BASE, SUB, HAIRLINE);
+                        windows_setup(window);
+                        // Started by the Windows Run entry: stay in the tray. Freya shows the window right
+                        // after this hook, so the hide is queued for after that.
+                        if start_in_tray {
+                            Platform::get().with_window(window.id(), |w| w.set_visible(false));
+                        }
                     })
                     // Close hides to the tray; playback continues. Quit from the tray or Ctrl+Q.
                     .with_on_close(|_, id| {
@@ -224,6 +229,21 @@ pub fn run(commands: mpsc::UnboundedSender<Command>, cover_requests: mpsc::Unbou
 }
 
 static MAIN_WINDOW: OnceLock<freya::winit::window::WindowId> = OnceLock::new();
+
+/// Title bar colors, media keys and taskbar buttons; they need the native window, which exists by now.
+#[cfg(windows)]
+fn windows_setup(window: &freya::winit::window::Window) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    crate::instance::dark_title_bar(window, BASE, SUB, HAIRLINE);
+    let (Ok(RawWindowHandle::Win32(h)), Some(tx)) = (window.window_handle().map(|h| h.as_raw()), COMMANDS.get()) else {
+        return log::warn!("Media keys and taskbar buttons unavailable: no Win32 window handle");
+    };
+    let hwnd = h.hwnd.get();
+    if let Err(e) = crate::media_keys::setup(hwnd, tx.clone()) {
+        log::warn!("{e}");
+    }
+    crate::taskbar::setup(hwnd, tx.clone());
+}
 
 /// Brings the window back from the tray (or from behind other windows).
 fn show_window() {
@@ -1335,6 +1355,11 @@ impl Component for SettingsPage {
         let mut model = use_model();
         let mut client_id = use_state(|| model.peek().web_client_id.clone());
         let mut eq_dirty = use_state(|| false);
+        // The registry Run value is the source of truth.
+        #[cfg(windows)]
+        let mut autostart = use_state(crate::autostart::is_enabled);
+        #[cfg(not(windows))]
+        let mut autostart = use_state(|| false);
         let m = model.read();
         let choices = |labels: &[&'static str], active: i32, pick: fn(i32)| {
             rect().horizontal().spacing(GAP).children(labels.iter().enumerate().map(move |(i, label)| {
@@ -1446,6 +1471,21 @@ impl Component for SettingsPage {
                         .cross_align(Alignment::Center)
                         .child(Input::new(client_id).placeholder("Client ID").width(Size::px(300.)))
                         .child(Chip { label: "Save", active: false, on_press: EventHandler::new(move |_| send(Command::WebClientId(client_id.read().trim().to_string()))) }),
+                ))
+                .child(section("Startup"))
+                .child(setting_row(
+                    "Start with Windows",
+                    "Starts in the tray",
+                    Switch::new().toggled(autostart()).on_toggle(move |_| {
+                        #[cfg(windows)]
+                        {
+                            if let Err(e) = crate::autostart::set(!autostart()) {
+                                model.write().status = e;
+                            }
+                            // Show what Windows will actually do, even if the change failed.
+                            autostart.set(crate::autostart::is_enabled());
+                        }
+                    }),
                 ))
                 .maybe_child((!m.update_version.is_empty()).then(|| {
                     rect().spacing(12.).child(section("Updates")).child(setting_row(&format!("Version {} is available", m.update_version), "Downloads, verifies the signature and restarts SlimSpot.", Chip {
@@ -1563,6 +1603,11 @@ impl Component for PlayerBar {
             loop {
                 tokio::time::sleep(POSITION_TICK).await;
                 *tick.write() += 1;
+                #[cfg(windows)]
+                {
+                    let m = model.peek();
+                    crate::taskbar::update(m.playing, m.position() as u64, m.duration_ms as u64);
+                }
             }
         });
         let _ = tick();
@@ -1785,12 +1830,21 @@ fn app() -> impl IntoElement {
     MODEL.set(Some(model));
     use_future(move || async move {
         let Some(mut rx) = UPDATES.lock().unwrap().take() else { return };
+        let mut overlay = (String::new(), false);
         while let Some(update) = rx.recv().await {
             let mut m = model.write();
             m.apply(update);
             // Apply whatever else is queued in the same frame.
             while let Ok(update) = rx.try_recv() {
                 m.apply(update);
+            }
+            // The Windows media overlay follows track and play state.
+            #[cfg(windows)]
+            if let Some(now) = &m.now {
+                if (now.uri.as_str(), m.playing) != (overlay.0.as_str(), overlay.1) {
+                    overlay = (now.uri.clone(), m.playing);
+                    crate::media_keys::now_playing(&now.title, &now.artist, &crate::covers::larger_cover(&now.cover_url), m.playing);
+                }
             }
         }
     });

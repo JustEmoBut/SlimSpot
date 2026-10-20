@@ -1,6 +1,8 @@
 #![windows_subsystem = "windows"]
 
-// ponytail: autostart, dialog, media_keys and taskbar still target the Slint window; they come back as the Freya UI grows (phase 2).
+// ponytail: dialog (playlist cover picker) still targets the Slint window; it comes back with the playlist editor (phase 2).
+#[cfg(windows)]
+mod autostart;
 #[cfg(windows)]
 mod clipboard;
 mod covers;
@@ -9,9 +11,13 @@ mod eq;
 mod instance;
 mod logger;
 mod lyrics;
+#[cfg(windows)]
+mod media_keys;
 mod nav;
 mod player;
 mod settings;
+#[cfg(windows)]
+mod taskbar;
 mod ui;
 mod update;
 mod web;
@@ -52,5 +58,9 @@ fn main() {
     std::thread::spawn(move || backend.block_on(player::run(ui, backend_tx, rx, cover_rx, update_rx)));
     // The UI thread uses tokio timers too (Freya's own executor polls them).
     let _rt = rt.enter();
-    ui::run(tx, cover_tx, update_tx);
+    #[cfg(windows)]
+    let start_in_tray = std::env::args().any(|a| a == autostart::TRAY_ARG);
+    #[cfg(not(windows))]
+    let start_in_tray = false;
+    ui::run(tx, cover_tx, update_tx, start_in_tray);
 }
