@@ -191,6 +191,7 @@ pub fn run(commands: mpsc::UnboundedSender<Command>, cover_requests: mpsc::Unbou
                 WindowConfig::new(app)
                     .with_size(WINDOW_WIDTH, WINDOW_HEIGHT)
                     .with_title("SlimSpot")
+                    .with_icon(LaunchConfig::window_icon(include_bytes!("../assets/icon-64.png")))
                     .with_renderer(RendererPreference::Software)
                     .with_window_attributes(|attributes, _| attributes.with_theme(Some(WindowTheme::Dark)))
                     .with_window_handle(move |window| {
@@ -315,6 +316,38 @@ const TAB_RECENT: i32 = 2;
 const ROW_H: f32 = 56.;
 // Room for row numbers up to 4 digits (Liked Songs has hundreds).
 const NUMBER_W: f32 = 36.;
+// Compact track list: one-line rows without covers (Settings → Display).
+const COMPACT_ROW_H: f32 = 36.;
+// Mini player: the bar alone, always on top (the Slint version's size).
+const MINI_WIDTH: f64 = 860.;
+const MINI_HEIGHT: f64 = 96.;
+// Share of the cover's average color kept for the page tint, so white text stays readable.
+const TINT_BRIGHTNESS: f32 = 0.45;
+const DEFAULT_TINT: (u8, u8, u8) = (88, 64, 128);
+const SHORTCUTS: [(&str, &str); 22] = [
+    ("Space", "Play / pause"),
+    ("Ctrl+Right / Left", "Next / previous"),
+    ("Shift+Right / Left", "Seek 10 s"),
+    ("Ctrl+Up / Down", "Volume"),
+    ("M", "Mute"),
+    ("B", "Like the playing song"),
+    ("Ctrl+S / Ctrl+R", "Shuffle / repeat"),
+    ("Alt+Left / Right", "Back / forward"),
+    ("Ctrl+H", "Home"),
+    ("/ or Ctrl+L", "Search"),
+    ("Ctrl+F", "Find in page"),
+    ("Up / Down", "Move the row cursor (Shift extends)"),
+    ("Enter", "Play the row under the cursor"),
+    ("Ctrl+A", "Select all songs"),
+    ("Ctrl+C / X / V", "Copy / cut / paste song links"),
+    ("Delete", "Remove the selection"),
+    ("Q or Ctrl+U", "Queue"),
+    ("Ctrl+Y", "Lyrics"),
+    ("Ctrl+,", "Settings"),
+    ("?", "This list"),
+    ("Esc", "Close / leave the search box"),
+    ("Ctrl+Q", "Quit"),
+];
 const HOVER_MS: u64 = 150;
 const PAGE_ANIM_MS: u64 = 250;
 // Covers kept as encoded bytes (a few KB each); Freya decodes and caches them at drawn size.
@@ -371,6 +404,8 @@ const I_QUEUE: &str = "M4 6 H20 M4 11 H20 M4 16 H11 M15 14 V20 L20 17 Z";
 const I_PENCIL: &str = "M5 19 L6 14.5 L15.5 5 L19 8.5 L9.5 18 Z M13.5 7 L17 10.5";
 const I_PLUS: &str = "M12 5 V19 M5 12 H19";
 const I_REFRESH: &str = "M19.5 12 A7.5 7.5 0 1 1 17 6.4 M17.5 2.5 V6.8 H13.2";
+const I_MINI: &str = "M4 6 H20 V18 H4 Z M11 12 H18 V16 H11 Z";
+const I_DEVICES: &str = "M3 5 H14 V15 H3 Z M6 19 H11 M8.5 15 V19 M17 7 H21 V19 H17 Z";
 const I_CLOCK: &str = "M12 3.5 C16.7 3.5 20.5 7.3 20.5 12 C20.5 16.7 16.7 20.5 12 20.5 C7.3 20.5 3.5 16.7 3.5 12 C3.5 7.3 7.3 3.5 12 3.5 Z M12 7.5 V12 L15 14";
 
 // ---- State ----
@@ -458,6 +493,19 @@ struct Model {
     /// Rows whose liked mark is known; later ones are asked for while scrolling (`CheckLikedMore`).
     liked_checked: usize,
     liked_asked: usize,
+    compact: bool,
+    mini: bool,
+    /// The window size before the mini player, restored when it closes.
+    restore_size: Option<(f64, f64)>,
+    devices_open: bool,
+    devices: Vec<Item>,
+    shortcuts_open: bool,
+    /// Keyboard row cursor (Up/Down, Enter plays it).
+    cursor: Option<usize>,
+    /// A row to scroll into view ("Go to playing", the keyboard cursor).
+    reveal: Option<usize>,
+    /// The now-playing cover's average color, dimmed: the page header tint.
+    tint: (u8, u8, u8),
 }
 
 impl Model {
@@ -498,6 +546,7 @@ impl Model {
                 Rows::Tracks => {
                     self.tracks = items;
                     self.selected.clear();
+                    self.cursor = None;
                 }
                 Rows::Lists => self.lists = items,
                 Rows::Shelf => self.shelf = items,
@@ -512,8 +561,7 @@ impl Model {
                 Rows::Targets => self.targets = items,
                 Rows::SideRows => self.side_rows = items,
                 Rows::AddResults => self.add_results = items,
-                // ponytail: the devices list comes with its popup (phase 2).
-                Rows::Devices => {}
+                Rows::Devices => self.devices = items,
             },
             UiUpdate::AppendTracks(items) => self.tracks.extend(items),
             UiUpdate::LikedRows(uris, liked) => {
@@ -561,10 +609,16 @@ impl Model {
                 self.quality = quality;
                 self.normalize = normalize;
             }
-            UiUpdate::StartupSettings { low_api, eq, .. } => {
+            UiUpdate::StartupSettings { low_api, eq, compact, .. } => {
                 self.low_api = low_api;
                 self.eq = eq;
+                self.compact = compact;
             }
+            UiUpdate::Reveal(index) => {
+                self.reveal = Some(index);
+                self.cursor = Some(index);
+            }
+            UiUpdate::NowTintDefault => self.tint = DEFAULT_TINT,
             UiUpdate::UpdateVersion(version) => self.update_version = version,
             UiUpdate::WebClientId(id) => self.web_client_id = id,
             // Dropped if another track has started meanwhile.
@@ -599,6 +653,11 @@ impl Model {
             }
             UiUpdate::Credits { title, text } => self.credits = Some((title, text)),
             UiUpdate::Cover(url, bytes) => {
+                if self.now.as_ref().is_some_and(|n| n.cover_url == url) {
+                    if let Some(tint) = cover_tint(&bytes) {
+                        self.tint = tint;
+                    }
+                }
                 self.cover_order.push_back(url.clone());
                 self.covers.insert(url, bytes);
                 while self.cover_order.len() > MAX_COVERS {
@@ -614,11 +673,22 @@ impl Model {
             // ponytail: lyrics, credits, settings, queue, page tabs and the update chip come with their screens (phase 2).
             UiUpdate::PageSaved(_)
             | UiUpdate::ScrollTop
-            | UiUpdate::Reveal(_)
-            | UiUpdate::NowTintDefault
  => {}
         }
     }
+}
+
+/// The average color of a cover, dimmed so white text stays readable on it.
+fn cover_tint(encoded: &[u8]) -> Option<(u8, u8, u8)> {
+    let img = image::load_from_memory(encoded).ok()?.to_rgb8();
+    let (mut sum, n) = ([0u64; 3], (img.width() * img.height()).max(1) as u64);
+    for px in img.pixels() {
+        for c in 0..3 {
+            sum[c] += px[c] as u64;
+        }
+    }
+    let dim = |s: u64| ((s / n) as f32 * TINT_BRIGHTNESS) as u8;
+    Some((dim(sum[0]), dim(sum[1]), dim(sum[2])))
 }
 
 /// Home's tiles in reading order: the backend fills a left and a right column.
@@ -1011,6 +1081,9 @@ struct TrackRow {
     marked: bool,
     /// Rows of an own, unsorted, unfiltered playlist can be dragged into a new order.
     reorder: bool,
+    compact: bool,
+    /// The keyboard cursor is on this row.
+    cursor: bool,
 }
 
 impl Component for TrackRow {
@@ -1063,10 +1136,22 @@ impl Component for TrackRow {
         let duration = if self.item.duration_ms > 0 { fmt_ms(self.item.duration_ms) } else { String::new() };
         let index = self.index;
         let bg = if self.marked { mix(ELEVATED, ACCENT, 0.18) } else { mix(SURFACE, ELEVATED, t) };
+        let (row_h, compact) = (if self.compact { COMPACT_ROW_H } else { ROW_H }, self.compact);
+        let title_line = if compact {
+            // One line: "Title · Artist".
+            rect().width(Size::flex(1.)).child(one_line(format!("{}  ·  {}", self.item.title, self.item.artist), 14., if current { ACCENT } else { TEXT }))
+        } else {
+            rect()
+                .width(Size::flex(1.))
+                .spacing(2.)
+                .child(one_line(self.item.title.clone(), 15., if current { ACCENT } else { TEXT }))
+                .child(one_line(self.item.artist.clone(), 13., SUB))
+        };
         let row = rect()
             .horizontal()
             .width(Size::fill())
-            .height(Size::px(ROW_H))
+            .height(Size::px(row_h))
+            .border(self.cursor.then(|| Border::new().fill(rgb(HAIRLINE)).width(1.).alignment(BorderAlignment::Inner)))
             .padding((0., 16.))
             .spacing(16.)
             .corner_radius(6.)
@@ -1094,14 +1179,8 @@ impl Component for TrackRow {
             })
             .on_secondary_down(move |_| ContextMenu::open_from_down(open_menu()))
             .child(rect().width(Size::px(NUMBER_W)).cross_align(Alignment::Center).child(marker))
-            .child(cover(&self.item.cover_url, self.cover.clone(), 40., if round { 20. } else { 4. }))
-            .child(
-                rect()
-                    .width(Size::flex(1.))
-                    .spacing(2.)
-                    .child(one_line(self.item.title.clone(), 15., if current { ACCENT } else { TEXT }))
-                    .child(one_line(self.item.artist.clone(), 13., SUB)),
-            )
+            .maybe_child((!compact).then(|| cover(&self.item.cover_url, self.cover.clone(), 40., if round { 20. } else { 4. })))
+            .child(title_line)
             .child(
                 rect()
                     .width(Size::px(32.))
@@ -1408,6 +1487,40 @@ fn toggle_side(tab: i32) {
     }
 }
 
+/// Mini player: the bar alone, small and always on top; the previous size comes back after.
+fn toggle_mini() {
+    let Some(mut model) = MODEL.get() else { return };
+    let Some(id) = MAIN_WINDOW.get().copied() else { return };
+    let mini = !model.peek().mini;
+    let restore = model.peek().restore_size;
+    model.write().mini = mini;
+    Platform::get().with_window(id, move |w| {
+        use freya::winit::dpi::LogicalSize;
+        use freya::winit::window::WindowLevel;
+        if mini {
+            let size: LogicalSize<f64> = w.inner_size().to_logical(w.scale_factor());
+            if let Some(mut model) = MODEL.get() {
+                model.write().restore_size = Some((size.width, size.height));
+            }
+            w.set_window_level(WindowLevel::AlwaysOnTop);
+            let _ = w.request_inner_size(LogicalSize::new(MINI_WIDTH, MINI_HEIGHT));
+        } else {
+            w.set_window_level(WindowLevel::Normal);
+            let (width, height) = restore.unwrap_or((WINDOW_WIDTH, WINDOW_HEIGHT));
+            let _ = w.request_inner_size(LogicalSize::new(width, height));
+        }
+    });
+}
+
+fn open_devices() {
+    if let Some(mut model) = MODEL.get() {
+        let mut m = model.write();
+        m.devices_open = true;
+        m.devices.clear();
+    }
+    send(Command::LoadDevices);
+}
+
 fn open_playlist_popup(creating: bool) {
     if let Some(mut model) = MODEL.get() {
         model.write().playlist_popup = Some(creating);
@@ -1466,7 +1579,7 @@ impl Component for HomePage {
             .enumerate()
             .map(|(index, item)| {
                 let current = item.uri == m.current_track;
-                TrackRow { index, item: item.clone(), current, playing: m.playing, numbered: false, cover: m.cover(&item.cover_url), marked: m.selected.contains(&index), reorder: false }.into_element()
+                TrackRow { index, item: item.clone(), current, playing: m.playing, numbered: false, cover: m.cover(&item.cover_url), marked: m.selected.contains(&index), reorder: false, compact: false, cursor: false }.into_element()
             })
             .collect();
         ScrollView::new()
@@ -1475,7 +1588,7 @@ impl Component for HomePage {
                     .width(Size::fill())
                     .padding((8., 24., 24., 24.))
                     .spacing(16.)
-                    .background(LinearGradient::new().angle(180.).stop(((40, 60, 52), 0.)).stop((SURFACE, 100.)))
+                    .background(LinearGradient::new().angle(180.).stop((m.tint, 0.)).stop((SURFACE, 100.)))
                     .child(heading(m.page_title.clone(), 28.))
                     .children(tile_rows),
             )
@@ -1497,6 +1610,7 @@ impl Component for ListPage {
     fn render(&self) -> impl IntoElement {
         let mut model = use_model();
         let find = use_state(String::new);
+        let scroll = use_scroll_controller(ScrollConfig::default);
         let m = model.read();
         let header_cover = crate::covers::larger_cover(&m.page_cover);
         let has_cover = !header_cover.is_empty();
@@ -1506,7 +1620,7 @@ impl Component for ListPage {
             .padding((24., 24., 24., 24.))
             .spacing(24.)
             .cross_align(Alignment::End)
-            .background(LinearGradient::new().angle(180.).stop(((88, 64, 128), 0.)).stop(((40, 30, 58), 100.)))
+            .background(LinearGradient::new().angle(180.).stop((m.tint, 0.)).stop((mix(m.tint, SURFACE, 0.55), 100.)))
             .maybe_child(has_cover.then(|| cover(&header_cover, m.cover(&header_cover), 200., 8.).shadow((0., 12., 32., 0., (0, 0, 0, 160)))))
             .child(
                 rect()
@@ -1522,7 +1636,7 @@ impl Component for ListPage {
             .padding((20., 24.))
             .spacing(20.)
             .cross_align(Alignment::Center)
-            .background(LinearGradient::new().angle(180.).stop(((40, 30, 58), 0.)).stop((SURFACE, 100.)))
+            .background(LinearGradient::new().angle(180.).stop((mix(m.tint, SURFACE, 0.55), 0.)).stop((SURFACE, 100.)))
             .maybe_child(m.playable.then(|| PlayFab { size: 56., playing: m.playing && !m.current_list.is_empty() && m.current_list == m.page_uri }))
             .child(IconButton { path: I_SHUFFLE, size: 26., active: m.shuffle, filled: false, on_press: Some(|| send(Command::ToggleShuffle)) })
             .maybe_child(m.editable.then(|| IconButton { path: I_PENCIL, size: 24., active: false, filled: false, on_press: Some(|| open_playlist_popup(false)) }))
@@ -1571,7 +1685,7 @@ impl Component for ListPage {
             .color(rgb(SUB))
             .font_size(12.)
             .child(rect().width(Size::px(NUMBER_W)).cross_align(Alignment::Center).child(if m.numbered { "#" } else { "" }))
-            .child(rect().width(Size::px(40.)))
+            .maybe_child((!m.compact).then(|| rect().width(Size::px(40.))))
             .child(rect().width(Size::flex(1.)).child("Title"))
             .child(rect().width(Size::px(32.)))
             .child(rect().width(Size::px(44.)).cross_align(Alignment::End).child(icon(I_CLOCK, 16., SUB, false)));
@@ -1585,6 +1699,12 @@ impl Component for ListPage {
             ScrollView::new().child(paragraph().span(m.about.clone()).padding((8., 24.)).font_size(14.).color(rgb(SUB)).line_height(1.6).width(Size::fill()))
         });
         let len = m.tracks.len();
+        let row_h = if m.compact { COMPACT_ROW_H } else { ROW_H };
+        // "Go to playing" and the keyboard cursor bring their row into view, at the top of the list.
+        if let Some(index) = m.reveal {
+            let mut scroll = scroll;
+            scroll.scroll_to_y(-((index as f32 * row_h) as i32));
+        }
         let list = rect().width(Size::fill()).height(Size::fill()).padding((0., 24.)).child(
             VirtualScrollView::new(move |item, _| {
                 let m = model.read();
@@ -1598,7 +1718,10 @@ impl Component for ListPage {
                     current,
                     playing: m.playing,
                     numbered: m.numbered,
-                    cover: m.cover(&track.cover_url),
+                    // No cover is fetched in compact mode.
+                    cover: if m.compact { None } else { m.cover(&track.cover_url) },
+                    compact: m.compact,
+                    cursor: m.cursor == Some(item.index),
                     marked: m.selected.contains(&item.index),
                     reorder: m.editable && m.page_sort == 0 && m.page_filter.is_empty(),
                 }
@@ -1614,8 +1737,13 @@ impl Component for ListPage {
                 row
             })
             .length(len)
-            .item_size(ROW_H),
+            .item_size(row_h)
+            .scroll_controller(scroll),
         );
+        if m.reveal.is_some() {
+            drop(m);
+            model.write().reveal = None;
+        }
         rect()
             .width(Size::fill())
             .height(Size::fill())
@@ -1778,6 +1906,16 @@ impl Component for SettingsPage {
                         .into_element()
                     }))
                 }))
+                .child(section("Display"))
+                .child(setting_row(
+                    "Compact track list",
+                    "One line per song, no covers (also saves memory)",
+                    Switch::new().toggled(m.compact).on_toggle(move |_| {
+                        let on = !model.peek().compact;
+                        model.write().compact = on;
+                        send(Command::Compact(on));
+                    }),
+                ))
                 .child(section("Spotify API"))
                 .child(setting_row(
                     "Low API usage",
@@ -2026,6 +2164,8 @@ impl Component for PlayerBar {
             .child(IconButton { path: I_PANEL, size: 18., active: m.side_tab == Some(TAB_NOW), filled: false, on_press: Some(|| toggle_side(TAB_NOW)) })
             .child(IconButton { path: I_QUEUE, size: 18., active: m.side_tab == Some(TAB_QUEUE), filled: false, on_press: Some(|| toggle_side(TAB_QUEUE)) })
             .child(IconButton { path: I_LYRICS, size: 18., active: m.show_lyrics, filled: false, on_press: Some(toggle_lyrics) })
+            .child(IconButton { path: I_DEVICES, size: 18., active: m.devices_open, filled: false, on_press: Some(open_devices) })
+            .child(IconButton { path: I_MINI, size: 18., active: m.mini, filled: false, on_press: Some(toggle_mini) })
             .child(icon(I_VOLUME, 18., SUB, false))
             .child(
                 rect()
@@ -2121,6 +2261,28 @@ fn on_key(e: &KeyboardEventData, model: State<Model>, search: AccessibilityId) {
         Key::Named(NamedKey::ArrowRight) if shift && !typing => seek(SEEK_STEP_MS as i64),
         Key::Named(NamedKey::ArrowLeft) if shift && !typing => seek(-(SEEK_STEP_MS as i64)),
         Key::Named(NamedKey::ArrowLeft) if alt => send(Command::Back),
+        Key::Named(NamedKey::ArrowDown | NamedKey::ArrowUp) if !typing && !ctrl && !alt => {
+            let mut model = model;
+            let mut m = model.write();
+            if m.tracks.is_empty() {
+                return;
+            }
+            let down = e.key == Key::Named(NamedKey::ArrowDown);
+            let at = match (m.cursor, down) {
+                (None, _) => 0,
+                (Some(i), true) => (i + 1).min(m.tracks.len() - 1),
+                (Some(i), false) => i.saturating_sub(1),
+            };
+            m.cursor = Some(at);
+            m.select(at, false, shift);
+            m.reveal = Some(at.saturating_sub(3));
+        }
+        Key::Named(NamedKey::Enter) if !typing => {
+            let uri = { let m = model.peek(); m.cursor.and_then(|i| m.tracks.get(i)).map(|t| t.uri.clone()) };
+            if let Some(uri) = uri {
+                send(Command::PlayUri(uri));
+            }
+        }
         Key::Named(NamedKey::Delete) if !typing => {
             let uris = model.peek().selected_uris();
             if !uris.is_empty() {
@@ -2165,6 +2327,10 @@ fn on_key(e: &KeyboardEventData, model: State<Model>, search: AccessibilityId) {
         Key::Character(c) if !typing && !alt => match c.as_str() {
             " " => send(Command::Toggle),
             "/" => search.request_focus(),
+            "?" => {
+                let mut model = model;
+                model.write().shortcuts_open = true;
+            }
             "b" if has_now => send(Command::ToggleLike),
             "q" => toggle_side(TAB_QUEUE),
             "m" => {
@@ -2207,9 +2373,9 @@ fn app() -> impl IntoElement {
             }
         }
     });
-    let (page_gen, home, show_settings, show_lyrics, side_tab, playlist_popup, add_popup) = {
+    let (page_gen, home, show_settings, show_lyrics, side_tab, playlist_popup, add_popup, devices_open, shortcuts_open, mini) = {
         let m = model.read();
-        (m.page_gen, m.page_kind == "Home", m.show_settings, m.show_lyrics, m.side_tab, m.playlist_popup, m.add_popup)
+        (m.page_gen, m.page_kind == "Home", m.show_settings, m.show_lyrics, m.side_tab, m.playlist_popup, m.add_popup, m.devices_open, m.shortcuts_open, m.mini)
     };
     let main: Element = if show_settings {
         SettingsPage.into_element()
@@ -2225,7 +2391,7 @@ fn app() -> impl IntoElement {
         .color(rgb(TEXT))
         .on_global_key_down(move |e: Event<KeyboardEventData>| on_key(&e, model, search.0))
         .child(ContextMenuViewer::new())
-        .child(
+        .maybe_child((!mini).then(|| {
             rect()
                 .horizontal()
                 .width(Size::fill())
@@ -2244,12 +2410,14 @@ fn app() -> impl IntoElement {
                         .child(TopBar)
                         .child(main),
                 )
-                .maybe_child(side_tab.map(|tab| SidePanel { tab })),
-        )
+                .maybe_child(side_tab.map(|tab| SidePanel { tab }))
+        }))
         .child(PlayerBar)
         .child(CreditsPopup)
         .maybe_child(playlist_popup.map(|creating| PlaylistPopup { creating }))
         .maybe_child(add_popup.then_some(AddSongsPopup))
+        .maybe_child(devices_open.then_some(DevicesPopup))
+        .maybe_child(shortcuts_open.then_some(ShortcutsPopup))
 }
 
 /// The right panel: Now playing (big cover, lyrics preview, artist bio), Queue and Recent.
@@ -2469,6 +2637,71 @@ impl Component for AddSongsPopup {
                         .child(ScrollView::new().height(Size::px(360.)).children(rows)),
                 ),
             )
+    }
+}
+
+/// Spotify Connect devices; picking one moves playback there.
+#[derive(PartialEq)]
+struct DevicesPopup;
+
+impl Component for DevicesPopup {
+    fn render(&self) -> impl IntoElement {
+        let mut model = use_model();
+        let m = model.read();
+        let rows: Vec<Element> = m
+            .devices
+            .iter()
+            .map(|d| {
+                let (id, active) = (d.uri.clone(), d.artist.ends_with("playing here"));
+                rect()
+                    .horizontal()
+                    .width(Size::fill())
+                    .padding(10.)
+                    .spacing(12.)
+                    .corner_radius(8.)
+                    .background(rgb(if active { ELEVATED } else { SURFACE }))
+                    .cross_align(Alignment::Center)
+                    .on_press(move |_| {
+                        send(Command::Transfer(id.clone()));
+                        if let Some(mut model) = MODEL.get() {
+                            model.write().devices_open = false;
+                        }
+                    })
+                    .child(icon(I_DEVICES, 22., if active { ACCENT } else { SUB }, false))
+                    .child(rect().spacing(2.).child(one_line(d.title.clone(), 14., if active { ACCENT } else { TEXT })).child(one_line(d.artist.clone(), 12., SUB)))
+                    .into_element()
+            })
+            .collect();
+        let empty = m.devices.is_empty().then(|| one_line("Looking for devices...", 13., SUB));
+        Popup::new()
+            .width(Size::px(380.))
+            .on_close_request(move |_| model.write().devices_open = false)
+            .child(PopupTitle::new("Connect to a device".to_string()))
+            .child(PopupContent::new().child(rect().width(Size::fill()).spacing(4.).maybe_child(empty).children(rows)))
+    }
+}
+
+#[derive(PartialEq)]
+struct ShortcutsPopup;
+
+impl Component for ShortcutsPopup {
+    fn render(&self) -> impl IntoElement {
+        let mut model = use_model();
+        let rows = SHORTCUTS.iter().map(|(keys, what)| {
+            rect()
+                .horizontal()
+                .width(Size::fill())
+                .padding((3., 0.))
+                .content(Content::Flex)
+                .child(rect().width(Size::px(170.)).font_size(13.).font_weight(FontWeight::SEMI_BOLD).color(rgb(TEXT)).child(*keys))
+                .child(rect().width(Size::flex(1.)).font_size(13.).color(rgb(SUB)).child(*what))
+                .into_element()
+        });
+        Popup::new()
+            .width(Size::px(460.))
+            .on_close_request(move |_| model.write().shortcuts_open = false)
+            .child(PopupTitle::new("Keyboard shortcuts".to_string()))
+            .child(PopupContent::new().child(rect().width(Size::fill()).children(rows)))
     }
 }
 
