@@ -1,11 +1,12 @@
 #![windows_subsystem = "windows"]
 
-// ponytail: dialog (playlist cover picker) still targets the Slint window; it comes back with the playlist editor (phase 2).
 #[cfg(windows)]
 mod autostart;
 #[cfg(windows)]
 mod clipboard;
 mod covers;
+#[cfg(windows)]
+mod dialog;
 mod eq;
 #[cfg(windows)]
 mod instance;

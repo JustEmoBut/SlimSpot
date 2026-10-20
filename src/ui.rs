@@ -229,6 +229,8 @@ pub fn run(commands: mpsc::UnboundedSender<Command>, cover_requests: mpsc::Unbou
 }
 
 static MAIN_WINDOW: OnceLock<freya::winit::window::WindowId> = OnceLock::new();
+/// The window's HWND, as the owner of native dialogs.
+static MAIN_HWND: OnceLock<isize> = OnceLock::new();
 
 /// Title bar colors, media keys and taskbar buttons; they need the native window, which exists by now.
 #[cfg(windows)]
@@ -239,6 +241,7 @@ fn windows_setup(window: &freya::winit::window::Window) {
         return log::warn!("Media keys and taskbar buttons unavailable: no Win32 window handle");
     };
     let hwnd = h.hwnd.get();
+    let _ = MAIN_HWND.set(hwnd);
     if let Err(e) = crate::media_keys::setup(hwnd, tx.clone()) {
         log::warn!("{e}");
     }
@@ -303,6 +306,12 @@ const RADIUS_COVER: f32 = 6.;
 const GAP: f32 = 8.;
 const PLAYER_H: f32 = 88.;
 const SIDEBAR_W: f32 = 300.;
+const SIDE_PANEL_W: f32 = 320.;
+const SIDE_TABS: [&str; 3] = ["Now playing", "Queue", "Recent"];
+// Right panel tabs, as in the Slint version.
+const TAB_NOW: i32 = 0;
+const TAB_QUEUE: i32 = 1;
+const TAB_RECENT: i32 = 2;
 const ROW_H: f32 = 56.;
 const HOVER_MS: u64 = 150;
 const PAGE_ANIM_MS: u64 = 250;
@@ -349,6 +358,10 @@ const I_RADIO: &str = "M8.8 8.8 C7 10.6 7 13.4 8.8 15.2 M15.2 8.8 C17 10.6 17 13
 const I_MORE: &str = "M5 10.5 H8 V13.5 H5 Z M10.5 10.5 H13.5 V13.5 H10.5 Z M16 10.5 H19 V13.5 H16 Z";
 const I_LYRICS: &str = "M9.5 3.5 H14.5 V11.5 C14.5 14 9.5 14 9.5 11.5 Z M6 11 C6 18 18 18 18 11 M12 16.5 V21 M8.5 21 H15.5";
 const I_SETTINGS: &str = "M12 9 C13.7 9 15 10.3 15 12 C15 13.7 13.7 15 12 15 C10.3 15 9 13.7 9 12 C9 10.3 10.3 9 12 9 Z M12 2.5 V5 M12 19 V21.5 M2.5 12 H5 M19 12 H21.5 M5.3 5.3 L7.1 7.1 M16.9 16.9 L18.7 18.7 M5.3 18.7 L7.1 16.9 M16.9 7.1 L18.7 5.3";
+const I_PANEL: &str = "M3.5 5 H20.5 V19 H3.5 Z M14.5 5 V19";
+const I_QUEUE: &str = "M4 6 H20 M4 11 H20 M4 16 H11 M15 14 V20 L20 17 Z";
+const I_PENCIL: &str = "M5 19 L6 14.5 L15.5 5 L19 8.5 L9.5 18 Z M13.5 7 L17 10.5";
+const I_PLUS: &str = "M12 5 V19 M5 12 H19";
 const I_CLOCK: &str = "M12 3.5 C16.7 3.5 20.5 7.3 20.5 12 C20.5 16.7 16.7 20.5 12 20.5 C7.3 20.5 3.5 16.7 3.5 12 C3.5 7.3 7.3 3.5 12 3.5 Z M12 7.5 V12 L15 14";
 
 // ---- State ----
@@ -414,6 +427,16 @@ struct Model {
     /// Start time per line; empty when the lyrics aren't synced.
     lyric_times: Vec<u32>,
     lyrics_note: String,
+    /// The right panel's tab; `None` while it's closed.
+    side_tab: Option<i32>,
+    /// Queue or Recent rows, whichever tab asked last.
+    side_rows: Vec<Item>,
+    /// The playing artist's biography, first characters (Now playing tab).
+    now_about: String,
+    /// The playlist popup: `Some(true)` creates, `Some(false)` edits the open playlist.
+    playlist_popup: Option<bool>,
+    add_popup: bool,
+    add_results: Vec<Item>,
 }
 
 impl Model {
@@ -463,8 +486,10 @@ impl Model {
                     self.quick = interleave(&self.quick_top, &self.quick_bottom);
                 }
                 Rows::Targets => self.targets = items,
-                // ponytail: side panel, devices and "Add songs" results come with their screens (phase 2).
-                Rows::SideRows | Rows::Devices | Rows::AddResults => {}
+                Rows::SideRows => self.side_rows = items,
+                Rows::AddResults => self.add_results = items,
+                // ponytail: the devices list comes with its popup (phase 2).
+                Rows::Devices => {}
             },
             UiUpdate::AppendTracks(items) => self.tracks.extend(items),
             UiUpdate::LikedRows(uris, liked) => {
@@ -536,6 +561,7 @@ impl Model {
                 }
             }
             UiUpdate::Liked(liked) => self.liked = liked,
+            UiUpdate::NowAbout(bio) => self.now_about = bio,
             UiUpdate::Credits { title, text } => self.credits = Some((title, text)),
             UiUpdate::Cover(url, bytes) => {
                 self.cover_order.push_back(url.clone());
@@ -557,7 +583,6 @@ impl Model {
             | UiUpdate::LikedChecked(_)
             | UiUpdate::ResetLibraryChips
             | UiUpdate::NowTintDefault
-            | UiUpdate::NowAbout(_)
  => {}
         }
     }
@@ -858,6 +883,7 @@ impl Component for QuickTile {
             .overflow(Overflow::Clip)
             .background(rgb(mix(ELEVATED, HOVER, t)))
             .cross_align(Alignment::Center)
+            .content(Content::Flex)
             .spacing(14.)
             .on_pointer_enter(move |_| anim.start())
             .on_pointer_leave(move |_| anim.reverse())
@@ -865,7 +891,7 @@ impl Component for QuickTile {
             .child(list_cover(&self.item, self.cover.clone(), 64., 0.))
             .child(
                 rect()
-                    .width(Size::func(|p| Some(p.parent - 140.)))
+                    .width(Size::flex(1.))
                     .font_weight(FontWeight::SEMI_BOLD)
                     .child(one_line(self.item.title.clone(), 14., TEXT))
                     .maybe_child(subtitle),
@@ -1095,8 +1121,10 @@ impl Component for Sidebar {
                     .padding((6., 8.))
                     .spacing(12.)
                     .cross_align(Alignment::Center)
+                    .content(Content::Flex)
                     .child(icon(I_LIBRARY, 22., SUB, false))
-                    .child(rect().font_size(15.).font_weight(FontWeight::SEMI_BOLD).color(rgb(TEXT)).child("Your Library")),
+                    .child(rect().width(Size::flex(1.)).font_size(15.).font_weight(FontWeight::SEMI_BOLD).color(rgb(TEXT)).child("Your Library"))
+                    .child(IconButton { path: I_PLUS, size: 18., active: false, filled: false, on_press: Some(|| open_playlist_popup(true)) }),
             )
             .child(ScrollView::new().children(rows));
         rect().width(Size::px(SIDEBAR_W)).height(Size::fill()).spacing(GAP).child(nav).child(library)
@@ -1160,6 +1188,48 @@ fn toggle_settings() {
     }
 }
 
+/// Opens the right panel on `tab`, or closes it when that tab is already showing. Queue and Recent
+/// are fetched when their tab opens (Spirc keeps its queue private; see CLAUDE.md).
+fn toggle_side(tab: i32) {
+    let Some(mut model) = MODEL.get() else { return };
+    let mut m = model.write();
+    if m.side_tab == Some(tab) {
+        m.side_tab = None;
+        return;
+    }
+    m.side_tab = Some(tab);
+    m.side_rows.clear();
+    match tab {
+        TAB_QUEUE => send(Command::Queue),
+        TAB_RECENT => send(Command::Recent),
+        _ => {}
+    }
+}
+
+fn open_playlist_popup(creating: bool) {
+    if let Some(mut model) = MODEL.get() {
+        model.write().playlist_popup = Some(creating);
+    }
+}
+
+fn open_add_popup() {
+    if let Some(mut model) = MODEL.get() {
+        let mut m = model.write();
+        m.add_popup = true;
+        m.add_results.clear();
+    }
+}
+
+/// Native Open dialog on a thread of its own (it's modal and would stall the UI), then upload.
+fn change_cover() {
+    #[cfg(windows)]
+    std::thread::spawn(|| {
+        if let Some(path) = crate::dialog::pick_image(MAIN_HWND.get().copied()) {
+            send(Command::PlaylistCover(path));
+        }
+    });
+}
+
 fn toggle_lyrics() {
     if let Some(mut model) = MODEL.get() {
         let mut m = model.write();
@@ -1179,7 +1249,8 @@ impl Component for HomePage {
         let mut tile_rows = Vec::new();
         let mut tiles = tiles.into_iter().peekable();
         while tiles.peek().is_some() {
-            let row: Vec<Element> = tiles.by_ref().take(4).collect();
+            // Four per row; two while the right panel narrows the page, or the names don't fit.
+            let row: Vec<Element> = tiles.by_ref().take(if m.side_tab.is_some() { 2 } else { 4 }).collect();
             tile_rows.push(rect().horizontal().width(Size::fill()).spacing(GAP).content(Content::Flex).children(row).into_element());
         }
         let shelf: Vec<Element> = m
@@ -1250,7 +1321,13 @@ impl Component for ListPage {
             .cross_align(Alignment::Center)
             .background(LinearGradient::new().angle(180.).stop(((40, 30, 58), 0.)).stop((SURFACE, 100.)))
             .maybe_child(m.playable.then(|| PlayFab { size: 56., playing: m.playing && !m.current_list.is_empty() && m.current_list == m.page_uri }))
-            .child(IconButton { path: I_SHUFFLE, size: 26., active: m.shuffle, filled: false, on_press: Some(|| send(Command::ToggleShuffle)) });
+            .child(IconButton { path: I_SHUFFLE, size: 26., active: m.shuffle, filled: false, on_press: Some(|| send(Command::ToggleShuffle)) })
+            .maybe_child(m.editable.then(|| IconButton { path: I_PENCIL, size: 24., active: false, filled: false, on_press: Some(|| open_playlist_popup(false)) }))
+            .maybe_child(m.editable.then(|| IconButton { path: I_PLUS, size: 24., active: false, filled: false, on_press: Some(open_add_popup) }));
+        // An empty own playlist invites songs, like Spotify.
+        let empty_own = (m.editable && m.tracks.is_empty()).then(|| {
+            rect().padding((24., 24.)).child(Chip { label: "Let's find something for your playlist", active: true, on_press: EventHandler::new(|_| open_add_popup()) })
+        });
         let columns = rect()
             .horizontal()
             .width(Size::fill())
@@ -1298,6 +1375,7 @@ impl Component for ListPage {
             .child(header)
             .child(actions)
             .maybe_child(tabs)
+            .maybe_child(empty_own)
             .maybe_child(about)
             .child(columns)
             .child(rect().width(Size::fill()).height(Size::px(1.)).margin((0., 24.)).background(rgb(HAIRLINE)))
@@ -1697,6 +1775,8 @@ impl Component for PlayerBar {
             .spacing(4.)
             .main_align(Alignment::End)
             .cross_align(Alignment::Center)
+            .child(IconButton { path: I_PANEL, size: 18., active: m.side_tab == Some(TAB_NOW), filled: false, on_press: Some(|| toggle_side(TAB_NOW)) })
+            .child(IconButton { path: I_QUEUE, size: 18., active: m.side_tab == Some(TAB_QUEUE), filled: false, on_press: Some(|| toggle_side(TAB_QUEUE)) })
             .child(IconButton { path: I_LYRICS, size: 18., active: m.show_lyrics, filled: false, on_press: Some(toggle_lyrics) })
             .child(icon(I_VOLUME, 18., SUB, false))
             .child(
@@ -1802,12 +1882,14 @@ fn on_key(e: &KeyboardEventData, model: State<Model>, search: AccessibilityId) {
             "f" | "l" => search.request_focus(),
             "," => toggle_settings(),
             "y" => toggle_lyrics(),
+            "u" => toggle_side(TAB_QUEUE),
             _ => {}
         },
         Key::Character(c) if !typing && !alt => match c.as_str() {
             " " => send(Command::Toggle),
             "/" => search.request_focus(),
             "b" if has_now => send(Command::ToggleLike),
+            "q" => toggle_side(TAB_QUEUE),
             "m" => {
                 let mut model = model;
                 model.write().muted_from = if muted_from.is_some() { None } else { Some(current) };
@@ -1848,9 +1930,9 @@ fn app() -> impl IntoElement {
             }
         }
     });
-    let (page_gen, home, show_settings, show_lyrics) = {
+    let (page_gen, home, show_settings, show_lyrics, side_tab, playlist_popup, add_popup) = {
         let m = model.read();
-        (m.page_gen, m.page_kind == "Home", m.show_settings, m.show_lyrics)
+        (m.page_gen, m.page_kind == "Home", m.show_settings, m.show_lyrics, m.side_tab, m.playlist_popup, m.add_popup)
     };
     let main: Element = if show_settings {
         SettingsPage.into_element()
@@ -1873,20 +1955,244 @@ fn app() -> impl IntoElement {
                 .height(Size::func(|p| Some(p.parent - PLAYER_H)))
                 .padding((GAP, GAP, 0., GAP))
                 .spacing(GAP)
+                .content(Content::Flex)
                 .child(Sidebar)
                 .child(
                     rect()
-                        .width(Size::fill())
+                        .width(Size::flex(1.))
                         .height(Size::fill())
                         .corner_radius(RADIUS_PANEL)
                         .overflow(Overflow::Clip)
                         .background(rgb(SURFACE))
                         .child(TopBar)
                         .child(main),
-                ),
+                )
+                .maybe_child(side_tab.map(|tab| SidePanel { tab })),
         )
         .child(PlayerBar)
         .child(CreditsPopup)
+        .maybe_child(playlist_popup.map(|creating| PlaylistPopup { creating }))
+        .maybe_child(add_popup.then_some(AddSongsPopup))
+}
+
+/// The right panel: Now playing (big cover, lyrics preview, artist bio), Queue and Recent.
+#[derive(PartialEq)]
+struct SidePanel {
+    tab: i32,
+}
+
+impl Component for SidePanel {
+    fn render(&self) -> impl IntoElement {
+        let model = use_model();
+        let mut tick = use_state(|| 0u64);
+        // The lyrics preview follows the playing position.
+        use_future(move || async move {
+            loop {
+                tokio::time::sleep(POSITION_TICK).await;
+                *tick.write() += 1;
+            }
+        });
+        let _ = tick();
+        let m = model.read();
+        let tabs = rect().horizontal().spacing(GAP).padding((0., 0., 12., 0.)).children(SIDE_TABS.iter().enumerate().map(|(i, label)| {
+            Chip { label, active: self.tab == i as i32, on_press: EventHandler::new(move |_| toggle_side(i as i32)) }.into_element()
+        }));
+        let body: Element = if self.tab == TAB_NOW {
+            let now = m.now.clone().unwrap_or_default();
+            let big = crate::covers::larger_cover(&now.cover_url);
+            let sung = crate::lyrics::current_line(&m.lyric_times, m.position());
+            let preview: Vec<Element> = match sung {
+                Some(i) => m.lyric_lines.iter().skip(i).take(3).enumerate().map(|(k, line)| {
+                    paragraph().span(line.clone()).font_size(15.).font_weight(FontWeight::BOLD).color(rgb(if k == 0 { TEXT } else { SUB })).width(Size::fill()).into_element()
+                }).collect(),
+                None => Vec::new(),
+            };
+            ScrollView::new()
+                .child(
+                    rect()
+                        .width(Size::fill())
+                        .spacing(10.)
+                        .child(cover(&big, m.cover(&big), SIDE_PANEL_W - 32., 8.))
+                        .child(paragraph().span(now.title.clone()).font_size(22.).font_weight(FontWeight::BOLD).color(rgb(TEXT)).width(Size::fill()))
+                        .child(paragraph().span(now.artist.clone()).font_size(14.).color(rgb(SUB)).width(Size::fill()))
+                        .maybe_child((!preview.is_empty()).then(|| {
+                            rect().width(Size::fill()).padding(14.).spacing(4.).corner_radius(10.).background(rgb(ELEVATED)).child(one_line("Lyrics", 12., SUB)).children(preview)
+                        }))
+                        .maybe_child((!m.now_about.is_empty()).then(|| {
+                            rect()
+                                .width(Size::fill())
+                                .padding(14.)
+                                .spacing(4.)
+                                .corner_radius(10.)
+                                .background(rgb(ELEVATED))
+                                .child(one_line("About the artist", 12., SUB))
+                                .child(paragraph().span(format!("{}...", m.now_about)).font_size(12.).color(rgb(SUB)).width(Size::fill()))
+                        })),
+                )
+                .into_element()
+        } else {
+            let queue = self.tab == TAB_QUEUE;
+            let heading_text = if !queue { "Recently played" } else if m.side_rows.is_empty() { "Nothing queued" } else { "Next up" };
+            let rows: Vec<Element> = m
+                .side_rows
+                .iter()
+                .map(|item| SideRow { item: item.clone(), queue, cover: m.cover(&item.cover_url) }.into_element())
+                .collect();
+            rect().width(Size::fill()).height(Size::fill()).spacing(8.).child(one_line(heading_text, 13., SUB)).child(ScrollView::new().children(rows)).into_element()
+        };
+        rect()
+            .width(Size::px(SIDE_PANEL_W))
+            .height(Size::fill())
+            .padding(16.)
+            .corner_radius(RADIUS_PANEL)
+            .background(rgb(SURFACE))
+            .child(tabs)
+            .child(body)
+    }
+}
+
+/// A Queue or Recent row: a queue row skips ahead to it, a recent row plays that track alone.
+#[derive(PartialEq)]
+struct SideRow {
+    item: Item,
+    queue: bool,
+    cover: Option<Bytes>,
+}
+
+impl Component for SideRow {
+    fn render(&self) -> impl IntoElement {
+        let (mut anim, t) = use_hover();
+        let uri = self.item.uri.clone();
+        let queue = self.queue;
+        rect()
+            .horizontal()
+            .width(Size::fill())
+            .padding(6.)
+            .spacing(10.)
+            .corner_radius(6.)
+            .background(rgb(mix(SURFACE, ELEVATED, t)))
+            .cross_align(Alignment::Center)
+            .on_pointer_enter(move |_| anim.start())
+            .on_pointer_leave(move |_| anim.reverse())
+            .on_press(move |_| send(if queue { Command::SkipTo(uri.clone()) } else { Command::PlayUri(uri.clone()) }))
+            .child(cover(&self.item.cover_url, self.cover.clone(), 40., 4.))
+            .child(
+                rect()
+                    .width(Size::func(|p| Some(p.parent - 56.)))
+                    .spacing(2.)
+                    .child(one_line(self.item.title.clone(), 13., TEXT))
+                    .child(one_line(self.item.artist.clone(), 12., SUB)),
+            )
+    }
+}
+
+/// "+" (create, nothing is created on cancel) and the pencil on own playlists (edit, cover).
+#[derive(PartialEq)]
+struct PlaylistPopup {
+    creating: bool,
+}
+
+impl Component for PlaylistPopup {
+    fn render(&self) -> impl IntoElement {
+        let mut model = use_model();
+        let creating = self.creating;
+        let name = use_state(|| {
+            let m = model.peek();
+            if creating { format!("My Playlist #{}", m.targets.len() + 1) } else { m.page_title.clone() }
+        });
+        let description = use_state(|| if creating { String::new() } else { model.peek().page_info.clone() });
+        let close = move || {
+            let mut model = model;
+            model.write().playlist_popup = None;
+        };
+        let save = move || {
+            let (n, d) = (name.read().trim().to_string(), description.read().trim().to_string());
+            if n.is_empty() {
+                return;
+            }
+            send(if creating { Command::CreatePlaylist { name: n, description: d } } else { Command::EditPlaylist { name: n, description: d } });
+            let mut model = model;
+            model.write().playlist_popup = None;
+        };
+        Popup::new()
+            .width(Size::px(440.))
+            .on_close_request(move |_| close())
+            .child(PopupTitle::new(if creating { "Create playlist".to_string() } else { "Edit details".to_string() }))
+            .child(
+                PopupContent::new().child(
+                    rect()
+                        .width(Size::fill())
+                        .spacing(10.)
+                        .child(Input::new(name).placeholder("Name").width(Size::fill()).auto_focus(true).on_submit(move |_| save()))
+                        .child(Input::new(description).placeholder("Add an optional description").width(Size::fill()).on_submit(move |_| save()))
+                        .child(
+                            rect()
+                                .horizontal()
+                                .spacing(GAP)
+                                .maybe_child((!creating).then(|| {
+                                    Chip {
+                                        label: "Change cover...",
+                                        active: false,
+                                        on_press: EventHandler::new(move |_| {
+                                            change_cover();
+                                            let mut model = model;
+                                            model.write().playlist_popup = None;
+                                        }),
+                                    }
+                                }))
+                                .child(Chip { label: "Cancel", active: false, on_press: EventHandler::new(move |_| close()) })
+                                .child(Chip { label: if creating { "Create" } else { "Save" }, active: true, on_press: EventHandler::new(move |_| save()) }),
+                        ),
+                ),
+            )
+    }
+}
+
+/// Searches songs and adds a result to the open own playlist (appended in place by the backend).
+#[derive(PartialEq)]
+struct AddSongsPopup;
+
+impl Component for AddSongsPopup {
+    fn render(&self) -> impl IntoElement {
+        let mut model = use_model();
+        let query = use_state(String::new);
+        let m = model.read();
+        let rows: Vec<Element> = m
+            .add_results
+            .iter()
+            .map(|item| {
+                let uri = item.uri.clone();
+                rect()
+                    .horizontal()
+                    .width(Size::fill())
+                    .padding(6.)
+                    .spacing(10.)
+                    .cross_align(Alignment::Center)
+                    .content(Content::Flex)
+                    .child(cover(&item.cover_url, m.cover(&item.cover_url), 40., 4.))
+                    .child(rect().width(Size::flex(1.)).spacing(2.).child(one_line(item.title.clone(), 13., TEXT)).child(one_line(item.artist.clone(), 12., SUB)))
+                    .child(Chip { label: "Add", active: false, on_press: EventHandler::new(move |_| send(Command::AddToPage(uri.clone()))) })
+                    .into_element()
+            })
+            .collect();
+        Popup::new()
+            .width(Size::px(520.))
+            .on_close_request(move |_| model.write().add_popup = false)
+            .child(PopupTitle::new(format!("Add songs to {}", m.page_title)))
+            .child(
+                PopupContent::new().child(
+                    rect()
+                        .width(Size::fill())
+                        .spacing(10.)
+                        .child(Input::new(query).placeholder("Search for songs").width(Size::fill()).auto_focus(true).on_submit(|q: String| {
+                            if !q.trim().is_empty() {
+                                send(Command::AddSearch(q));
+                            }
+                        }))
+                        .child(ScrollView::new().height(Size::px(360.)).children(rows)),
+                ),
+            )
+    }
 }
 
 #[derive(PartialEq)]

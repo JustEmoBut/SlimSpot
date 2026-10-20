@@ -2,28 +2,23 @@
 
 use std::path::PathBuf;
 
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use slint::ComponentHandle;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree};
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH};
 use windows::core::{PCWSTR, w};
 
-use crate::ui::App;
-
-/// Blocks (modal) until the user picks a JPEG/PNG or cancels; `None` on cancel or failure.
-pub fn pick_image(app: &App) -> Option<PathBuf> {
-    pick(app, w!("Images"), w!("*.jpg;*.jpeg;*.png"), w!("Choose a playlist cover"))
+/// Blocks (modal to `owner`) until the user picks a JPEG/PNG or cancels; `None` on cancel or
+/// failure. Meant for a thread of its own, so the UI keeps drawing meanwhile.
+pub fn pick_image(owner: Option<isize>) -> Option<PathBuf> {
+    pick(owner, w!("Images"), w!("*.jpg;*.jpeg;*.png"), w!("Choose a playlist cover"))
 }
 
-fn pick(app: &App, kind: PCWSTR, spec: PCWSTR, title: PCWSTR) -> Option<PathBuf> {
-    let owner = match app.window().window_handle().window_handle().map(|h| h.as_raw()) {
-        Ok(RawWindowHandle::Win32(h)) => Some(HWND(h.hwnd.get() as _)),
-        _ => None,
-    };
+fn pick(owner: Option<isize>, kind: PCWSTR, spec: PCWSTR, title: PCWSTR) -> Option<PathBuf> {
+    let owner = owner.map(|h| HWND(h as _));
     unsafe {
-        // COM is already initialised as STA on the UI thread (winit; see taskbar.rs).
+        // The dialog needs COM in an STA on the calling thread.
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
         dialog.SetFileTypes(&[COMDLG_FILTERSPEC { pszName: kind, pszSpec: spec }]).ok()?;
         dialog.SetTitle(title).ok()?;
