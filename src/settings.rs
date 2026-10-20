@@ -29,7 +29,7 @@ impl Repeat {
         }
     }
 
-    /// Matches the `repeat` int property in the Slint markup.
+    /// The `repeat` value sent to the UI (0 off, 1 all, 2 one).
     pub fn as_ui(self) -> i32 {
         self as i32
     }
@@ -61,7 +61,7 @@ impl Quality {
         }
     }
 
-    /// Index into the quality ComboBox in the Slint markup.
+    /// Index into the UI's quality choices (96, 160, 320 kbps).
     pub fn as_ui(self) -> i32 {
         self as i32
     }

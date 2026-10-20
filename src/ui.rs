@@ -309,7 +309,7 @@ const PLAYER_H: f32 = 88.;
 const SIDEBAR_W: f32 = 300.;
 const SIDE_PANEL_W: f32 = 320.;
 const SIDE_TABS: [&str; 3] = ["Now playing", "Queue", "Recent"];
-// Right panel tabs, as in the Slint version.
+// Right panel tab indexes.
 const TAB_NOW: i32 = 0;
 const TAB_QUEUE: i32 = 1;
 const TAB_RECENT: i32 = 2;
@@ -318,7 +318,7 @@ const ROW_H: f32 = 56.;
 const NUMBER_W: f32 = 36.;
 // Compact track list: one-line rows without covers (Settings → Display).
 const COMPACT_ROW_H: f32 = 36.;
-// Mini player: the bar alone, always on top (the Slint version's size).
+// Mini player: the bar alone, always on top.
 const MINI_WIDTH: f64 = 860.;
 const MINI_HEIGHT: f64 = 96.;
 // Share of the cover's average color kept for the page tint, so white text stays readable.
@@ -326,7 +326,7 @@ const TINT_BRIGHTNESS: f32 = 0.45;
 const DEFAULT_TINT: (u8, u8, u8) = (88, 64, 128);
 // Playing-row equalizer bars: a few steps a second keep the software renderer's CPU low.
 const EQ_BARS_TICK: Duration = Duration::from_millis(300);
-const SHORTCUTS: [(&str, &str); 22] = [
+const SHORTCUTS: [(&str, &str); 23] = [
     ("Space", "Play / pause"),
     ("Ctrl+Right / Left", "Next / previous"),
     ("Shift+Right / Left", "Seek 10 s"),
@@ -336,6 +336,7 @@ const SHORTCUTS: [(&str, &str); 22] = [
     ("Ctrl+S / Ctrl+R", "Shuffle / repeat"),
     ("Alt+Left / Right", "Back / forward"),
     ("Ctrl+H", "Home"),
+    ("Ctrl+B", "Hide / show the sidebar"),
     ("/ or Ctrl+L", "Search"),
     ("Ctrl+F", "Find in page"),
     ("Up / Down", "Move the row cursor (Shift extends)"),
@@ -362,7 +363,7 @@ const VOLUME_STEP: f32 = 5.;
 const LYRIC_LINE_H: f32 = 52.;
 // Roughly half the lyrics panel at the default window size, so the sung line sits mid-panel.
 const LYRICS_TOP: f32 = 260.;
-// Winamp's 10 EQ bands and its built-in presets (dB / MAX_DB), as in the Slint version.
+// Winamp's 10 EQ bands and its built-in presets (dB / MAX_DB).
 const EQ_BANDS: [&str; 10] = ["60", "170", "310", "600", "1K", "3K", "6K", "12K", "14K", "16K"];
 const EQ_PRESETS: [(&str, [f32; 10]); 8] = [
     ("Flat", [0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]),
@@ -514,6 +515,8 @@ struct Model {
     page_saved: bool,
     /// Full-screen lyrics: the window goes full screen with only lyrics and the player bar.
     lyrics_full: bool,
+    /// Ctrl+B hides the sidebar.
+    hide_sidebar: bool,
 }
 
 impl Model {
@@ -580,7 +583,7 @@ impl Model {
             UiUpdate::PageHeader { kind, title, can_back, can_forward } => {
                 if (kind, &title) != (self.page_kind, &self.page_title) {
                     self.page_gen += 1;
-                    // Any page change closes the settings and lyrics and resets find, like the Slint version.
+                    // Any page change closes the settings and lyrics and resets find.
                     self.show_settings = false;
                     self.show_lyrics = false;
                     if self.lyrics_full {
@@ -857,7 +860,7 @@ fn action(label: &'static str, name: &str, uri: &str) -> MenuButton {
     MenuButton::new().on_press(move |_| send(Command::RowAction { action: name.clone(), uri: uri.clone() })).child(label)
 }
 
-/// The row menu (right-click or "..."), like the Slint one: what applies depends on the row.
+/// The row menu (right-click or "..."): what applies depends on the row.
 fn row_menu(item: &Item, sidebar: bool, editable: bool, targets: &[Item]) -> Menu {
     let uri = item.uri.as_str();
     let track = uri.starts_with("spotify:track:");
@@ -1450,7 +1453,7 @@ fn modifiers_held() -> (bool, bool) {
 }
 
 impl Model {
-    /// Ctrl toggles a row, Shift extends from the anchor, a plain mark selects one (the Slint rules).
+    /// Ctrl toggles a row, Shift extends from the anchor, a plain mark selects one.
     fn select(&mut self, index: usize, ctrl: bool, shift: bool) {
         if index >= self.tracks.len() {
             return;
@@ -1865,7 +1868,7 @@ fn section(title: &str) -> Label {
     heading(title.to_string(), 20.)
 }
 
-/// Label and description on the left, the control on the right (the Slint `SettingRow`).
+/// Label and description on the left, the control on the right.
 fn setting_row(label: &str, desc: &str, control: impl IntoElement) -> Rect {
     rect()
         .horizontal()
@@ -2362,7 +2365,7 @@ fn focus_search() {
     }
 }
 
-/// Global shortcuts (the Slint app's set, minus screens not ported yet). Unmodified keys only act
+/// Global shortcuts (see CLAUDE.md, Keyboard). Unmodified keys only act
 /// while no text field has focus.
 fn on_key(e: &KeyboardEventData, model: State<Model>, search: AccessibilityId) {
     let ctrl = e.modifiers.contains(Modifiers::CONTROL);
@@ -2451,6 +2454,11 @@ fn on_key(e: &KeyboardEventData, model: State<Model>, search: AccessibilityId) {
             "v" if !typing => paste_links(),
             "," => toggle_settings(),
             "y" => toggle_lyrics(),
+            "b" => {
+                let mut model = model;
+                let mut m = model.write();
+                m.hide_sidebar = !m.hide_sidebar;
+            }
             "u" => toggle_side(TAB_QUEUE),
             _ => {}
         },
@@ -2503,9 +2511,9 @@ fn app() -> impl IntoElement {
             }
         }
     });
-    let (page_gen, home, show_settings, show_lyrics, side_tab, playlist_popup, add_popup, devices_open, shortcuts_open, mini, lyrics_full) = {
+    let (page_gen, home, show_settings, show_lyrics, side_tab, playlist_popup, add_popup, devices_open, shortcuts_open, mini, lyrics_full, hide_sidebar) = {
         let m = model.read();
-        (m.page_gen, m.page_kind == "Home", m.show_settings, m.show_lyrics, m.side_tab, m.playlist_popup, m.add_popup, m.devices_open, m.shortcuts_open, m.mini, m.lyrics_full)
+        (m.page_gen, m.page_kind == "Home", m.show_settings, m.show_lyrics, m.side_tab, m.playlist_popup, m.add_popup, m.devices_open, m.shortcuts_open, m.mini, m.lyrics_full, m.hide_sidebar)
     };
     let main: Element = if show_settings {
         SettingsPage.into_element()
@@ -2529,7 +2537,7 @@ fn app() -> impl IntoElement {
                 .padding((GAP, GAP, 0., GAP))
                 .spacing(GAP)
                 .content(Content::Flex)
-                .maybe_child((!lyrics_full).then_some(Sidebar))
+                .maybe_child((!lyrics_full && !hide_sidebar).then_some(Sidebar))
                 .child(
                     rect()
                         .width(Size::flex(1.))

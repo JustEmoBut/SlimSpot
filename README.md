@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>A tiny, native Spotify client for Windows.</b><br>
-  Rust · Slint (software renderer) · librespot — no browser engine, no webview.
+  Rust · Freya (software renderer) · librespot — no browser engine, no webview.
 </p>
 
 <p align="center">
@@ -17,11 +17,11 @@
 
 ## Why SlimSpot?
 
-Memory is the whole point. SlimSpot uses about **19 MB of private memory at startup** and stays well under **50 MB while playing**, even with a large playlist open. For comparison, Electron/Tauri/egui clients typically use 100–250 MB.
+Memory is the whole point. SlimSpot uses about **32 MB of private memory at startup** and stays well under **50 MB while playing**, even with a large playlist open. For comparison, Electron/Tauri/egui clients typically use 100–250 MB.
 
 | Client | Private memory |
 |---|---|
-| **SlimSpot** (idle / playing) | ~19 MB / ~25 MB |
+| **SlimSpot** (idle / playing) | ~32 MB / ~33 MB |
 | Spotifast (egui, claimed) | 100–250 MB |
 | A Tauri-based client (measured) | ~194 MB |
 
@@ -38,9 +38,8 @@ Memory is the whole point. SlimSpot uses about **19 MB of private memory at star
 - Queue and recently played in the right panel, synced lyrics (click a line to jump, full screen), track credits, find in page, sleep timer, mini player
 - Select several songs (Ctrl/Shift-click, Ctrl+A), copy and paste song links, drag songs onto a playlist or Liked Songs in the sidebar
 - Keyboard shortcuts for nearly everything; press `?` for the list
-- Themes (Spotifast, Indigo, Nord, Tokyo Night, Catppuccin Mocha, Rosé Pine, Dark), compact track list, searchable settings
+- A modern dark design with page colors taken from the playing cover, and a compact track list
 - 10-band equalizer and preamp that really shape the sound (Settings → Playback)
-- Optional GPU rendering (Settings → Display; uses far more memory, ~100 MB)
 - Updates itself from GitHub Releases: an "Update to vX" button appears when a new version is out
 - Windows integration: media keys and overlay, taskbar buttons and progress, tray, start with Windows
 
@@ -124,7 +123,7 @@ The first build downloads and compiles all dependencies and takes a few minutes;
 
 1. Bump `version` in `Cargo.toml` (the in-app update check compares against it).
 2. `.\install.ps1 -Release` (or `cargo build --release`).
-3. Zip `SlimSpot.exe`, `LICENSE`, `OFL.txt` and `README.md` as `SlimSpot-X.Y.Z-windows-x64.zip`.
+3. Zip `SlimSpot.exe`, `LICENSE`, `OFL.txt`, `THIRD-PARTY-NOTICES.txt` and `README.md` as `SlimSpot-X.Y.Z-windows-x64.zip`.
 4. Sign it: `openssl dgst -sha256 -sign slimspot-update.pem -out SlimSpot-X.Y.Z-windows-x64.zip.sig SlimSpot-X.Y.Z-windows-x64.zip`
 5. Publish both files on a `vX.Y.Z` GitHub release. Running copies then show "Update to vX.Y.Z"; a release without a valid `.sig` is never offered.
 
@@ -133,7 +132,7 @@ The first build downloads and compiles all dependencies and takes a few minutes;
 | Path | What it does |
 |---|---|
 | `src/main.rs` | Wires the UI to the player, tray, timers |
-| `src/ui.rs` | Slint markup and UI helpers |
+| `src/ui.rs` | The Freya UI: screens, popups, tray, shortcuts |
 | `src/player.rs` | Playback backend: login, Spotify Connect device, command loop |
 | `src/web.rs` | Spotify Web API: library, search, playlists, queue |
 | `src/covers.rs` | Cover thumbnails (only for visible rows) |
@@ -160,6 +159,4 @@ Everything lives in `%APPDATA%\SlimSpot`: sign-in tokens, `settings.json`, a lib
 
 MIT, see [LICENSE](LICENSE). The bundled Poppins font is under the SIL Open Font License (`assets/fonts/OFL.txt`).
 
-[![Made with Slint](https://raw.githubusercontent.com/slint-ui/slint/master/logo/MadeWithSlint-logo-whitebg.png)](https://slint.dev)
-
-Slint is used under its Royalty-free License 2.0, which asks for this attribution.
+The UI is built with [Freya](https://github.com/marc2332/freya) (MIT). It draws with Skia (BSD-3), which is compiled into the exe along with ICU data (Unicode License V3); their notices are in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
