@@ -17,11 +17,12 @@
 
 ## Why SlimSpot?
 
-Memory is the whole point. SlimSpot uses about **32 MB of private memory at startup** and stays well under **50 MB while playing**, even with a large playlist open. For comparison, Electron/Tauri/egui clients typically use 100–250 MB.
+Memory is the whole point. SlimSpot uses about **32 MB of private memory at startup** and stays well under **50 MB while playing**, even with a large playlist open. For comparison, Electron/Tauri/egui clients typically use 100–250 MB. (On Linux, `Private_Dirty` is the comparable number; tools that also count the program's own code pages show about 60 MB.)
 
 | Client | Private memory |
 |---|---|
-| **SlimSpot** (idle / playing) | ~32 MB / ~33 MB |
+| **SlimSpot** on Windows (idle / playing) | ~32 MB / ~33 MB |
+| **SlimSpot** on Linux (idle, written pages) | ~19 MB |
 | Spotifast (egui, claimed) | 100–250 MB |
 | A Tauri-based client (measured) | ~194 MB |
 
@@ -30,7 +31,7 @@ Memory is the whole point. SlimSpot uses about **32 MB of private memory at star
 ## Features
 
 - Spotify Connect device ("SlimSpot"): control it from your phone, or move playback to other devices
-- Library: playlists, Liked Songs, Your Episodes, saved albums, followed artists and podcasts, with filters, Recents/A-Z sort and name search
+- Library: playlists, Liked Songs, Your Episodes, saved albums, followed artists and podcasts, with filters, Recents/A-Z sort and name search, in a sidebar you can resize or collapse to covers
 - Search with tabs (Songs, Albums, Artists, Playlists) and paging
 - Artist pages (Popular, Albums, Singles, Compilations, Appears On, About), album and podcast pages
 - Playlist editing: create, rename, description, cover upload, add songs, drag to reorder, remove
@@ -38,7 +39,7 @@ Memory is the whole point. SlimSpot uses about **32 MB of private memory at star
 - Queue and recently played in the right panel, synced lyrics (click a line to jump, full screen), track credits, find in page, sleep timer, mini player
 - Select several songs (Ctrl/Shift-click, Ctrl+A), copy and paste song links, drag songs onto a playlist or Liked Songs in the sidebar
 - Keyboard shortcuts for nearly everything; press `?` for the list
-- A modern dark design with page colors taken from the playing cover, and a compact track list
+- A modern dark design with page headers tinted by their cover, and a compact track list
 - 10-band equalizer and preamp that really shape the sound (Settings → Playback)
 - Updates itself from GitHub Releases: an "Update to vX" button appears when a new version is out
 - Windows integration: media keys and overlay, taskbar buttons and progress, tray, start with Windows
