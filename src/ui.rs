@@ -483,6 +483,9 @@ struct Model {
     page_kind: &'static str,
     page_title: String,
     page_uri: String,
+    /// The library row just clicked, until its page arrives or loading fails: marked on the row at once,
+    /// since the backend may still be busy with the previous page.
+    opening: String,
     page_info: String,
     page_cover: String,
     numbered: bool,
@@ -594,6 +597,10 @@ impl Model {
     fn apply(&mut self, update: UiUpdate) {
         match update {
             UiUpdate::Status(text) => {
+                // Progress messages end with "..."; anything else (an error) ends the opening.
+                if !text.ends_with("...") {
+                    self.opening.clear();
+                }
                 self.status_until = (!text.is_empty()).then(|| std::time::Instant::now() + std::time::Duration::from_secs(TOAST_SECS));
                 self.status = text;
             }
@@ -666,6 +673,7 @@ impl Model {
             UiUpdate::Page(p) => {
                 self.page_info = p.info;
                 self.page_uri = p.page_uri;
+                self.opening.clear();
                 self.page_cover = p.cover;
                 self.page_tint = self.cover(&crate::covers::larger_cover(&self.page_cover)).and_then(|b| cover_tint(&b));
                 self.numbered = p.numbered;
@@ -1036,6 +1044,8 @@ impl Component for NavItem {
 struct LibraryRow {
     item: Item,
     selected: bool,
+    /// Clicked and its page still loading.
+    opening: bool,
     cover: Option<Bytes>,
     /// An own playlist or Liked Songs: dropped songs are added (or saved) there.
     drop_target: bool,
@@ -1047,7 +1057,7 @@ impl Component for LibraryRow {
     fn render(&self) -> impl IntoElement {
         let (mut anim, t) = use_hover();
         let uri = self.item.uri.clone();
-        let bg = if self.selected { HOVER } else { mix(SURFACE, ELEVATED, t) };
+        let bg = if self.selected || self.opening { HOVER } else { mix(SURFACE, ELEVATED, t) };
         let round = self.item.uri.starts_with("spotify:artist:");
         let row = rect()
             .horizontal()
@@ -1059,7 +1069,12 @@ impl Component for LibraryRow {
             .cross_align(Alignment::Center)
             .on_pointer_enter(move |_| anim.start())
             .on_pointer_leave(move |_| anim.reverse())
-            .on_press(move |_| send(Command::OpenList(uri.clone())))
+            .on_press(move |_| {
+                if let Some(mut model) = MODEL.get() {
+                    model.write().opening = uri.clone();
+                }
+                send(Command::OpenList(uri.clone()))
+            })
             .on_secondary_down({
                 let item = self.item.clone();
                 move |_| ContextMenu::open_from_down(row_menu(&item, true, false, &[]))
@@ -1070,7 +1085,7 @@ impl Component for LibraryRow {
                     .width(Size::func(|p| Some(p.parent - 64.)))
                     .spacing(2.)
                     .child(one_line(self.item.title.clone(), 14., if self.selected { ACCENT } else { TEXT }))
-                    .child(one_line(self.item.artist.clone(), 12., SUB))
+                    .child(one_line(if self.opening { "Loading...".into() } else { self.item.artist.clone() }, 12., SUB))
             }));
         if !self.drop_target {
             return row.into_element();
@@ -1415,7 +1430,7 @@ impl Component for Sidebar {
             .iter()
             .map(|item| {
                 let drop_target = item.uri == crate::web::LIKED_SONGS || m.targets.iter().any(|t| t.uri == item.uri);
-                LibraryRow { item: item.clone(), selected: item.uri == m.current_list, cover: m.cover(&item.cover_url), drop_target, collapsed }.into_element()
+                LibraryRow { item: item.clone(), selected: item.uri == m.current_list, opening: item.uri == m.opening, cover: m.cover(&item.cover_url), drop_target, collapsed }.into_element()
             })
             .collect();
         let (kind, sort) = (m.library_kind, m.library_sort);
