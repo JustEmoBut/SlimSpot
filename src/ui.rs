@@ -2347,7 +2347,7 @@ impl Component for SettingsPage {
                 .child(section("Spotify API"))
                 .child(setting_row(
                     "Low API usage",
-                    "Fewer Spotify requests, for apps near their quota. When on: the library loads from a cache up to 6 hours old, liked marks are asked once per run, Home reuses Recently played for 60 s and checks new releases once a day. Changes made in other Spotify apps show up later; the refresh button reloads everything.",
+                    "Fewer Spotify requests, for apps near their quota. When on: Home reuses Recently played for 60 s and checks new releases once a day. The library (cached up to 6 hours) and liked marks (asked once per run) are always cached; the refresh button reloads everything.",
                     Switch::new().toggled(m.low_api).on_toggle(move |_| {
                         let on = !model.peek().low_api;
                         model.write().low_api = on;

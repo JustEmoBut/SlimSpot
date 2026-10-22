@@ -157,7 +157,7 @@ impl Settings {
             web_client_id: json["web_client_id"].as_str().unwrap_or_default().to_string(),
             eq: crate::eq::EqState::from_json(&json["eq"]),
             new_release_day: json["new_release_day"].as_i64().unwrap_or(0),
-            low_api: json["low_api"].as_bool().unwrap_or(false),
+            low_api: json["low_api"].as_bool().unwrap_or(true),
             compact: json["compact"].as_bool().unwrap_or(false),
             sidebar_w: json["sidebar_w"].as_f64().map_or(crate::ui::SIDEBAR_W, |w| w as f32),
             new_release: Item::from_json(&json["new_release"]),

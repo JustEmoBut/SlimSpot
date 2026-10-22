@@ -801,9 +801,9 @@ fn about(ms: u64) -> String {
     }
 }
 
-/// Rows checked for liked marks per batch (5 requests of 40); the next batch is asked for by the
-/// UI when the list scrolls near the end of the checked rows.
-const LIKED_CHECK_BATCH: usize = 200;
+/// Rows checked for liked marks per batch (one `/me/library/contains` request); the next batch is
+/// asked for by the UI when the list scrolls near the end of the checked rows.
+const LIKED_CHECK_BATCH: usize = 40;
 
 /// Marks liked tracks in the current page's next batch of unchecked rows.
 async fn mark_liked(ui: &Ui, web: &mut WebApi, session: &Session, nav: &mut History<Page>) {
@@ -964,10 +964,7 @@ pub async fn run(
     let client_id_text = settings.web_client_id.clone();
     ui.send(UiUpdate::WebClientId(client_id_text));
     let mut web = match WebApi::login(&dir, &settings.web_client_id, move || set_status(&browser_ui, "Opening browser for Web API login...")).await {
-        Ok(mut w) => {
-            w.low_api = settings.low_api;
-            Some(w)
-        }
+        Ok(w) => Some(w),
         Err(e) => {
             set_status(&ui, format!("{e} — search/library disabled, links still work."));
             None
@@ -1016,7 +1013,7 @@ pub async fn run(
     let mut paused_here = false;
     if let Some(w) = web.as_mut() {
         let user = session.username();
-        let lists = match load_library_cache(&user).filter(|_| settings.low_api) {
+        let lists = match load_library_cache(&user) {
             Some(lists) => lists,
             None => {
                 set_status(&ui, "Loading playlists...");
@@ -2001,9 +1998,6 @@ pub async fn run(
                 Command::LowApi(on) => {
                     settings.low_api = on;
                     save_settings(&ui, &settings);
-                    if let Some(w) = web.as_mut() {
-                        w.low_api = on;
-                    }
                 }
                 Command::Refresh => {
                     let Some(w) = web.as_mut() else { continue };

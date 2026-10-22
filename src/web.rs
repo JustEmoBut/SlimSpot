@@ -103,11 +103,9 @@ pub struct WebApi {
     pub gone_client: Option<String>,
     /// Set when this run switched to the shared app over a quota 429; the command loop reports it.
     pub quota_switch: bool,
-    /// `/me/library/contains` answers, kept current by `set_saved`; read only in low API mode.
-    /// ponytail: saves made in another client show stale until Refresh or restart.
+    /// `/me/library/contains` answers, kept current by `set_saved`; each URI is asked once per run.
+    /// shortcut: saves made in another client show stale until Refresh or restart.
     saved: HashMap<String, bool>,
-    /// Settings -> "Low API usage": answer `contains` from `saved` where possible.
-    pub low_api: bool,
 }
 
 impl WebApi {
@@ -149,7 +147,7 @@ impl WebApi {
                     .map_err(|e| format!("Web login failed: {e}"))?
             }
         };
-        let api = Self { client, token, token_path, grant_key, gone_client, quota_switch: false, saved: HashMap::new(), low_api: false };
+        let api = Self { client, token, token_path, grant_key, gone_client, quota_switch: false, saved: HashMap::new() };
         api.save()?;
         Ok(api)
     }
@@ -169,7 +167,7 @@ impl WebApi {
             Some(t) => t,
             None => client.get_access_token_async().await.map_err(|e| format!("Web login failed: {e}"))?,
         };
-        *self = Self { client, token, token_path, grant_key, gone_client: self.gone_client.take(), quota_switch: true, saved: std::mem::take(&mut self.saved), low_api: self.low_api };
+        *self = Self { client, token, token_path, grant_key, gone_client: self.gone_client.take(), quota_switch: true, saved: std::mem::take(&mut self.saved) };
         self.save()
     }
 
@@ -323,7 +321,7 @@ impl WebApi {
     /// Liked Songs membership for each URI, in order. `/me/library/contains` takes at most 40 URIs
     /// per request ("Too many uris requested" at 50, verified 2026-10-03).
     pub async fn contains(&mut self, session: &Session, uris: &[String]) -> Result<Vec<bool>, String> {
-        let unknown: Vec<&String> = uris.iter().filter(|u| !self.low_api || !self.saved.contains_key(*u)).collect();
+        let unknown: Vec<&String> = uris.iter().filter(|u| !self.saved.contains_key(*u)).collect();
         for chunk in unknown.chunks(CONTAINS_LIMIT) {
             let joined = chunk.iter().map(|u| u.as_str()).collect::<Vec<_>>().join(",");
             let json = self.get_json(session, &format!("{API}/me/library/contains?uris={joined}")).await?;
